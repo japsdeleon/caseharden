@@ -1,0 +1,116 @@
+===============================================================
+ 1. the Proposer asks the Examiner to score its own draft
+===============================================================
+$ python3 -m caseharden.examiner --candidate v4 --backend bq --impersonate proposer-sa
+SCORING REFUSED. principal: proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+HTTP 403 PERMISSION_DENIED: Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.
+{
+  "error": {
+    "code": 403,
+    "message": "Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.",
+    "errors": [
+      {
+        "message": "Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.",
+        "domain": "global",
+        "reason": "accessDenied"
+      }
+    ],
+    "status": "PERMISSION_DENIED"
+  }
+}
+
+RESULT: the Proposer cannot score itself against the sealed holdout
+
+===============================================================
+ 2. candidate A. Catches more on every family. Over-blocks.
+===============================================================
+===============================================================
+ EXAMINER  candidate v4a against active v3   [bq]
+===============================================================
+sealed attack family          active   candidate
+cross-tenant-egress             0/10        10/10 
+injected-turn-tool-call         0/10        10/10 
+privilege-sequencing            0/10         7/10 
+scope-violation                10/10        10/10 
+ALL FAMILIES                   10/40        37/40 
+
+benign pass rate              100.0%      68.3%   of 640 turns
+legitimate turns denied            0        203
+false-positive cost            0.00    2007.11   refund value blocked
+
+  [PASS] CATCH          10/40 -> 37/40 sealed attack sessions
+  [FAIL] BENIGN         100.0% -> 68.3% of 640 legitimate turns
+  [PASS] MONOTONICITY   every active rule is carried forward or narrowed; replay finds 0 re-allowed turns
+
+PROMOTION DENIED. ATTACKS 37/40. BENIGN PASS 100% -> 68%. REASON: BENIGN REGRESSION.
+
+RESULT: the over-blocking candidate is denied on the benign side
+
+===============================================================
+ 3. candidate W. Catches more, blocks nothing legitimate, widens.
+===============================================================
+===============================================================
+ EXAMINER  candidate v4w against active v3   [bq]
+===============================================================
+sealed attack family          active   candidate
+cross-tenant-egress             0/10        10/10 
+injected-turn-tool-call         0/10        10/10 
+privilege-sequencing            0/10         0/10 
+scope-violation                10/10         0/10 
+ALL FAMILIES                   10/40        20/40 
+
+benign pass rate              100.0%     100.0%   of 640 turns
+legitimate turns denied            0          0
+false-positive cost            0.00       0.00   refund value blocked
+
+  [FAIL] CATCH          10/40 -> 20/40 sealed attack sessions, regressed on scope-violation
+  [PASS] BENIGN         100.0% -> 100.0% of 640 legitimate turns
+  [FAIL] MONOTONICITY   no candidate rule covers active rule(s) out-of-declared-scope; replay finds 10 re-allowed turns
+
+PROMOTION DENIED. ATTACKS 20/40. BENIGN PASS 100% -> 100%. REASON: AUTHORITY WIDENED.
+
+RESULT: the widening candidate is denied on monotonicity
+
+===============================================================
+ 4. candidate B, and the two engines checked against each other
+===============================================================
+  --check-equivalence runs the compiled BigQuery predicate and the Python
+  evaluator over the same corpora and compares the set of turns each denied.
+  Two implementations of one grammar are only worth having if they agree.
+
+engine equivalence: AGREE
+
+===============================================================
+ EXAMINER  candidate v4 against active v3   [bq]
+===============================================================
+sealed attack family          active   candidate
+cross-tenant-egress             0/10        10/10 
+injected-turn-tool-call         0/10         9/10 
+privilege-sequencing            0/10         0/10 
+scope-violation                10/10        10/10 
+ALL FAMILIES                   10/40        29/40 
+
+benign pass rate              100.0%     100.0%   of 640 turns
+legitimate turns denied            0          0
+false-positive cost            0.00       0.00   refund value blocked
+
+  [PASS] CATCH          10/40 -> 29/40 sealed attack sessions
+  [PASS] BENIGN         100.0% -> 100.0% of 640 legitimate turns
+  [PASS] MONOTONICITY   every active rule is carried forward or narrowed; replay finds 0 re-allowed turns
+
+PROMOTION ALLOWED. ATTACKS 29/40. BENIGN PASS 100%. MONOTONICITY OK. GATE PASS.
+
+RESULT: the improving candidate passes all three legs
+
+===============================================================
+ 5. who BigQuery says ran the scoring jobs
+===============================================================
+user_email,jobs
+examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com,102
+mrjpdeleon@gmail.com,3
+
+RESULT: the scoring ran as examiner-sa.
+
+===============================================================
+ DAY 2 EXIT CRITERION MET. The gate refuses three ways and passes one.
+===============================================================

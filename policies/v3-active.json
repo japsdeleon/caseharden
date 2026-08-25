@@ -1,0 +1,11 @@
+{
+  "version": "v3",
+  "rules": [
+    {
+      "id": "out-of-declared-scope",
+      "action": "deny",
+      "reason": "The session declared a scope and called a tool outside it.",
+      "all_of": [{"op": "outside_declared_scope"}]
+    }
+  ]
+}

@@ -100,6 +100,16 @@ attempt('benign_no_pairing', benign_pairs)
 
 attempt('predicate_vocabulary', lambda c,t: [e.pop('amount_cents') for e in c['holdout_sealed']])
 
+def attack_only_verdict(c, t):
+    # Give every privilege-sequencing session an ma_verdict no benign turn
+    # carries. A candidate naming that one value then catches the whole family
+    # and blocks nothing legitimate: the set-membership free pass, on a field
+    # that is not that family's intended signal.
+    for e in c['holdout_sealed']:
+        if e['label'] == 'privilege-sequencing':
+            e['ma_verdict'] = 'REVIEW'
+attempt('no_value_set_free_pass', attack_only_verdict)
+
 if FAILURES:
     print(f"\n{len(FAILURES)} properties are asserted but not actually tested: {FAILURES}")
     sys.exit(1)

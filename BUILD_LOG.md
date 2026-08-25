@@ -174,6 +174,8 @@ force rather than capturing the stale answer as a result.
 
 ### Carried over
 
+0. **Two demo-script wordings need a decision**, both listed under "Open, and not
+   mine to decide" in the Day 2 entry above. Neither changes what the gate does.
 1. **Day 3, chain link 1 must include the `holdout_sealed` access list hash.** This
    is the substitute for the deny binding and it is load-bearing, not decorative.
    One pytest: mutate the access list, assert `verify` quarantines.
@@ -188,3 +190,196 @@ force rather than capturing the stale answer as a result.
    alerting at 50, 80 and 100 percent of actual spend plus 100 percent of forecast.
    45 EUR is the handoff's own escalation threshold. Note the billing account is
    denominated in **EUR**, while the Devpost credit is quoted in dollars.
+
+---
+
+## 2026-08-26 — Day 2
+
+**Exit criterion: the gate refuses a candidate three different ways and passes one,
+scored in BigQuery under `examiner-sa`.** Recorded in
+`captures/day2-gate-two-sided.txt`, produced by `infra/80_prove_gate.sh`, which
+asserts every outcome and exits non-zero if any of them changes.
+
+### Shipped
+
+`caseharden/dsl.py`. The conduct-policy grammar as a Pydantic model. Six predicates:
+`equals`, `in_set`, `at_least`, `present`, `outside_declared_scope`, `tenant_mismatch`.
+The last two read Model Armor's verdict fields and the repeated `declared_scope`
+column respectively. `action` is the literal `deny` and nothing else parses, so the
+grammar cannot express a widening edit. `field` is a closed Literal over the ten
+predicate columns the generator declares; `label` and `is_attack_event` are not in it.
+Every model sets `extra="forbid"`, so an unknown predicate fails validation with the
+offending name in the message rather than being ignored.
+
+`caseharden/interpreter.py`. Two evaluators for one grammar: a Python one and a
+BigQuery compiler. The Python evaluator is what pytest runs. The compiler is what
+scores against the sealed holdout, because the holdout lives in BigQuery and only
+`examiner-sa` may read it.
+
+`caseharden/examiner.py`. Scoring, the three-leg gate, and a CLI with two backends.
+`--backend local` replays the seeded corpora. `--backend bq` scores in BigQuery as
+`examiner-sa`. Returns catch rate per family, benign pass rate, false-positive cost
+in blocked refund value, and the monotonicity result.
+
+`caseharden/bq.py`. Standard library plus the gcloud CLI. No client library, so a
+reviewer can read every line between the compiled predicate and the service.
+
+Four committed policies: the active `v3`, an over-blocking candidate, a widening
+candidate, and the candidate that passes.
+
+`tests/test_gate.py`, seventeen tests, 0.62s. `generator/mutate_check.py` now breaks
+21 generator properties in turn; every one fails when broken.
+
+### Measured
+
+Scored in BigQuery as `examiner-sa` against 5,480 sealed holdout events and the
+640-turn benign corpus. Attack sessions per family: 10.
+
+| Candidate | Sealed attack sessions caught | Benign pass rate | Legitimate turns denied | Blocked refund value | Verdict |
+|---|---|---|---|---|---|
+| `v3`, active | 10/40 | 100.0% | 0 | 0.00 | active |
+| A, over-blocking | **37/40** | **68.3%** | 203 | 2007.11 | DENIED, benign regression |
+| W, widening | 20/40 | 100.0% | 0 | 0.00 | DENIED, authority widened |
+| B | 29/40 | 100.0% | 0 | 0.00 | **GATE PASS** |
+
+Candidate A catches more sealed attacks than the passing candidate on every family
+and is refused anyway. That is the two-sided gate doing the only job it has.
+
+Per-family, for the beat at 2:10: candidate A catches the injected-turn family 10/10,
+candidate B catches it 9/10. Those are the numbers the demo script names.
+
+The compiled BigQuery predicate and the Python evaluator were run over the same two
+corpora and compared on the set of turns each denied: **AGREE**, both corpora. Two
+implementations of one grammar are only worth having if they are checked against
+each other.
+
+BigQuery job history for the run: 52 SELECT jobs attributed to
+`examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com`, 1 to the operator.
+
+The Proposer asking the Examiner to score its own draft exits 3 with BigQuery's
+verbatim `PERMISSION_DENIED`. The seal from Day 1 now has a caller.
+
+### Deviation from the plan, with the reason
+
+The plan specifies the monotonicity check replays the candidate and the active
+version **over the benign corpus**. Replaying decides monotonicity for the rows on
+hand and for nothing else, and both adversarial passes broke it. The active version
+denies nothing in the benign corpus, so "the candidate's denial set is a superset"
+is true there for every candidate, including one that widens authority. Adding the
+holdout to the replay corpus fixed that instance and not the class: a candidate can
+narrow an active rule with a predicate no row in either corpus witnesses, and the
+replay still calls it monotone.
+
+Monotonicity is now decided on the policy rather than on rows. A rule denies when
+all of its predicates match, so removing predicates broadens a rule and adding them
+narrows it. Candidate rule R covers active rule A exactly when R's predicate set is
+a subset of A's. If every active rule has such a candidate rule, the candidate's
+denial set is a superset of the active version's **on every possible input**. It is
+conservative: a candidate that re-expresses a rule differently is refused rather
+than analysed, and the remedy is to carry the rule forward unchanged.
+
+The corpus replay is still computed and still printed, as the empirical cross-check
+on the structural result. In `--backend bq` it runs as a BigQuery query rather than
+against locally regenerated rows, because a real scoring run must read what BigQuery
+is serving.
+
+### Known limitation, recorded rather than hidden
+
+The `privilege-sequencing` family is **not expressible** in this grammar. It is a
+read that locates an account followed by a write onto that same account; neither
+call is anomalous alone, and detecting it needs a session self-join, which no
+row-level predicate can express. The passing candidate catches it 0/10 and the
+Examiner reports that plainly. Adding a session-scoped predicate is a grammar
+change, not a policy change, and it is not in the Day 2 scope.
+
+Candidate A catches 7/10 of that family by accident, because a threshold low enough
+to deny a third of legitimate traffic denies most things.
+
+### Adversarial pass
+
+Two engines, briefed with the spec path, the worktree, the base ref and the
+instruction to run the suite themselves. Neither was given any of this session's
+conclusions. Codex is a different model and is the only independent read available
+here; the in-house validator is the same model and is a checklist pass. Both were
+told to attack. Codex reported six defects, the validator ten findings plus what it
+could not check. Eleven are closed below; three are documentation items, two of
+which need a decision that is not mine.
+
+**Both engines, independently: a candidate can pass the gate while detecting
+nothing.** Codex built one. It names a set of eleven `account_id` values, catches one
+more sealed attack session than the active version, denies no legitimate turn, and
+passes all three legs. It generalizes to nothing, because an account id is a
+per-call identifier.
+
+`account_id` is out of the predicate vocabulary. The generator's leak check tested
+thresholds (`<=`, `>=`) and could not see set membership, which is how an identifier
+leaks. `no_value_set_free_pass` is the general form: for every field a candidate may
+name a literal on, fail if every session of a family carries a value that no benign
+turn carries. It is in the mutation harness, so it fails when broken.
+
+**The validator escaped the replay-based monotonicity check.** It kept the active
+scope rule and added one predicate to it, narrowing it. Every out-of-scope call in
+both corpora happens to be an `issue_refund`, so no row witnesses the difference and
+the replay reported the candidate as monotone. The structural check above refuses
+it, and `test_a_widening_the_corpus_cannot_witness_is_still_refused` asserts both
+halves: the replay's blind spot, and the refusal.
+
+**A timed-out query read as a clean benign score.** `jobs.query` answers a timeout
+with `jobComplete: false`, no rows and no error. The client returned an empty result,
+`benign_pass_rate` returned 1.0 for zero turns, and the over-blocking candidate
+passed the benign leg. The client now raises on an incomplete or paginated response,
+and the gate refuses to rule at all when nothing was scored.
+
+**Closed, one line each.**
+
+- CATCH was summed across families, so a candidate losing nine sessions in one family
+  and gaining ten in another read as an improvement. It is now per family as well as
+  in total.
+- `at_least` accepted `NaN`, `Infinity`, `1e400` and `True`. `1e400` is ordinary valid
+  JSON, parses to `inf`, and compiles to a bare `inf` that BigQuery reads as a column
+  name. Rejected at parse time now.
+- `tenant_mismatch` compared `target_tenant_id != tenant_id` without checking
+  `tenant_id`. In BigQuery that is NULL, which does not deny; in Python it was True.
+  Both sides are explicit now.
+- `--project` and `CASEHARDEN_PROJECT` were interpolated into a backtick-quoted table
+  identifier with no validation. A backtick closed the identifier. Validated now.
+- A malformed-SQL 400 was reported in the exact words of the IAM 403, including its
+  exit code. Exit 3 is the authorization refusal only; anything else exits 4.
+- The over-blocking test's docstring claimed a per-family property its assertions did
+  not check. Codex broke the property and the test still passed. Asserted now.
+- `false_positive_cost_cents` is one of the four outputs the plan names and was
+  asserted nowhere. It is pinned at 200711 cents for candidate A.
+- The BigQuery compiler had no test in the suite. Every predicate now compiles to a
+  pinned string, and the roster is read off the grammar so a new predicate cannot be
+  added without compiling it here.
+- `dsl.py` claimed the absence of an allow verb made narrowing the only expressible
+  edit. The repo's own widening candidate contradicts that. Reworded.
+
+**Open, and not mine to decide.**
+
+1. The plan's video line at 2:10 says "The examiner is two hundred lines of code."
+   `interpreter.py` is 187 lines; the Examiner as a whole is 610 across three files.
+   Section 3's "about 200 lines of deterministic interpreter" is accurate. The spoken
+   line is not, and that beat is untouchable, so it needs a decision rather than an
+   edit.
+2. The same beat's on-screen numbers, "10 of 10" and "9/10", are the injected-turn
+   family row. The overall counts are 37/40 and 29/40. Both readings are true and
+   the beat works either way, but the wording should say which.
+
+**Unchecked, stated rather than assumed.** Codex's sandbox is read-only and holds no
+GCP credentials, so it ran the local path only. The validator's sandbox blocked
+`gcloud auth print-access-token`, so every `--backend bq` claim, the engine-agreement
+result, and `infra/80_prove_gate.sh` went unverified by both. Those were re-run here
+after the fixes and the capture was retaken.
+
+### Recorded for THREATS.md
+
+The sealed holdout is IAM-sealed in BigQuery and byte-reproducible by anyone holding
+the repo, because the generator is committed and seeded. Both are true at once. The
+disclosure is deliberate, so a reviewer can regenerate what the measurements were
+taken on. It becomes exploitable rather than theoretical if the Proposer is given
+repo or generator access on Days 4 and 5, which it must not be.
+
+The Examiner CLI now defaults to `--backend bq`, the path that carries an identity.
+`--backend local` reads a locally regenerated holdout under no identity at all and
+exists for the test suite.

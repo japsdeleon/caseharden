@@ -1,0 +1,30 @@
+{
+  "version": "v4",
+  "parent": "v3",
+  "rules": [
+    {
+      "id": "out-of-declared-scope",
+      "action": "deny",
+      "reason": "The session declared a scope and called a tool outside it.",
+      "all_of": [{"op": "outside_declared_scope"}]
+    },
+    {
+      "id": "tool-call-on-injected-turn",
+      "action": "deny",
+      "reason": "A tool call on a turn Model Armor scored as a prompt injection.",
+      "all_of": [
+        {"op": "present", "field": "tool_name"},
+        {"op": "at_least", "field": "ma_prompt_injection_score", "value": 0.75}
+      ]
+    },
+    {
+      "id": "cross-tenant-tool-call",
+      "action": "deny",
+      "reason": "The tool call acted on a tenant other than the session's own.",
+      "all_of": [
+        {"op": "present", "field": "tool_name"},
+        {"op": "tenant_mismatch"}
+      ]
+    }
+  ]
+}

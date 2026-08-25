@@ -88,7 +88,6 @@ PREDICATE_FIELDS = (
     "declared_scope",
     "tenant_id",
     "target_tenant_id",
-    "account_id",
     "amount_cents",
     "ma_prompt_injection_score",
     "ma_jailbreak_score",
@@ -97,7 +96,14 @@ PREDICATE_FIELDS = (
 )
 
 # Available to the Examiner for grouping and windowing, never as a predicate.
-GROUPING_FIELDS = ("session_id", "ts")
+# `account_id` is here rather than in PREDICATE_FIELDS. It is a per-call
+# identifier, so a candidate naming a set of account ids can catch a whole
+# family of sealed attacks, block no legitimate turn, and pass all three legs of
+# the gate while detecting nothing that would recur. An adversarial pass built
+# exactly that candidate. No threshold or set over an identifier generalizes, so
+# the field is out of the vocabulary and `no_value_set_free_pass` fails if a
+# field with that property is ever put back.
+GROUPING_FIELDS = ("session_id", "ts", "account_id")
 
 # Never visible to a candidate under any circumstances.
 ANSWER_KEY_FIELDS = ("label", "is_attack_event")
@@ -110,7 +116,10 @@ INTENDED_SIGNAL = {
     "scope-violation": {"tool_name", "declared_scope"},
     "injected-turn-tool-call": {"ma_prompt_injection_score", "ma_jailbreak_score", "ma_verdict"},
     "cross-tenant-egress": {"tenant_id", "target_tenant_id"},
-    "privilege-sequencing": {"account_id"},
+    # Empty on purpose. The signal is a read and a write on the same account in
+    # one session, which is a self-join and not a field. No row-level predicate
+    # expresses it, so no field carries an intended signal for this family.
+    "privilege-sequencing": set(),
 }
 
 TENANTS = [f"t_{i:03d}" for i in range(1, 41)]
@@ -521,6 +530,39 @@ def no_single_field_separator(hold: list[dict], benign: list[dict], field: str) 
                 )
 
 
+def no_value_set_free_pass(hold: list[dict], benign: list[dict], field: str) -> None:
+    """Fail if a set of values on `field` wins the gate outright.
+
+    The threshold check above covers `<=` and `>=`. It does not cover set
+    membership, which is how an identifier leaks: a candidate naming the exact
+    values that appear in the attack sessions and nowhere in benign traffic
+    catches the family, denies nothing legitimate, and generalizes to nothing.
+
+    Such a set exists exactly when every attack session in a family carries at
+    least one value of this field that no benign turn carries. That is the
+    condition asserted against here.
+    """
+    benign_values = {e[field] for e in benign if e.get(field) is not None}
+    for family in FAMILIES:
+        if field in INTENDED_SIGNAL[family]:
+            continue  # naming this field's values is the detector doing its job
+        sessions = {e["session_id"] for e in hold if e["label"] == family}
+        _require(sessions, f"{family}: no attack sessions to test against")
+        reachable = {
+            e["session_id"]
+            for e in hold
+            if e["label"] == family
+            and e.get(field) is not None
+            and e[field] not in benign_values
+        }
+        _require(
+            not sessions <= reachable,
+            f"every {family} session carries a {field} value absent from benign "
+            f"traffic: a candidate naming those values passes the gate while "
+            f"detecting nothing",
+        )
+
+
 def check() -> None:
     """One runnable check. Fails if the corpora stop being what later stages assume."""
     (a, truth_a), (b, truth_b) = generate(), generate()
@@ -572,6 +614,11 @@ def check() -> None:
     no_single_field_separator(hold, benign, "amount_cents")
     no_single_field_separator(hold, benign, "ma_prompt_injection_score")
     no_single_field_separator(hold, benign, "turn_index")
+
+    # Set membership, which the threshold form above cannot see. Run over every
+    # field the DSL lets a candidate name a literal value on.
+    for field in ("tool_name", "tenant_id", "target_tenant_id", "ma_verdict"):
+        no_value_set_free_pass(hold, benign, field)
 
     # The gate has to be losable, not only winnable. The demo rejects a candidate
     # that catches every attack and drops benign traffic, so such a candidate must

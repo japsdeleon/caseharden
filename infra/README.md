@@ -22,9 +22,19 @@ bash infra/71_prove_immutability.sh  # the owner is refused delete, overwrite an
 
 Both exit non-zero if the guarantee they test does not hold.
 
+Then the Day 2 proof:
+
+```bash
+bash infra/80_prove_gate.sh          # the promotion gate refuses three ways, passes one
+```
+
+It runs the real Examiner against the real corpora as `examiner-sa`, asserts every
+outcome, and exits non-zero if any of them changes. It also checks the compiled
+BigQuery predicate against the Python evaluator on the same rows.
+
 ## Re-running
 
-`00` through `50` and `70` are idempotent. Two are not, deliberately:
+`00` through `50`, `70` and `80` are idempotent. Two are not, deliberately:
 
 - `60_lock_retention.sh` locks the retention policy, which cannot be undone. It
   refuses to run without `CASEHARDEN_CONFIRM_LOCK=LOCK`, and re-running it against

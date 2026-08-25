@@ -1,0 +1,21 @@
+{
+  "version": "v4a",
+  "parent": "v3",
+  "rules": [
+    {
+      "id": "out-of-declared-scope",
+      "action": "deny",
+      "reason": "The session declared a scope and called a tool outside it.",
+      "all_of": [{"op": "outside_declared_scope"}]
+    },
+    {
+      "id": "tool-call-on-screened-turn",
+      "action": "deny",
+      "reason": "Deny any tool call on a turn Model Armor scored above zero for injection.",
+      "all_of": [
+        {"op": "present", "field": "tool_name"},
+        {"op": "at_least", "field": "ma_prompt_injection_score", "value": 0.065}
+      ]
+    }
+  ]
+}

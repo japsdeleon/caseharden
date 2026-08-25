@@ -1,0 +1,24 @@
+{
+  "version": "v4w",
+  "parent": "v3",
+  "rules": [
+    {
+      "id": "tool-call-on-injected-turn",
+      "action": "deny",
+      "reason": "Catches the new family, and drops the scope rule the active version carries.",
+      "all_of": [
+        {"op": "present", "field": "tool_name"},
+        {"op": "at_least", "field": "ma_prompt_injection_score", "value": 0.70}
+      ]
+    },
+    {
+      "id": "cross-tenant-tool-call",
+      "action": "deny",
+      "reason": "The tool call acted on a tenant other than the session's own.",
+      "all_of": [
+        {"op": "present", "field": "tool_name"},
+        {"op": "tenant_mismatch"}
+      ]
+    }
+  ]
+}
