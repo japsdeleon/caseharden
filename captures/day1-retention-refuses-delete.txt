@@ -76,6 +76,7 @@ RESULT: delete REFUSED and overwrite REFUSED by the Cloud Storage retention poli
 ===============================================================
   An unlocked policy can be cleared by the owner and the object deleted after.
   A locked one cannot, which is what closes that path.
+
 $ curl -X PATCH https://storage.googleapis.com/storage/v1/b/caseharden-certificates-506416 -d '{"retentionPolicy":null}'
 {
   "error": {

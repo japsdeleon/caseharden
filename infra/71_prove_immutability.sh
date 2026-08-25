@@ -37,7 +37,12 @@ rule; echo " the sealed object"; rule
 if ! curl -s -o /dev/null -f -H "Authorization: Bearer ${TOK}" "$API"; then
   TMP="$(mktemp)"
   printf '{"note":"Day 1 seal check. Written to prove the retention policy refuses deletion and overwrite."}\n' > "$TMP"
-  gcloud storage cp "$TMP" "gs://${BUCKET}/${OBJ}" --project="$PROJECT" >/dev/null 2>&1
+  # Checked, because an upload that silently failed used to surface later as
+  # "IMMUTABILITY FAILED", naming the wrong cause.
+  if ! gcloud storage cp "$TMP" "gs://${BUCKET}/${OBJ}" --project="$PROJECT" >/dev/null 2>&1; then
+    echo "could not write the seal-check object; aborting rather than mis-reporting"
+    exit 2
+  fi
 fi
 meta
 echo
@@ -87,6 +92,19 @@ meta
 rule; echo " and attempts to remove the retention policy itself"; rule
 echo "  An unlocked policy can be cleared by the owner and the object deleted after."
 echo "  A locked one cannot, which is what closes that path."
+echo
+# This probe is only safe against a locked policy. Against an unlocked one the
+# PATCH succeeds, strips the protection and leaves the bucket open, so the check
+# that proves the lock would be the thing that removes it.
+LOCKED="$(gcloud storage buckets describe "gs://${BUCKET}" --project="$PROJECT" \
+          --format='value(retention_policy.isLocked)')"
+if [ "$LOCKED" != "True" ]; then
+  echo "  SKIPPED: the retention policy is not locked. Attempting the removal would"
+  echo "  succeed and strip it. Run 60_lock_retention.sh first."
+  echo
+  echo "RESULT: delete and overwrite refused, but the policy is UNLOCKED and removable."
+  exit 1
+fi
 echo "\$ curl -X PATCH https://storage.googleapis.com/storage/v1/b/${BUCKET} -d '{\"retentionPolicy\":null}'"
 CLR="$(curl -s -w '\nHTTP %{http_code}' -X PATCH -H "Authorization: Bearer ${TOK}" \
   -H "Content-Type: application/json" --data '{"retentionPolicy":null}' \

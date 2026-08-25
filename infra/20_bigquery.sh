@@ -5,8 +5,18 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
 mk() {
-  bq --project_id="$PROJECT" --location="$BQ_LOCATION" \
-     mk --dataset --description="$2" "${PROJECT}:$1" 2>&1 | grep -v "already exists" || true
+  local out
+  out="$(bq --project_id="$PROJECT" --location="$BQ_LOCATION" \
+           mk --dataset --description="$2" "${PROJECT}:$1" 2>&1)" && { echo "created $1"; return 0; }
+  # Only "already exists" is an acceptable failure. Anything else used to be
+  # swallowed by `|| true`, and the success line printed anyway.
+  # bq hard-wraps its error text, so "already exists" can arrive split across a
+  # newline. Collapse whitespace before matching or the check silently fails.
+  out="$(printf '%s' "$out" | tr '\n' ' ' | tr -s ' ')"
+  case "$out" in
+    *"already exists"*) echo "exists  $1" ;;
+    *) echo "$out" >&2; return 1 ;;
+  esac
 }
 
 mk conduct_train  "Synthetic agent conduct events, days 1-76. The training window. Readable by the Proposer."
@@ -24,4 +34,19 @@ for sa in "$SA_PROPOSER" "$SA_EXAMINER" "$SA_NOTARY" "$SA_FOREMAN" "$SA_WORKLOAD
     --condition=None --quiet >/dev/null
 done
 
-echo "Datasets created. No principal holds a project-wide BigQuery read."
+# Assert the security claim rather than printing it. A project-wide dataViewer
+# would reach the sealed holdout, so this is checked, not stated.
+WIDE="$(gcloud projects get-iam-policy "$PROJECT" --format=json \
+        | python3 -c "
+import json, sys
+policy = json.load(sys.stdin)
+bad = [b['role'] for b in policy.get('bindings', [])
+       if b['role'] in ('roles/bigquery.dataViewer', 'roles/bigquery.dataEditor',
+                        'roles/bigquery.dataOwner', 'roles/bigquery.admin')]
+print(','.join(bad))
+")"
+if [ -n "$WIDE" ]; then
+  echo "FAIL: project-wide BigQuery data roles are bound: $WIDE" >&2
+  exit 1
+fi
+echo "Datasets ready. Verified: no project-wide BigQuery data role is bound."

@@ -3,7 +3,7 @@
 ===============================================================
 principal on the wire: proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com
 $ SELECT COUNT(*) FROM devpost-hackathon-506416.conduct_train.turns
-HTTP 200   rows: 32687
+HTTP 200   rows: 33118
 
 ===============================================================
  2. the same principal reads the sealed holdout
@@ -29,24 +29,51 @@ HTTP 403  PERMISSION_DENIED
 RESULT: DENIED by BigQuery. No code in this project ran.
 
 ===============================================================
- 3. examiner-sa, the only principal granted the holdout
+ 3. examiner-sa, the only principal on the holdout's access list
 ===============================================================
 principal on the wire: examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com
 $ SELECT COUNT(*) FROM devpost-hackathon-506416.holdout_sealed.turns
-HTTP 200   rows: 5421
+HTTP 200   rows: 5480
+
+===============================================================
+ 4. the human project owner attempts the same read
+===============================================================
+  The seal is not only aimed at the fleet. bigquery.tables.getData is not
+  part of roles/owner, so once the inherited entries are off the dataset the
+  owner of the project is refused it as well.
+
+principal on the wire: mrjpdeleon@gmail.com
+$ SELECT COUNT(*) FROM devpost-hackathon-506416.holdout_sealed.turns
+HTTP 403  PERMISSION_DENIED
+{
+  "error": {
+    "code": 403,
+    "message": "Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.",
+    "errors": [
+      {
+        "message": "Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.",
+        "domain": "global",
+        "reason": "accessDenied"
+      }
+    ],
+    "status": "PERMISSION_DENIED"
+  }
+}
+
+RESULT: the project owner is DENIED the exam.
 
 ===============================================================
  the holdout_sealed access list, as a reviewer reads it in the console
 ===============================================================
-  OWNER  projectOwners
-  OWNER  mrjpdeleon@gmail.com
-  READER examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+  OWNER  examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+
+RESULT: exactly one entry, and it is the Examiner.
 
 ===============================================================
- 4. the same refusal in the Cloud Audit log, which names the permission
+ 5. the same refusal in the Cloud Audit log, which names the permission
 ===============================================================
   logName        data_access
-  timestamp      2026-08-25T06:02:05.619513Z
+  timestamp      2026-08-25T07:06:30.881349Z
   principalEmail proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com
   methodName     jobservice.query
   status.code    7  (PERMISSION_DENIED)

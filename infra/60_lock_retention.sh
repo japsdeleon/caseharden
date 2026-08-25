@@ -22,7 +22,7 @@ Refusing to lock without explicit confirmation.
 Locking cannot be undone. The bucket cannot be deleted until every object in it
 is older than the retention period. To proceed:
 
-  CASEHARDEN_CONFIRM_LOCK=LOCK bash infra/62_lock_retention.sh
+  CASEHARDEN_CONFIRM_LOCK=LOCK bash infra/60_lock_retention.sh
 MSG
   exit 1
 fi

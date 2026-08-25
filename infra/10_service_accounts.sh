@@ -23,3 +23,14 @@ create workload-sa "Caseharden Workload Agent" \
   "The governed support agent and the attack target."
 
 echo "Service accounts ready."
+
+# The proofs in 70_ and 71_ act as these principals through impersonation.
+# roles/owner does not carry iam.serviceAccounts.getAccessToken, so without this
+# grant 70_prove_seal.sh cannot mint a token and exits before proving anything.
+OPERATOR="${CASEHARDEN_OPERATOR:-$(gcloud config get-value account 2>/dev/null)}"
+for sa in "$SA_PROPOSER" "$SA_EXAMINER" "$SA_NOTARY"; do
+  gcloud iam service-accounts add-iam-policy-binding "$sa" \
+    --member="user:${OPERATOR}" --role=roles/iam.serviceAccountTokenCreator \
+    --project="$PROJECT" --quiet >/dev/null
+done
+echo "Impersonation granted to ${OPERATOR} on the three audited principals."

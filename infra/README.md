@@ -1,28 +1,45 @@
 # infra
 
-Every script is idempotent and safe to re-run. Run them in order on a fresh project.
+Scripts are numbered in the order they must run. The order matters: sealing the
+holdout removes the operator's own write access to it, so the corpora load first.
 
 ```bash
 bash infra/00_enable_apis.sh
 bash infra/10_service_accounts.sh
 bash infra/20_bigquery.sh
-bash infra/30_seal_holdout.sh
-bash infra/40_load_corpora.sh
-bash infra/60_bucket.sh
+bash infra/30_load_corpora.sh
+bash infra/40_seal_holdout.sh
+bash infra/50_bucket.sh
+CASEHARDEN_CONFIRM_LOCK=LOCK bash infra/60_lock_retention.sh
 ```
 
-Then the two Day 1 proofs, which are read-only apart from writing one small object:
+Then the two Day 1 proofs:
 
 ```bash
-bash infra/50_prove_seal.sh          # the Proposer takes a real 403 on the holdout
-bash infra/61_prove_immutability.sh  # the owner is refused delete and overwrite
+bash infra/70_prove_seal.sh          # the Proposer takes a real 403 on the holdout
+bash infra/71_prove_immutability.sh  # the owner is refused delete, overwrite and unlock
 ```
 
-`62_lock_retention.sh` is deliberately not in the sequence. It locks the retention
-policy, which cannot be undone, and it refuses to run without
-`CASEHARDEN_CONFIRM_LOCK=LOCK`.
+Both exit non-zero if the guarantee they test does not hold.
 
-Settings come from `env.sh`. Override with `CASEHARDEN_PROJECT`, `CASEHARDEN_REGION`,
-`CASEHARDEN_BUCKET` or `CASEHARDEN_RETENTION` rather than by editing it.
+## Re-running
 
-No script here reads a credential file, and none prints an access token.
+`00` through `50` and `70` are idempotent. Two are not, deliberately:
+
+- `60_lock_retention.sh` locks the retention policy, which cannot be undone. It
+  refuses to run without `CASEHARDEN_CONFIRM_LOCK=LOCK`, and re-running it against
+  an already-locked bucket fails. It is in the sequence above because
+  `71_prove_immutability.sh` cannot prove anything without it.
+- `71_prove_immutability.sh` is idempotent against a locked bucket. Against an
+  unlocked one its final probe would strip the retention policy, so it detects
+  that case and stops instead.
+
+## Settings
+
+From `env.sh`. Override with `CASEHARDEN_PROJECT`, `CASEHARDEN_REGION`,
+`CASEHARDEN_BUCKET`, `CASEHARDEN_RETENTION` or `CASEHARDEN_OPERATOR` rather than
+by editing it.
+
+No script reads a credential file. No script prints an access token, or passes
+one in a command argument or a URL, both of which are visible in the local
+process table.
