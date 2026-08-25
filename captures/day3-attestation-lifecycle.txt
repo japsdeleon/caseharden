@@ -1,23 +1,27 @@
+Day 3 attestation lifecycle, re-run on Day 4 after link 1 was widened to cover
+role permissions and impersonation of the exam's reader.
+$ bash infra/90_prove_attestation.sh
+
 ==============================================================
  1. A promoted version re-derives from raw evidence
 ==============================================================
 registered v3 as the genesis version, active, with no chain
 parent accepted: v3 is the registered genesis version and carries no chain
 wrote 7 links for v4
-root   db777a5d9b3b1aff838058bfb66071c733b4ff961a082f384f37957fe1ced9e4
-sealed gs://caseharden-certificates-506416/certificates/v4/007-db777a5d9b3b.json
+root   7fcb4959b6b48c8481dd31fd21d273a8326805fd336ecadc818fd82c2f91950a
+sealed gs://caseharden-certificates-506416/certificates/v4/007-7fcb4959b6b4.json
 caseharden verify conduct-policy@v4
 
-  [1] EVIDENCE         OK     422 conduct events re-scanned over 2026-08-14T00:00:00Z..2026-08-15T00:00:00Z, holdout_sealed readable by 1 principal(s)
-  [2] FINDING          OK     scope-violation, 2 session(s)
+  [1] EVIDENCE         OK     424 conduct events re-scanned over 2026-08-14T00:00:00Z..2026-08-15T00:00:00Z, holdout_sealed readable by 1 principal(s)
+  [2] FINDING          OK     scope-violation, 2 session(s), job job_2WJdcGzlds_Hnk6B
   [3] VERDICT          OK     confirmed abuse by analyst@caseharden.example
   [4] DRAFT            OK     candidate v4, 3 rule(s)
   [5] HOLDOUT-DENIED   OK     proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com refused bigquery.tables.getData on holdout_sealed
   [6] EXAM             OK     the Examiner re-scores 29/40 sealed attack sessions at 100% benign pass, unchanged
   [7] APPROVAL         OK     GATE PASS approved by analyst@caseharden.example
 
-  root db777a5d9b3b1aff838058bfb66071c733b4ff961a082f384f37957fe1ced9e4
-  ATTESTED   re-derived from raw events in 2.2s
+  root 7fcb4959b6b48c8481dd31fd21d273a8326805fd336ecadc818fd82c2f91950a
+  ATTESTED   re-derived from raw events in 5.4s
 re-derived: EVIDENCE, EXAM; recorded only: APPROVAL, DRAFT, FINDING, HOLDOUT-DENIED, VERDICT
 
 $ notary promote --version v6 --parent v99   (a name that is not a version)
@@ -27,16 +31,16 @@ v6 was not promoted and nothing was written to the chain.
 ==============================================================
  2. The fleet is told the live state, not a stored one
 ==============================================================
-served v4: ATTESTED, promotions OPEN, 7 links, verify took 2.543s
+served v4: ATTESTED, promotions OPEN, 7 links, verify took 4.906s
 
 ==============================================================
  3. One ordinary late event, and the version loses its standing
 ==============================================================
-note: the default event id is already in the window; using e_late_1787650753
-streamed e_late_1787650753 into conduct_train.turns at 2026-08-14T23:59:00Z
+note: the default event id is already in the window; using e_late_1787661269
+streamed e_late_1787661269 into conduct_train.turns at 2026-08-14T23:59:00Z
 caseharden verify conduct-policy@v4
 
-  [1] EVIDENCE         BREAK  1 event(s) in the window are not in the cited set: e_late_1787650753
+  [1] EVIDENCE         BREAK  1 event(s) in the window are not in the cited set: e_late_1787661269
   [2] FINDING                 
   [3] VERDICT                 
   [4] DRAFT                   
@@ -44,9 +48,9 @@ caseharden verify conduct-policy@v4
   [6] EXAM                    
   [7] APPROVAL                
 
-  root db777a5d9b3b1aff838058bfb66071c733b4ff961a082f384f37957fe1ced9e4
+  root 7fcb4959b6b48c8481dd31fd21d273a8326805fd336ecadc818fd82c2f91950a
   QUARANTINED  break at link 1 EVENT-WINDOW
-               1 event(s) in the window are not in the cited set: e_late_1787650753
+               1 event(s) in the window are not in the cited set: e_late_1787661269
                enforcement unchanged, promotions FROZEN
 note: served from the 60s cache, as designed; waiting it out
 
@@ -55,7 +59,7 @@ note: served from the 60s cache, as designed; waiting it out
 ==============================================================
 caseharden verify conduct-policy@v4
 
-  [1] EVIDENCE         BREAK  1 event(s) in the window are not in the cited set: e_late_1787650753
+  [1] EVIDENCE         BREAK  1 event(s) in the window are not in the cited set: e_late_1787661269
   [2] FINDING                 
   [3] VERDICT                 
   [4] DRAFT                   
@@ -63,9 +67,9 @@ caseharden verify conduct-policy@v4
   [6] EXAM                    
   [7] APPROVAL                
 
-  root db777a5d9b3b1aff838058bfb66071c733b4ff961a082f384f37957fe1ced9e4
+  root 7fcb4959b6b48c8481dd31fd21d273a8326805fd336ecadc818fd82c2f91950a
   QUARANTINED  break at link 1 EVENT-WINDOW
-               1 event(s) in the window are not in the cited set: e_late_1787650753
+               1 event(s) in the window are not in the cited set: e_late_1787661269
                enforcement unchanged, promotions FROZEN
 
 REFUSED — cannot build on an unattested version. v4 is QUARANTINED (break at link 1 EVENT-WINDOW).
@@ -76,7 +80,7 @@ v5 was not promoted and nothing was written to the chain.
 ==============================================================
 caseharden verify conduct-policy@v4
 
-  [1] EVIDENCE         BREAK  1 event(s) in the window are not in the cited set: e_late_1787650753
+  [1] EVIDENCE         BREAK  1 event(s) in the window are not in the cited set: e_late_1787661269
   [2] FINDING                 
   [3] VERDICT                 
   [4] DRAFT                   
@@ -84,39 +88,41 @@ caseharden verify conduct-policy@v4
   [6] EXAM                    
   [7] APPROVAL                
 
-  root db777a5d9b3b1aff838058bfb66071c733b4ff961a082f384f37957fe1ced9e4
+  root 7fcb4959b6b48c8481dd31fd21d273a8326805fd336ecadc818fd82c2f91950a
   QUARANTINED  break at link 1 EVENT-WINDOW
-               1 event(s) in the window are not in the cited set: e_late_1787650753
+               1 event(s) in the window are not in the cited set: e_late_1787661269
                enforcement unchanged, promotions FROZEN
 
 RE-ATTESTED. The evidence moved, the gate still passes (29/40 sealed attacks at 100% benign pass). Link 8 EVIDENCE-CHANGED records the new evidence and supersedes link 1.
-sealed gs://caseharden-certificates-506416/certificates/v4/008-ea62e7623db9.json
+sealed gs://caseharden-certificates-506416/certificates/v4/008-40522ddaf38a.json
 
 caseharden verify conduct-policy@v4
 
   [1] EVIDENCE         ----   restated by link 8
-  [2] FINDING          OK     scope-violation, 2 session(s)
+  [2] FINDING          OK     scope-violation, 2 session(s), job job_2WJdcGzlds_Hnk6B
   [3] VERDICT          OK     confirmed abuse by analyst@caseharden.example
   [4] DRAFT            OK     candidate v4, 3 rule(s)
   [5] HOLDOUT-DENIED   OK     proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com refused bigquery.tables.getData on holdout_sealed
   [6] EXAM             ----   re-scored under link 8
   [7] APPROVAL         OK     GATE PASS approved by analyst@caseharden.example
-  [8] EVIDENCE-CHANGED OK     423 conduct events re-scanned over 2026-08-14T00:00:00Z..2026-08-15T00:00:00Z, holdout_sealed readable by 1 principal(s); the Examiner re-scores 29/40 sealed attack sessions at 100% benign pass, unchanged
+  [8] EVIDENCE-CHANGED OK     425 conduct events re-scanned over 2026-08-14T00:00:00Z..2026-08-15T00:00:00Z, holdout_sealed readable by 1 principal(s); the Examiner re-scores 29/40 sealed attack sessions at 100% benign pass, unchanged
 
-  root ea62e7623db9cdaf981e9a7fe9d549b096fc78ee4b395a2477a85fb1a6cdf23c
-  ATTESTED   re-derived from raw events in 2.5s
-link 1 still hashes to 7c003202d555 and still cites 422 events; link 8 cites 423
+  root 40522ddaf38a0f952f69cdf851ce1a56f692dd1d39bdc1b6b2bfec33cb2ea033
+  ATTESTED   re-derived from raw events in 4.0s
+link 1 still hashes to 45505f3c88b8 and still cites 424 events; link 8 cites 425
 
 ==============================================================
  6. Promotion is open again, and the certificate cannot be deleted
 ==============================================================
-parent accepted: v4 attested at root ea62e7623db9
+parent accepted: v4 attested at root 40522ddaf38a
 candidate policies/v4-candidate-b.json: 3 deny rule(s), digest a6feddc1bd41
 v5 may be promoted. Run seed to write its chain.
-$ DELETE storage/v1/b/caseharden-certificates-506416/o/certificates/v4/008-ea62e7623db9.json   (as the project owner)
-  refused: retentionPolicyNotMet - Object 'caseharden-certificates-506416/certificates/v4/008-ea62e7623db9.json' is subject to bucket's retention policy or object retention and cannot be deleted or overwritten until 2026-09-24T02:40:58.018719-07:00
+$ DELETE storage/v1/b/caseharden-certificates-506416/o/certificates/v4/008-40522ddaf38a.json   (as the project owner)
+  refused: retentionPolicyNotMet - Object 'caseharden-certificates-506416/certificates/v4/008-40522ddaf38a.json' is subject to bucket's retention policy or object retention and cannot be deleted or overwritten until 2026-09-24T05:36:14.313375-07:00
 wrote out/certificate-v4.html
 
 ==============================================================
  ALL SIX HELD.
 ==============================================================
+
+exit: 0

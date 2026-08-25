@@ -19,10 +19,14 @@ and `verify` prints which of the two each link got.
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Dict, List, Optional, Sequence
 
 from . import bq
@@ -130,10 +134,40 @@ def digest_access(entries: Sequence[dict]) -> str:
 # custom role, since a custom role's permissions are not knowable from its name.
 # Roles outside this set cannot carry bigquery.tables.getData, so ordinary IAM
 # churn does not quarantine a version.
-REACH_ROLE_RE = re.compile(r"^(roles/bigquery\.|projects/[^/]+/roles/)")
+# Which project-level roles could put a principal within reach of the sealed
+# exam. The first version of this matched every `roles/bigquery.*` binding by
+# name, which is not the same question. Granting roles/bigquery.jobUser to a
+# detector quarantined every chain in the project, and reattest then refused to
+# clear it, correctly, because clearing it would have recorded a widened access
+# list as justified. A check that fires on grants which cannot read the exam
+# does not make the exam safer; it makes the real signal unreadable.
+#
+# So the question asked is now the right one: does this role carry
+# bigquery.tables.getData. A role that cannot be expanded still counts as
+# reaching, so the failure direction is unchanged.
+REACH_ROLE_RE = re.compile(r"^(roles/|projects/[^/]+/roles/|impersonate/)")
+
+# The dataset whose readers are the exam's readers.
+SEALED_DATASET = "holdout_sealed"
+
+# Roles that let a principal act as a service account.
+IMPERSONATION_ROLES = (
+    "roles/iam.serviceAccountTokenCreator",
+    "roles/iam.serviceAccountUser",
+    "roles/iam.workloadIdentityUser",
+    "roles/owner",
+    "roles/editor",
+)
 
 
 def _reach_pairs(bindings: Sequence[dict]) -> List[str]:
+    """role:member for every binding handed in.
+
+    The filtering happens in `Evidence.exam_reach`, which has the token needed
+    to expand a role into its permissions. This function only formats, so the
+    digest is a pure function of what the evidence source returned and the test
+    double can hand it a list without a cloud project.
+    """
     return sorted(
         f"{b.get('role')}:{member}"
         for b in bindings
@@ -334,13 +368,33 @@ def seal(bucket: str, version: str, seq: int, root: str, links: Sequence[Link],
     return uri
 
 
+GCS_OBJECT = "https://storage.googleapis.com/storage/v1/b/{bucket}/o/{name}?alt=media"
+
+
 def sealed_root(uri: str, impersonate: Optional[str] = None) -> Optional[dict]:
-    """Read a sealed certificate back. None when the object is not there."""
-    out = subprocess.run(["gcloud", "storage", "cat", uri] + _impersonation(impersonate),
-                         capture_output=True, text=True, env=bq.gcloud_env())
-    if out.returncode != 0:
+    """Read a sealed certificate back. None when the object is not there.
+
+    Over REST rather than `gcloud storage cat`, because the deployed Policy
+    Server reads certificates and a container has no gcloud. subprocess.run
+    raises FileNotFoundError there, which surfaced as a version stuck in the
+    unknown state with `No such file or directory: 'gcloud'` as its reason.
+    Writing a certificate still goes through gcloud; only the Notary seals, and
+    the Notary runs on a workstation.
+    """
+    if not uri.startswith("gs://"):
         return None
-    return json.loads(out.stdout)
+    bucket, _, name = uri[len("gs://"):].partition("/")
+    if not bucket or not name:
+        return None
+    url = GCS_OBJECT.format(bucket=urllib.parse.quote(bucket, safe=""),
+                            name=urllib.parse.quote(name, safe=""))
+    request = urllib.request.Request(
+        url, headers={"Authorization": "Bearer " + bq.access_token(impersonate)})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError:
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -403,6 +457,7 @@ class BigQueryEvidence(Evidence):
         self.project = project
         self.token = token
         self.examiner_token = examiner_token or token
+        self._access_cache: Dict[str, List[dict]] = {}
 
     def cited_events(self, dataset: str, start: str, end: str) -> Dict[str, str]:
         # TO_JSON_STRING renders the row in schema order, so the digest is stable
@@ -420,10 +475,76 @@ class BigQueryEvidence(Evidence):
         return {r["event_id"]: r["row_digest"] for r in rows}
 
     def access_list(self, dataset: str) -> List[dict]:
-        return bq.get_dataset(self.project, dataset, self.token).get("access", [])
+        """The dataset's access list, read once per verification.
+
+        Memoised because verification asks for it twice: once as the evidence
+        link's own check, and once to find which service accounts to look up
+        impersonation for. Two identical round trips inside a 5s budget is one
+        too many.
+        """
+        cached = self._access_cache.get(dataset)
+        if cached is None:
+            cached = bq.get_dataset(self.project, dataset, self.token).get("access", [])
+            self._access_cache[dataset] = cached
+        return cached
 
     def exam_reach(self) -> List[dict]:
-        return bq.project_iam_bindings(self.project, self.token)
+        """Project bindings whose role could read the sealed exam's rows.
+
+        Filtered here, not by name in chain.py, because deciding whether a role
+        reaches the exam means expanding it into its permissions and that needs
+        a token. A role that cannot be expanded is kept, so the failure
+        direction stays "assume it reaches".
+        """
+        # Two independent lookups, overlapped, because both run inside the
+        # verify SLO. Expanding roles serially cost more than the whole rest of
+        # verification; adding the impersonation lookup after it then pushed the
+        # p95 to 5.81s, past the 5s the README publishes.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+            impersonation = pool.submit(self._impersonation_reach)
+            bindings = bq.project_iam_bindings(self.project, self.token)
+            roles = sorted({b.get("role") or "" for b in bindings})
+            answers = dict(zip(roles, pool.map(
+                lambda r: bq.reads_table_data(r, self.token), roles)))
+            reaching = [b for b in bindings if answers.get(b.get("role") or "")]
+            return reaching + impersonation.result()
+
+    def _impersonation_reach(self) -> List[dict]:
+        """Who can act as the principals the exam's access list names.
+
+        A project binding is not the only way to reach a sealed table. Holding
+        roles/iam.serviceAccountTokenCreator on its sole reader mints a token as
+        that reader, and neither the dataset access list nor the project IAM
+        policy shows it. An adversarial pass found this by naming the exact
+        grant, and this project had a live instance of it.
+
+        Returned as ordinary-looking bindings whose role names the impersonated
+        account, so the digest covers them and a break says which account and
+        which principal.
+        """
+        readers = sorted({
+            entry.get("userByEmail") for entry in self.access_list(SEALED_DATASET)
+            if str(entry.get("userByEmail", "")).endswith(".iam.gserviceaccount.com")
+        })
+
+        def one(reader: str) -> List[dict]:
+            try:
+                policy = bq.service_account_iam(reader, self.token)
+            except Exception:
+                # Unreadable, so unknown, so recorded as unknown rather than as
+                # empty. An empty answer here reads as "nobody can impersonate
+                # the exam's reader", which is a claim this could not check.
+                return [{"role": f"impersonate/{reader}", "members": ["UNREADABLE"]}]
+            return [{"role": f"impersonate/{reader}",
+                     "members": sorted(binding.get("members", []))}
+                    for binding in policy
+                    if "TokenCreator" in binding.get("role", "")
+                    or binding.get("role") in IMPERSONATION_ROLES]
+
+        if not readers:
+            return []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            return [entry for group in pool.map(one, readers) for entry in group]
 
     def score(self, policy):
         from .examiner import score_bq

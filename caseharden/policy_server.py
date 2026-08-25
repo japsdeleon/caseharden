@@ -36,6 +36,26 @@ from .notary import UNKNOWN, verify
 CACHE_SECONDS = 60
 
 
+def identities(project: str):
+    """The two principals verification needs: the chain reader and the examiner.
+
+    On a workstation the operator impersonates each in turn. In a container
+    there is one identity and it is examiner-sa, because re-scoring the exam at
+    serve time requires the only principal allowed to read it. Handing the
+    Policy Server the power to impersonate examiner-sa instead would put a
+    second principal within reach of the exam without adding a row to
+    holdout_sealed's access list, which is exactly the hole that list exists to
+    make visible.
+    """
+    from . import creds
+
+    if creds.on_cloud_run():
+        attached = creds.attached_service_account()
+        return attached, attached
+    return (f"notary-sa@{project}.iam.gserviceaccount.com",
+            f"examiner-sa@{project}.iam.gserviceaccount.com")
+
+
 class Attestations:
     """Verify results, cached for 60s.
 
@@ -61,8 +81,7 @@ class Attestations:
         self._last_known: Dict[str, dict] = {}
 
     def _fresh(self, version: str) -> dict:
-        notary = f"notary-sa@{self.project}.iam.gserviceaccount.com"
-        examiner = f"examiner-sa@{self.project}.iam.gserviceaccount.com"
+        notary, examiner = identities(self.project)
         try:
             token = bq.access_token(notary)
             evidence = chain.BigQueryEvidence(self.project, token,
@@ -124,7 +143,7 @@ class Attestations:
         return dict(att, checked_s_ago=0.0, cached=False)
 
     def active_version(self) -> Optional[str]:
-        token = bq.access_token(f"notary-sa@{self.project}.iam.gserviceaccount.com")
+        token = bq.access_token(identities(self.project)[0])
         rows = [r for r in ChainStore(self.project, token).versions()
                 if r["active"] in ("true", True)]
         return rows[-1]["version"] if rows else None

@@ -21,3 +21,9 @@ out/
 
 # tooling output, not part of the entry
 graphify-out/
+
+# written by 28_deploy_fleet.sh; regenerated, not authored
+infra/fleet.env
+
+# the agents venv, pinned into agents/requirements.txt instead
+.venv-agents/

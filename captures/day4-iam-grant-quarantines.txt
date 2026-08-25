@@ -1,0 +1,23 @@
+Day 4, unplanned. Creating detector-sa for the fleet quarantined the attested
+policy version, and named the binding that did it. Nobody touched the chain and
+nobody touched the holdout. One IAM grant, for an unrelated reason, and v4 can
+no longer prove it was justified.
+
+$ bash infra/26_conduct_live.sh   # created detector-sa, granted roles/bigquery.jobUser
+$ python3 -m caseharden.notary verify --version v4
+
+caseharden verify conduct-policy@v4
+
+  [1] EVIDENCE         ----   restated by link 8
+  [2] FINDING          OK     scope-violation, 2 session(s)
+  [3] VERDICT          OK     confirmed abuse by analyst@caseharden.example
+  [4] DRAFT            OK     candidate v4, 3 rule(s)
+  [5] HOLDOUT-DENIED   OK     proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com refused bigquery.tables.getData on holdout_sealed
+  [6] EXAM             ----   re-scored under link 8
+  [7] APPROVAL         OK     GATE PASS approved by analyst@caseharden.example
+  [8] EVIDENCE-CHANGED BREAK  project-level roles granted since promotion: roles/bigquery.jobUser:serviceAccount:detector-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+
+  root ea62e7623db9cdaf981e9a7fe9d549b096fc78ee4b395a2477a85fb1a6cdf23c
+  QUARANTINED  break at link 8 HOLDOUT-ACCESS
+               project-level roles granted since promotion: roles/bigquery.jobUser:serviceAccount:detector-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+               enforcement unchanged, promotions FROZEN

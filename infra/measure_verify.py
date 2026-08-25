@@ -36,8 +36,14 @@ links = store.read(args.version)
 rows = [r for r in store.versions() if r["version"] == args.version]
 sealed = chain.sealed_root(rows[0]["certificate_uri"]) if rows else None
 
+# Every run starts from a cold role cache. bq caches role expansions for the
+# life of the process, which is right for a long-running Policy Server and wrong
+# for this measurement: leaving it warm would time run 1 honestly and runs 2..N
+# with the most expensive call already answered, then publish the average as if
+# it were what a `caseharden verify` on a workstation costs.
 samples = []
 for i in range(args.runs):
+    bq._ROLE_CACHE.clear()
     att = verify(args.version, links, evidence, sealed)
     if not att.attested:
         raise SystemExit(f"run {i}: {args.version} is {att.state}; measure a green version")
@@ -50,3 +56,5 @@ print(f"  p50 {p(0.50):.2f}s   p95 {p(0.95):.2f}s   max {samples[-1]:.2f}s   "
       f"mean {statistics.mean(samples):.2f}s")
 print(f"  token minting, paid once per process and not per verify: {mint:.1f}s "
       f"for two impersonated tokens")
+print("  every run measured from a cold IAM role cache, which is what a "
+      "one-shot CLI verify pays")

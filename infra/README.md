@@ -54,12 +54,48 @@ the access list and takes a 403 on the rows. Both are bound at project scope on 
 because a dataset-scoped grant would add a second entry to `holdout_sealed`'s access
 list, and that list having exactly one entry is the artifact a reviewer opens.
 
+Then Day 4, which deploys the fleet and proves it:
+
+```bash
+bash infra/26_conduct_live.sh              # conduct_live.turns and detector-sa
+bash infra/27_policy_server_identity.sh    # the reads the Policy Server needs
+export CASEHARDEN_MEMORY_ENGINE=$(python3 infra/31_memory_bank.py --id-only)
+bash infra/28_deploy_fleet.sh              # one image, seven Cloud Run services
+python3 infra/29_register_fleet.py         # publish the six agents into the registry
+python3 infra/100_prove_fleet.py           # seven assertions, exit non-zero on any
+```
+
+Deploy and register are separate steps because a service has no URL until it exists,
+and the registry publishes the agent card a running service actually serves rather than
+one written by hand. Re-run `29_register_fleet.py` after any promotion: each entry
+carries the chain root of the active version, so a new root makes the roster stale.
+
+`100_prove_fleet.py` asserts: the registry lists one detector per check family and every
+entry names the sealed root; the Foreman's source names no check family; all seven
+services refuse an unauthenticated request; the deployed workload blocks a tool call on
+a screened injection; the refusal claims a justified reason only when the version is
+attested; the conduct row carries the trace id, version, state and whether the reason
+was attested; all four detectors answer one fan-out with BigQuery job ids that exist and
+completed; and the fan-out lands a memory carrying the finding.
+
+The second of those reads local source rather than the deployment, and says so where it
+runs. The trace-id assertion pins the value rather than its length, which the
+constructor guarantees and which was therefore unfailable.
+
+One run can only exercise whichever attestation state the project is in, and it says
+which. The other direction is pinned offline by `tests/test_enforcement.py`.
+
 Two helpers it uses, also runnable alone:
 
 ```bash
 python3 infra/tamper.py --event-id e_88214   # one late conduct event, as workload-sa
 python3 infra/measure_verify.py --runs 20    # the verify p50/p95 the README publishes
+python3 infra/drive_agent.py --service caseharden-foreman --text "..."   # one A2A call
 ```
+
+`measure_verify.py` clears the IAM role cache before every run. Leaving it warm would
+time the first run honestly and every run after it with the most expensive call already
+answered, then publish the average as the cost of a one-shot `caseharden verify`.
 
 The suite itself is checked the same way:
 
@@ -69,7 +105,8 @@ python3 tests/mutate_check.py    # breaks each property, asserts the suite notic
 
 ## Re-running
 
-`00` through `50`, `70`, `80` and `90` are idempotent. Two are not, deliberately:
+`00` through `50`, `70`, `80`, `90`, `26` through `31` and `100` are idempotent. Two are
+not, deliberately:
 
 - `60_lock_retention.sh` locks the retention policy, which cannot be undone. It
   refuses to run without `CASEHARDEN_CONFIRM_LOCK=LOCK`, and re-running it against
@@ -97,3 +134,40 @@ by editing it.
 No script reads a credential file. No script prints an access token, or passes
 one in a command argument or a URL, both of which are visible in the local
 process table.
+
+## Day 4 and the reach check
+
+`26_conduct_live.sh` creates `detector-sa`. On the day it first ran, that one service
+account quarantined the attested policy version, because link 1 hashed every
+`roles/bigquery.*` binding in the project by name and `roles/bigquery.jobUser` matched.
+It grants no access to the sealed exam. `captures/day4-iam-grant-quarantines.txt` has
+the output.
+
+The check now expands each role through the IAM API and keeps only roles that carry
+`bigquery.tables.getData`. A role that cannot be expanded still counts as reaching, and
+the three basic roles are pinned as reaching regardless of what `roles.get` says about
+them, because it answers for `roles/owner` with a list that omits the permission.
+
+That expansion is why `notary-sa` and `examiner-sa` hold `roles/iam.roleViewer`, and why
+`verify` costs about 0.7s more than it did on Day 3.
+
+## Credentials
+
+Nothing in this repo acts on Application Default Credentials without checking the project
+first. `caseharden/creds.py` mints tokens from the gcloud configuration named by
+`CASEHARDEN_GCLOUD_CONFIG` (default `caseharden`) on a workstation, and from the metadata
+server inside a container, and refuses to hand back credentials whose project is not this
+project. The guard itself reads ADC, in order to refuse it. ADK and the genai SDK read
+ADC directly for model calls, which is correct in a container and is why the guard runs
+at import everywhere else.
+
+`CASEHARDEN_PROJECT` is the comparison target, so setting it changes what counts as
+correct. That is deliberate and every script here takes the same override; on a
+workstation a mismatch is still caught, because `credentials()` also compares against the
+pinned gcloud configuration's own project.
+
+This is not tidiness. The machine this was built on also holds an unrelated employer's
+ADC, and any library that calls `google.auth.default()` picks those up silently: the
+call succeeds, the identity is wrong, and nothing fails. Every agent module calls
+`creds.guard_ambient()` at import so a local run stops rather than proceeding under an
+unintended identity.

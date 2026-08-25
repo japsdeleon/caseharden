@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import List, Optional
 
@@ -76,6 +77,24 @@ def gcloud_env() -> dict:
 
 
 def access_token(impersonate: Optional[str] = None) -> str:
+    """A token, for this identity or for one it may impersonate.
+
+    Inside a container there is no gcloud and no impersonation: the attached
+    service account is the identity, full stop. A caller that asks for a
+    different one is told so rather than quietly handed the attached token,
+    because being handed the wrong identity is how a service ends up believing
+    it verified something it never had the access to verify.
+    """
+    from . import creds
+
+    if creds.on_cloud_run():
+        attached = creds.attached_service_account()
+        if impersonate and impersonate != attached:
+            raise RuntimeError(
+                f"this container runs as {attached}; it cannot act as "
+                f"{impersonate}. Deploy it under the identity it needs.")
+        return creds.access_token()
+
     cmd = ["gcloud", "auth", "print-access-token"]
     if impersonate:
         cmd.append(f"--impersonate-service-account={impersonate}")
@@ -145,6 +164,71 @@ def query(sql: str, project: str, token: str, location: str = "europe-west3",
     return [dict(zip(fields, [cell["v"] for cell in row["f"]])) for row in payload.get("rows", [])]
 
 
+def _decode(field: dict, cell: dict):
+    """One BigQuery REST cell, using its schema field.
+
+    The wire format nests: a repeated column arrives as a list of cells, a
+    record as an object with its own `f`. `query` above flattens everything to
+    strings, which is right for the scalar-only queries the Notary runs and
+    wrong for a detector that aggregates event ids into an array.
+    """
+    value = cell.get("v")
+    if field.get("mode") == "REPEATED":
+        inner = dict(field, mode="NULLABLE")
+        return [_decode(inner, item) for item in (value or [])]
+    if field.get("type") == "RECORD":
+        if value is None:
+            return None
+        sub = field.get("fields", [])
+        return {f["name"]: _decode(f, c) for f, c in zip(sub, value.get("f", []))}
+    return value
+
+
+def query_job(sql: str, project: str, token: str, location: str = "europe-west3",
+              params: Optional[dict] = None, timeout_ms: int = 120_000):
+    """Like `query`, but returns the job id alongside the rows, and decodes arrays.
+
+    The job id is the point. A detector's finding is only re-checkable if a
+    reviewer can re-run the exact job that produced it, so the id travels into
+    the chain's FINDING link rather than staying in a log line.
+    """
+    if not NAME_RE.match(project):
+        raise ValueError(f"not a usable project id: {project!r}")
+    request_body = {
+        "query": sql, "useLegacySql": False, "location": location,
+        "timeoutMs": timeout_ms,
+    }
+    if params:
+        request_body["parameterMode"] = "NAMED"
+        request_body["queryParameters"] = _parameters(params)
+    request = urllib.request.Request(
+        API.format(project=project),
+        data=json.dumps(request_body).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise BigQueryError(json.load(exc)) from None
+    if "error" in payload:
+        raise BigQueryError(payload)
+    if not payload.get("jobComplete", False):
+        raise IncompleteResult("BigQuery did not finish the query within timeoutMs")
+    if payload.get("pageToken"):
+        raise IncompleteResult("BigQuery returned a partial page; this client does not paginate")
+    fields = payload.get("schema", {}).get("fields", [])
+    rows = [
+        {f["name"]: _decode(f, c) for f, c in zip(fields, row.get("f", []))}
+        for row in payload.get("rows", [])
+    ]
+    reference = payload.get("jobReference") or {}
+    job_id = reference.get("jobId", "")
+    if reference.get("location") and job_id:
+        job_id = f"{reference['location']}:{job_id}"
+    return rows, job_id
+
+
 def get_dataset(project: str, dataset: str, token: str) -> dict:
     """Dataset metadata, including its access list.
 
@@ -188,6 +272,105 @@ def project_iam_bindings(project: str, token: str) -> List[dict]:
     )
     try:
         with urllib.request.urlopen(request) as response:
+            return json.load(response).get("bindings", [])
+    except urllib.error.HTTPError as exc:
+        raise BigQueryError(json.load(exc)) from None
+
+
+ROLE_API = "https://iam.googleapis.com/v1/{role}"
+# The permission that reads table rows. A role that does not carry it cannot read
+# the sealed exam, whatever else it can do.
+EXAM_READ_PERMISSION = "bigquery.tables.getData"
+
+
+def role_permissions(role: str, token: str) -> Optional[List[str]]:
+    """The permissions a role carries, or None when they cannot be read.
+
+    None is not an empty list. A caller that cannot expand a role has to treat
+    it as reaching, because assuming a role it could not read is harmless is how
+    a widening goes unnoticed.
+    """
+    if not re.match(r"^(roles/[A-Za-z0-9_.]+|projects/[a-z0-9-]+/roles/[A-Za-z0-9_.]+)$", role):
+        return None
+    request = urllib.request.Request(
+        ROLE_API.format(role=role),
+        headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return list(json.load(response).get("includedPermissions", []))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+        return None
+
+
+# owner, editor and viewer all read table data, and roles.get does not say so:
+# it answers for them with a permission list that omits it. Expanding them and
+# believing the answer produced `roles/owner reaches=False`, which is exactly
+# backwards and would have hidden the widest grant in the project.
+BASIC_ROLES = ("roles/owner", "roles/editor", "roles/viewer")
+
+
+# A PREDEFINED role's permissions are fixed by Google, so one process never
+# needs to expand the same one twice. Without this, verify made one serial API
+# round trip per distinct binding and went from 2.9s to 16.7s.
+#
+# A CUSTOM role is not fixed. Its permission set is editable at any time, so
+# caching it lets a widening stay invisible for the life of the process: grant a
+# harmless custom role to a principal, then add bigquery.tables.getData to that
+# role, and a long-running Policy Server keeps excluding the binding and keeps
+# serving `attested`. Custom roles are re-expanded every time.
+_ROLE_CACHE: dict = {}
+
+
+def _cacheable(role: str) -> bool:
+    """Predefined roles only. projects/*/roles/* and organizations/*/roles/* are not."""
+    return role.startswith("roles/")
+
+
+def reads_table_data(role: str, token: str, cache: Optional[dict] = None) -> bool:
+    """Whether this role could read table rows. Unknown counts as yes."""
+    if cache is not None and role in cache:
+        return cache[role]
+    if _cacheable(role) and role in _ROLE_CACHE:
+        answer = _ROLE_CACHE[role]
+        if cache is not None:
+            cache[role] = answer
+        return answer
+    if role in BASIC_ROLES:
+        answer = True
+    else:
+        permissions = role_permissions(role, token)
+        # Unexpandable, so unknown, so treated as reaching. A caller without
+        # iam.roles.get sees every custom role as a possible reader, which is
+        # noisy and safe, in that order.
+        answer = permissions is None or EXAM_READ_PERMISSION in permissions
+    if _cacheable(role):
+        _ROLE_CACHE[role] = answer
+    if cache is not None:
+        cache[role] = answer
+    return answer
+
+
+SA_IAM_API = ("https://iam.googleapis.com/v1/projects/-/serviceAccounts/"
+              "{email}:getIamPolicy")
+
+
+def service_account_iam(email: str, token: str) -> List[dict]:
+    """Who may act as this service account.
+
+    A second route to a sealed table that a dataset access list cannot show and
+    a project IAM binding does not describe: hold
+    roles/iam.serviceAccountTokenCreator on the one principal that may read the
+    exam and you can mint a token as it. The access list still says one reader,
+    truthfully, and it is no longer the whole answer.
+    """
+    if not re.match(r"^[a-z0-9-]{1,100}@[a-z0-9.-]{1,120}$", email):
+        raise ValueError(f"not a usable service account address: {email!r}")
+    request = urllib.request.Request(
+        SA_IAM_API.format(email=urllib.parse.quote(email, safe="")), data=b"{}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
             return json.load(response).get("bindings", [])
     except urllib.error.HTTPError as exc:
         raise BigQueryError(json.load(exc)) from None

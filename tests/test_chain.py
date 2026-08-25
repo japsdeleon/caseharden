@@ -772,17 +772,39 @@ def test_reattest_refuses_a_widened_project_level_grant():
     assert "Revoke the grant" in message
 
 
-def test_an_unrelated_project_role_does_not_quarantine():
+def test_an_unrelated_project_role_does_not_quarantine(monkeypatch):
     """Ordinary IAM churn must not withdraw a version's authority.
 
-    Only roles that could carry bigquery.tables.getData are hashed: every
-    predefined BigQuery role, and every custom role, whose permissions are not
-    knowable from its name.
+    Deciding that is `Evidence.exam_reach`'s job, not the digest's: only a
+    caller with a token can expand a role into its permissions. So this drives
+    the real filter with a stubbed expansion and asserts the unrelated role
+    never reaches the digest.
+
+    The first version of this check matched role NAMES, and granting
+    roles/bigquery.jobUser to a detector quarantined every chain in the project.
     """
-    links = make_chain()
-    unrelated = SEALED_REACH + [{"role": "roles/logging.viewer",
-                                 "members": ["user:someone@example.com"]}]
-    att = verify("v4", links, FakeEvidence(reach=unrelated), certificate(links))
+    from caseharden import bq as bq_mod
+
+    permissions = {
+        "roles/logging.viewer": ["logging.logEntries.list"],
+        "roles/bigquery.jobUser": ["bigquery.jobs.create"],
+        "roles/bigquery.dataViewer": ["bigquery.tables.getData"],
+    }
+    monkeypatch.setattr(bq_mod, "role_permissions",
+                        lambda role, token: permissions.get(role))
+
+    bindings = SEALED_REACH + [
+        {"role": "roles/logging.viewer", "members": ["user:someone@example.com"]},
+        {"role": "roles/bigquery.jobUser", "members": ["serviceAccount:d@p.iam.gserviceaccount.com"]},
+    ]
+    cache = {}
+    kept = [b for b in bindings
+            if bq_mod.reads_table_data(b["role"], "token", cache)]
+    assert "roles/logging.viewer" not in [b["role"] for b in kept]
+    assert "roles/bigquery.jobUser" not in [b["role"] for b in kept]
+
+    links = make_chain(reach=kept)
+    att = verify("v4", links, FakeEvidence(reach=kept), certificate(links))
     assert att.state == ATTESTED
 
 
@@ -793,6 +815,112 @@ def test_a_custom_role_is_hashed_because_its_permissions_are_not_in_its_name():
     att = verify("v4", links, FakeEvidence(reach=custom), certificate(links))
     assert (att.state, att.break_code) == (QUARANTINED, HOLDOUT_ACCESS)
     assert "looksHarmless" in att.break_detail
+
+
+def test_exam_reach_itself_filters_by_permission(monkeypatch):
+    """Drives BigQueryEvidence.exam_reach, not a re-implementation of it.
+
+    An audit found the neighbouring test stubbed the expansion and then repeated
+    exam_reach's own list comprehension in the test body, so inverting the real
+    filter left every test green.
+    """
+    from caseharden import bq as bq_mod
+    from caseharden.chain import BigQueryEvidence
+
+    permissions = {
+        "roles/bigquery.jobUser": ["bigquery.jobs.create"],
+        "roles/bigquery.dataViewer": ["bigquery.tables.getData"],
+        "roles/logging.viewer": ["logging.logEntries.list"],
+    }
+    monkeypatch.setattr(bq_mod, "_ROLE_CACHE", {})
+    monkeypatch.setattr(bq_mod, "role_permissions",
+                        lambda role, token: permissions.get(role))
+    monkeypatch.setattr(bq_mod, "project_iam_bindings", lambda project, token: [
+        {"role": "roles/bigquery.jobUser", "members": ["serviceAccount:d@p.iam.gserviceaccount.com"]},
+        {"role": "roles/logging.viewer", "members": ["user:someone@example.com"]},
+        {"role": "roles/bigquery.dataViewer", "members": ["serviceAccount:x@p.iam.gserviceaccount.com"]},
+        {"role": "roles/owner", "members": ["user:owner@example.com"]},
+    ])
+
+    evidence = BigQueryEvidence("p", "token")
+    evidence.access_list = lambda dataset: []
+    roles = [b["role"] for b in evidence.exam_reach()]
+    assert roles == ["roles/bigquery.dataViewer", "roles/owner"]
+
+
+def test_exam_reach_includes_who_can_impersonate_the_readers(monkeypatch):
+    """Drives the real exam_reach, so dropping the impersonation call is caught.
+
+    The neighbouring FakeEvidence test cannot catch that: it supplies a reach
+    list directly and never runs BigQueryEvidence.exam_reach at all. A mutation
+    that deleted the impersonation lookup survived the whole suite until this
+    existed.
+    """
+    from caseharden import bq as bq_mod
+    from caseharden.chain import BigQueryEvidence
+
+    monkeypatch.setattr(bq_mod, "_ROLE_CACHE", {})
+    monkeypatch.setattr(bq_mod, "role_permissions", lambda role, token: [])
+    monkeypatch.setattr(bq_mod, "project_iam_bindings", lambda project, token: [])
+    monkeypatch.setattr(bq_mod, "service_account_iam", lambda email, token: [
+        {"role": "roles/iam.serviceAccountTokenCreator",
+         "members": ["user:someone@example.com"]},
+        {"role": "roles/iam.serviceAccountKeyAdmin", "members": ["user:ignored@example.com"]},
+    ])
+
+    evidence = BigQueryEvidence("p", "token")
+    evidence.access_list = lambda dataset: [
+        {"role": "READER", "userByEmail": "examiner-sa@p.iam.gserviceaccount.com"}]
+    reach = evidence.exam_reach()
+    assert reach == [{"role": "impersonate/examiner-sa@p.iam.gserviceaccount.com",
+                      "members": ["user:someone@example.com"]}]
+
+
+def test_a_new_impersonator_of_the_exam_reader_quarantines():
+    """A second route to the exam that no access list can show.
+
+    Hold roles/iam.serviceAccountTokenCreator on the one principal that may read
+    the sealed holdout and you can mint a token as it. The dataset access list
+    still says one reader, truthfully, and it is no longer the whole answer. An
+    adversarial pass named this grant; this project had a live instance of it.
+    """
+    links = make_chain()
+    widened = SEALED_REACH + [
+        {"role": "impersonate/examiner-sa@p.iam.gserviceaccount.com",
+         "members": ["user:someone@example.com"]}]
+    att = verify("v4", links, FakeEvidence(reach=widened), certificate(links))
+    assert (att.state, att.break_code) == (QUARANTINED, HOLDOUT_ACCESS)
+    assert "impersonate/examiner-sa" in att.break_detail
+
+
+def test_an_unreadable_impersonation_policy_is_recorded_as_unknown():
+    """Not as empty. Empty reads as 'nobody can impersonate the exam's reader'."""
+    from caseharden import bq as bq_mod
+    from caseharden.chain import BigQueryEvidence
+
+    evidence = BigQueryEvidence("p", "token")
+    evidence.access_list = lambda dataset: [
+        {"role": "READER", "userByEmail": "examiner-sa@p.iam.gserviceaccount.com"}]
+    original = bq_mod.service_account_iam
+    try:
+        bq_mod.service_account_iam = lambda email, token: (_ for _ in ()).throw(
+            RuntimeError("403"))
+        out = evidence._impersonation_reach()
+    finally:
+        bq_mod.service_account_iam = original
+    assert out == [{"role": "impersonate/examiner-sa@p.iam.gserviceaccount.com",
+                    "members": ["UNREADABLE"]}]
+
+
+def test_only_service_account_readers_are_checked_for_impersonation():
+    """A human reader on the access list has no impersonation policy to read."""
+    from caseharden.chain import BigQueryEvidence
+
+    evidence = BigQueryEvidence("p", "token")
+    evidence.access_list = lambda dataset: [
+        {"role": "OWNER", "userByEmail": "someone@example.com"},
+        {"role": "READER", "specialGroup": "projectWriters"}]
+    assert evidence._impersonation_reach() == []
 
 
 def test_the_break_carries_the_offending_event_as_its_own_field():

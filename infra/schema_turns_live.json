@@ -1,0 +1,121 @@
+[
+  {
+    "name": "event_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Stable id. Hashed from session, turn and timestamp."
+  },
+  {
+    "name": "ts",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "Partition field. Bounds every re-derivation scan."
+  },
+  {
+    "name": "session_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "turn_index",
+    "type": "INTEGER",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "agent_id",
+    "type": "STRING",
+    "mode": "REQUIRED"
+  },
+  {
+    "name": "tenant_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "The tenant the session belongs to."
+  },
+  {
+    "name": "declared_scope",
+    "type": "STRING",
+    "mode": "REPEATED",
+    "description": "Tools the agent declared it may call this session."
+  },
+  {
+    "name": "tool_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Null on conversational turns."
+  },
+  {
+    "name": "target_tenant_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Tenant the tool call acted on. A mismatch with tenant_id is cross-tenant egress."
+  },
+  {
+    "name": "account_id",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "amount_cents",
+    "type": "INTEGER",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "turn_text",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Synthetic. No real customer text exists in this project."
+  },
+  {
+    "name": "ma_prompt_injection_score",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "Model Armor verdict field. A first-class predicate in the policy DSL."
+  },
+  {
+    "name": "ma_jailbreak_score",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "Model Armor verdict field. A first-class predicate in the policy DSL."
+  },
+  {
+    "name": "ma_verdict",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "trace_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Agent Observability trace. Stored inside the matching chain link."
+  },
+  {
+    "name": "policy_version",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "attestation_state",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "The version's attestation state at the moment of the decision. attested, quarantined or unknown."
+  },
+  {
+    "name": "decision",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "ALLOW or DENY, as the shared enforcement callback decided."
+  },
+  {
+    "name": "decision_rule",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "The rule id that denied, when one did."
+  },
+  {
+    "name": "decision_attested",
+    "type": "BOOLEAN",
+    "mode": "NULLABLE",
+    "description": "Whether the block could be justified from attested evidence at decision time. False means still enforcing, cannot currently be justified."
+  }
+]

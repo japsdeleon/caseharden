@@ -58,6 +58,62 @@ CASES = [
   "re-attestation launders an edited record"),
  ("notary.py", '''    if before.break_code == HOLDOUT_ACCESS and "granted since promotion" in before.break_detail:''',
   '''    if False:''', "re-attestation blesses a widened exam access list"),
+
+ # Day 4. Paths containing a slash are relative to the repo root; the rest are
+ # under caseharden/.
+ ("agents/common/enforcement.py", '        out["state"] = state.lower()', '        out["state"] = state',
+  "the served state is compared case-sensitively, so every block reads unattested"),
+ ("agents/common/enforcement.py", "            reason_attested=bool(rule) and attested,",
+  "            reason_attested=attested,", "an allow claims an attestation"),
+ ("agents/common/enforcement.py", '        attested = bool(answer.get("attested")) and state == ATTESTED',
+  '        attested = bool(answer.get("attested"))',
+  "the served attested flag is believed without its state"),
+ ("agents/common/enforcement.py", '            stale["attested"] = False', '            stale["attested"] = True',
+  "a stale policy answer still claims to be attested"),
+ ("agents/common/enforcement.py", "        if raw_policy is None:", "        if False:",
+  "a call proceeds with no policy at all"),
+ ("agents/common/conduct.py", "    return {k: v for k, v in row.items() if k in COLUMNS}",
+  "    return dict(row)", "any key is written to the conduct table"),
+ ("bq.py", "    if role in BASIC_ROLES:\n        answer = True",
+  "    if role in BASIC_ROLES:\n        answer = False",
+  "roles/owner is not counted as reaching the sealed exam"),
+ ("bq.py", "        answer = permissions is None or EXAM_READ_PERMISSION in permissions",
+  "        answer = permissions is not None and EXAM_READ_PERMISSION in permissions",
+  "a role that cannot be expanded is assumed harmless"),
+
+ # From the Day 4 adversarial pass.
+ ("agents/common/enforcement.py",
+  """        if armor.get("ma_verdict") in UNSCREENED and needs_screening(policy):""",
+  "        if False:",
+  "losing Model Armor becomes a bypass for the rule it feeds"),
+ ("agents/common/enforcement.py",
+  """            if getattr(predicate, "field", None) in SCREENING_FIELDS:\n                return True""",
+  """            if False:\n                return True""",
+  "no policy is considered to depend on screening"),
+ ("chain.py", """            return reaching + impersonation.result()""", "            return reaching",
+  "impersonating the exam reader is not counted as reach"),
+ ("chain.py",
+  """                return [{"role": f"impersonate/{reader}", "members": ["UNREADABLE"]}]""",
+  "                return []",
+  "an unreadable impersonation policy reads as nobody"),
+ ("agents/detector/families.py", "    if not TABLE_RE.match(table):", "    if False:",
+  "a table identifier can close the quote and append a statement"),
+
+ # From the Day 4 in-house validation pass.
+ ("agents/common/enforcement.py",
+  """        if not text:
+            # A turn with no text cannot be screened, which is not the same as a""",
+  """        if False:
+            # A turn with no text cannot be screened, which is not the same as a""",
+  "an unscreened empty turn passes as a clean one"),
+ ("agents/common/enforcement.py", '        if answer.get("expired"):', "        if False:",
+  "the staleness bound is recorded and never acted on"),
+ ("bq.py", "    if _cacheable(role) and role in _ROLE_CACHE:", "    if role in _ROLE_CACHE:",
+  "a mutable custom role is cached for the life of the process"),
+ ("chain.py",
+  """        reaching = [b for b in bindings if answers.get(b.get("role") or "")]""",
+  "        reaching = list(bindings)",
+  "exam_reach keeps every binding regardless of permission"),
 ]
 
 def suite():
@@ -67,7 +123,7 @@ def suite():
 
 survived = []
 for f, old, new, name in CASES:
-    p = pathlib.Path("caseharden") / f
+    p = pathlib.Path(f) if "/" in f else pathlib.Path("caseharden") / f
     s = p.read_text()
     if old not in s:
         print(f"  !! {name}: target text not found in {f}")

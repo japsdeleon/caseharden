@@ -697,3 +697,400 @@ did not run `infra/90_prove_attestation.sh`, which writes to the live project. T
 script was re-run here after every fix and its capture regenerated. Both engines were
 reading a worktree I was editing at the same time; the validator said so and re-verified
 against a fixed snapshot, and every finding below was re-checked against the final tree.
+
+---
+
+## 2026-08-28 — Day 4
+
+**Exit criterion: the fleet is a roster, and enforcement carries its own warrant.**
+Seven assertions in `infra/100_prove_fleet.py`, all against the deployed project.
+Exit 0, captured in `captures/day4-fleet-proof.txt`.
+
+### Shipped
+
+Seven Cloud Run services from one image. Four of them are the same detector with a
+different check family; the other three are the workload agent, the Foreman and the
+Policy Server. `CASEHARDEN_AGENT` picks which program the container runs and
+`CASEHARDEN_CHECK_FAMILY` picks which check. There is no per-family source file,
+because there is no per-family behaviour: a check is a SQL predicate and a
+description, both in `agents/detector/families.py`.
+
+`agents/common/enforcement.py` is the shared callback every tool call routes through.
+Three steps in a fixed order. Model Armor screens the turn first, because its verdict
+fields are first-class predicates in the policy DSL and the policy cannot be evaluated
+before they exist. Then the active policy is fetched from the Policy Server and
+evaluated. Then the event is written with the trace id, the policy version, and the
+attestation state that was in force when the decision was made.
+
+The part that matters is what a block claims. A block under a quarantined version
+still blocks; availability is not what attestation gates. What lapses is the claim.
+The decision is recorded with `decision_attested = false` and the refusal the customer
+sees says so in words: *"still enforcing, cannot currently be justified from
+evidence"*. An allow never carries an attestation, because an allow asserts nothing.
+
+`agents/foreman/agent.py` names no detector. It calls `list_agents()`, filters on the
+role in each card's `caseharden` extension, and binds every result as a
+`RemoteA2aAgent`. The fleet proof greps the file for all four check families and fails
+if any appears. Deploying a fifth detector adds a fifth span to the fan-out with no
+edit here.
+
+Each registry entry carries the chain root of the policy version it was registered
+against, in `capabilities.extensions` under `https://caseharden.dev/ext/attestation/v1`.
+That is the Day 3 deferred item: the roster now states what each worker's authority
+rests on, not just where it lives. A top-level key was rejected — Agent Registry
+validates the card against the A2A v1.0 proto and answers `unknown field "caseharden"`
+— and the extension slot is where the spec puts exactly this.
+
+The `FINDING` link now carries the BigQuery job id that produced it and the trace ids
+of the conduct rows it cites. Day 3 left a `note` field promising both. A finding is
+only re-checkable if a reviewer can re-run the exact job, so `verify` prints the job id
+on the FINDING line and the fleet proof looks each one up in BigQuery and asserts it
+completed.
+
+Memory Bank is wired to an Agent Engine in europe-west3. The Foreman files each
+completed investigation back as precedent and reads it with `load_memory` on the next
+one. Nothing is seeded: what the fleet remembers is what the fleet has actually
+reviewed, so the honest answer on the first run is that it found nothing, and that is
+what it says.
+
+Live conduct goes to a new `conduct_live.turns`, not to `conduct_train.turns`. Adding
+this table's four decision columns to the cited window would have quarantined every
+chain in the project at once, because link 1 hashes each cited row as
+`SHA256(TO_JSON_STRING(t))` and `TO_JSON_STRING` emits a key for every column
+including the null ones. Verified in this project rather than assumed:
+
+```sql
+SELECT TO_JSON_STRING(t) FROM (SELECT 1 AS a, CAST(NULL AS STRING) AS b) t
+-- {"a":1,"b":null}
+```
+
+The two answer-key columns are absent from the live table by design. Live traffic has
+no ground truth, so a column for it could only ever be filled in by guessing.
+
+### Measured
+
+| | |
+|---|---|
+| Registry entries with role and chain root | 6 (4 detectors, 1 workload, 1 orchestrator) |
+| Detectors answering one fan-out, in parallel over A2A | 4 of 4, each with a re-runnable BigQuery job id |
+| Model Armor on the injected ticket | `MATCH_FOUND`, `pi_and_jailbreak` at `HIGH` → 0.95 |
+| Deployed workload's decision on that turn | `DENY`, rule `tool-call-on-injected-turn` |
+| Services refusing an unauthenticated request | 7 of 7, HTTP 403 |
+| Memories filed by the fan-out | 2, each carrying the finding text |
+| Tests | 143 passing in 2.5s |
+| Mutations | 38 broken, 38 caught, 0 survived |
+| `verify` p95, cold IAM role cache | 3.58s (p50 3.21s, 12 runs) against a 5s target |
+
+The p95 moved from Day 3's 2.91s and the reason is in this day's work, not in
+measurement noise: the reach check now expands each role through the IAM API instead of
+matching its name, and also reads who may impersonate the exam's readers. Adding the
+second of those pushed the p95 to **5.81s, past the published SLO**. It is back under
+because both lookups now overlap and the dataset access list is read once per
+verification instead of twice. The 5.81s is recorded here rather than replaced.
+
+### The reach check was asking the wrong question
+
+Creating `detector-sa` for the fleet quarantined the attested policy version. Not a
+tamper, not an attack: one `roles/bigquery.jobUser` grant, for an unrelated reason, and
+v4 could no longer prove it was justified. Captured verbatim in
+`captures/day4-iam-grant-quarantines.txt`.
+
+Then `reattest` refused to clear it, correctly, and said why: re-attesting would record
+the widened access list as the justified state, which is the guarantee that link
+exists to protect.
+
+Both behaviours are right in isolation and together they made the system unusable. A
+check that fires on grants which cannot read the exam, and a remedy that refuses to
+clear them, means any project where IAM ever changes freezes permanently.
+
+The bug was that the check matched role *names* — `^roles/bigquery\.` — when the
+question is whether a role carries `bigquery.tables.getData`. It now expands each role
+through the IAM API and keeps only those that do. A role that cannot be expanded still
+counts as reaching, so the failure direction is unchanged. Reaching bindings in this
+project went from 13 to 3.
+
+Two bugs surfaced inside that fix. `roles.get` answers for `roles/owner` with a
+permission list that omits `bigquery.tables.getData`, so expanding it and believing the
+answer produced `roles/owner reaches=False`, which is exactly backwards and would have
+hidden the widest grant in the project; the three basic roles are now pinned rather
+than expanded. And the first parallel version cached expansions for the life of the
+process, which is right for the Policy Server and wrong for the measurement harness:
+it timed run 1 honestly and runs 2..N with the expensive call already answered.
+`measure_verify.py` now clears the cache before every run, which is what a one-shot CLI
+verify actually pays.
+
+### The distinction was silently always false
+
+The fleet proof caught this before the capture was written. The Policy Server reports
+`"ATTESTED"`; the enforcement module's constant is `"attested"`. Comparing them
+directly made `reason_attested` false for every block ever taken, including blocks
+under a perfectly good version, and the refusal read:
+
+```
+tool-call-on-injected-turn denied by conduct policy v4
+(reason UNATTESTED: policy state ATTESTED — still enforcing,
+ cannot currently be justified from evidence)
+```
+
+A distinction that is always false is not a distinction, and it is the one this entry
+is about. The state is now lower-cased once at the boundary, and
+`tests/test_enforcement.py` drives both directions.
+
+### The build machine's credentials were the wrong ones
+
+Application Default Credentials on this machine belong to an unrelated employer, and
+name one of that employer's projects as the quota project. Four early Vertex probes
+went out under that identity, against this hackathon project. No employer data was read
+and no request touched an employer resource, but the quota project named on those calls
+was wrong, and that project is excluded from this work entirely. The employer's project
+id is deliberately not recorded here: this repo is public.
+
+`caseharden/creds.py` now exists so nothing in this repo can reach for ADC by accident.
+It mints tokens from one pinned gcloud configuration on a workstation and from the
+metadata server in a container, and refuses to return credentials whose project is not
+this one. Every agent module calls `creds.guard_ambient()` at import, which raises
+before an agent starts if ADC resolves to a forbidden project. Checked, and it refuses
+by name.
+
+That same absence of gcloud in a container also surfaced a real fault: the Policy
+Server read sealed certificates through `gcloud storage cat`, which raised
+`FileNotFoundError` on Cloud Run and left every version reporting `unknown` with
+`No such file or directory: 'gcloud'` as its reason. `chain.sealed_root` now reads over
+REST. Sealing still goes through gcloud; only the Notary seals, and the Notary runs on
+a workstation.
+
+### Decisions
+
+**The Policy Server runs as `examiner-sa`.** Re-deriving at serve time means re-scoring
+against the sealed holdout, and exactly one principal may read it. The alternative was
+to grant `notary-sa` impersonation on `examiner-sa`, which would put a second principal
+within reach of the exam without adding a row to `holdout_sealed`'s access list. That
+is the same class of hole the Day 3 adversarial pass found with project-level IAM. The
+access list still has exactly one entry. `infra/27_policy_server_identity.sh` grants
+only reads and asserts that the identity is refused a delete on the chain.
+
+**Every service is private.** A public endpoint in front of a model is an unmetered way
+to spend a fixed credit. Callers sign each hop with an identity token minted for the
+exact service they are addressing, and the fleet proof asserts all seven refuse an
+unauthenticated request. On a workstation that token comes from impersonating
+`foreman-sa`, because a user account cannot mint one for a custom audience at all.
+
+**The Foreman is on Cloud Run, not Agent Runtime, and Agent Gateway is dropped.** The
+plan pre-approved both under the hour-5 cutoff, and nothing in the demo script names a
+host. All seven services are Cloud Run.
+
+An Agent Engine is deployed and it backs Memory Bank, but no agent runs on it, so
+section 3's claim that Agent Runtime "hosts Foreman and Proposer as native A2A agents"
+and that the registry pattern is proven "across both hosts" is **not true today** and is
+recorded here as a deviation rather than left to be discovered. Either Day 5 moves one
+agent onto Agent Runtime or section 3 and the Devpost text lose the second host. That is
+a call for the entrant.
+
+### Limitations, and what is not claimed
+
+The Foreman binds its roster when the container starts. A detector registered while an
+instance is warm joins the fan-out on the next cold start, not immediately.
+
+The Model Armor band-to-score mapping is a judgement, stated in one table in
+`agents/common/armor.py`. Model Armor answers with `LOW_AND_ABOVE`,
+`MEDIUM_AND_ABOVE` or `HIGH`, not a number, and the DSL's field is numeric because a
+band cannot be compared with `at_least`. `HIGH` is the only band that crosses the 0.75
+threshold the shipped policies use.
+
+Model Armor also reports prompt injection and jailbreak under one filter and one band.
+Both DSL fields carry that band rather than pretending to be two independent
+measurements.
+
+`100_prove_fleet.py` can only exercise whichever attestation state the project is
+actually in, so one run proves one branch. It says which one it exercised. The other is
+pinned offline by `tests/test_enforcement.py`.
+
+The support agent's two tools are mock. Nothing refunds and nothing is looked up. What
+is not mock is the callback in front of them. The detectors have one tool each,
+`scan_conduct`, and it is not mock: it runs real SQL and returns the job id.
+
+**The trace ids are derived, not resolvable.** `trace_id_for` hashes the session and
+turn, which gives a stable key that the conduct row, the chain link and a finding all
+agree on. It is not a handle Cloud Trace can open, because spans are not exported: the
+project's trace list is empty and every id 404s. Section 3 says a link "opens the real
+execution DAG" and beat 0:56 puts a trace DAG on screen. Neither is supported today.
+Exporting spans is a Day 5 item. `current_trace_id()` already prefers a real span id
+when one exists, and `derived_trace_id()` tells them apart.
+
+**Registration is operator-run, not automatic.** Sections 3 and 9 say services
+"auto-register". What exists is `infra/29_register_fleet.py`, run by hand after a deploy
+and again after any promotion, because each entry carries the active version's chain
+root and a new root makes the roster stale. The fleet proof asserts the roots agree, so
+a stale roster fails loudly rather than passing quietly, but nothing re-registers on its
+own.
+
+**No detector's finding reaches the chain yet.** The `FINDING` link is written by
+`notary seed`, which runs its own SQL against `conduct_train`. The four detectors scan
+`conduct_live`. Both work; they do not meet. Beat 0:56 needs the detector's finding to
+be link 2, so joining them is Day 5 work and is listed as such below.
+
+### Carried into Day 5
+
+- Join the fleet to the chain: a `FINDING` link written from a detector's answer, over
+  `conduct_live`, carrying that detector's job id. Today the link is written by
+  `notary seed` over `conduct_train` and the two never meet.
+- Export spans to Cloud Trace, or drop the trace-DAG beat and the section 3 sentence.
+- Decide the Agent Runtime question: move one agent onto it, or remove the second host
+  from section 3 and the Devpost text.
+- The Proposer, Model Armor on verdict in and rationale out, the Analyst Copilot, and
+  the real end-to-end run, all as planned.
+
+### For THREATS.md on Day 6
+
+Everything Day 3 listed, plus:
+
+- The fleet's A2A endpoints are private by Cloud Run IAM rather than by anything this
+  project built.
+- `conduct_live` is written by `workload-sa`, which holds WRITER and therefore DML
+  delete on it.
+- The reach check depends on `iam.roles.get` and `iam.serviceAccounts.getIamPolicy`. A
+  principal that cannot expand a role sees every custom role as a possible reader:
+  noisy and safe, in that order.
+- The reach check reads the **project** IAM policy only. A role inherited from a folder
+  or an organisation would not appear. Checked rather than argued: this project has no
+  parent, so there is nothing here to inherit, and the hole is real for any project that
+  has one.
+- `CASEHARDEN_PROJECT` is the comparison target rather than a fixed allowlist. On a
+  workstation a mismatch is still caught against the pinned gcloud configuration; an
+  operator who changes both is not making a mistake.
+- Custom roles are re-expanded on every verification and predefined roles are cached for
+  the life of the process. A predefined role's permissions changing under Google would
+  not be seen until restart.
+- A trace id in a chain link is a correlation key, not a Cloud Trace handle, until spans
+  are exported.
+
+### Adversarial pass
+
+Both engines ran. Codex is a genuinely different model; the in-house validator is the
+same model as the author and is a checklist pass, not independent evidence. Five
+findings from Codex, all with a reproduction attached, all re-checked here before
+acting.
+
+**A Model Armor failure was a bypass for the rule Model Armor feeds.** With screening
+down, `decide()` evaluated the injection rule against a missing score, the rule did not
+match, and the tool call went through. Worse, the test suite asserted that outcome was
+correct, on the grounds that no other rule denied the call. It codified a fail-open.
+
+The callback now asks the active policy whether any of its rules key on a Model Armor
+field. If one does and screening failed, the call is refused with
+`SCREENING-UNAVAILABLE` and `decision_attested = false`, because the record cannot show
+a screening that did not happen. A policy with no screening predicate is unaffected.
+
+**Impersonating the exam's reader was not counted as reaching the exam.** Holding
+`roles/iam.serviceAccountTokenCreator` on `examiner-sa` mints a token as the one
+principal allowed to read the sealed holdout. The dataset access list still says one
+reader, truthfully, and the project IAM policy does not describe it. This project had a
+live instance: the operator holds exactly that grant.
+
+Link 1 now also hashes, for every service account on the exam's access list, who may act
+as it. A new impersonator quarantines the version and the break names the account and
+the principal. An unreadable impersonation policy is recorded as `UNREADABLE` rather
+than as nobody, because an empty answer there asserts something this cannot check.
+
+**`scan_sql` claimed a validation it did not perform.** Its docstring said the table
+identifier had been validated by the caller. It had, by the only caller that exists, but
+the function accepted a backtick that closes the identifier and appends a statement.
+It validates its own input now. The deployed detector path was never reachable this way;
+this was a latent defect, not a live one.
+
+**Inherited folder and organisation grants are not read.** `exam_reach` reads the
+project IAM policy only, so a role inherited from a parent would not appear. Checked
+against this project rather than argued about: `gcloud projects describe` returns no
+parent, so there is nothing here to inherit. The limitation is real for any project that
+has one, and belongs in THREATS.md.
+
+**`CASEHARDEN_PROJECT` is the comparison target, not a fixed allowlist.** Setting it
+redirects what `creds.py` considers correct. That is by design — every script in `infra/`
+takes the same override — and on a workstation it is still caught, because
+`credentials()` also compares against the pinned gcloud configuration's own project and
+refuses a mismatch. Documented rather than removed. The residual case needs an operator
+to change both the environment and their gcloud configuration, which is not an accident.
+
+**The fourth check family was not the one the specification names.** Sections 1, 3, 5 and
+8 all say `privilege-sequencing`, read-then-write privilege sequencing. What shipped
+first was `refund-velocity`, three or more refunds in a session, chosen because it
+demonstrated the same "no per-event predicate can express this" property. That is a
+substitution, it changes what is detected, and it was not flagged. The spec's check is
+now what runs: a session that called a write tool against an account no read in that
+session ever touched. A write with no account at all does not count, because absent is
+not "some other account". The Cloud Run service was renamed and the old one deleted and
+deregistered.
+
+**A second in-house pass ran and found more.** It also had the working tree change under
+it twice mid-audit, which it said so plainly, and its findings were re-checked against
+the tree afterwards. Everything above and the following came from it.
+
+The screening fix above was incomplete. `screen()` returned `{}` for a turn with no
+text, which is the shape a never-screened turn produces, so the new
+`SCREENING_FAILED` guard never fired for it and the injection rule still could not match
+a missing field. The audit drove a refund through with an empty `turn_text`. An
+unscreened turn is now labelled `NOT_SCREENED`, both labels refuse, and three tests
+drive the empty-string, missing-key and armor-down paths.
+
+Four rows in `conduct_live.turns` from 11:30-11:32Z carry `ma_verdict =
+SCREENING_FAILED` with `decision = ALLOW`, two of them `issue_refund`. That is the wider
+version of this fail-open executing before it was found. The rows stay; deleting
+evidence of a fault to make a log read better is the opposite of the point.
+
+`_ROLE_CACHE` had no expiry, and the comment defending it claimed role permissions are
+immutable. True of predefined roles, false of custom ones, whose permission set is
+editable at any time. A long-running Policy Server would have kept excluding a custom
+role that had since gained `bigquery.tables.getData`. Custom roles are no longer cached.
+
+`stale["expired"]` was set and never read, so `STALE_SECONDS` bounded nothing and an
+agent cut off from the Policy Server would enforce its last policy for ever. Since
+promotions only narrow, an indefinitely old policy is a permissive one. Past the bound
+the call is now refused with `POLICY-EXPIRED`.
+
+Memory Bank's write path was not working. `add_session_to_memory` accepted every call,
+raised nothing, and left the bank empty after six investigations, which is
+indistinguishable from having nothing to write. The Foreman now writes the finding
+directly through `memories.create`. Assertion 8 of the fleet proof reads the bank back
+and fails if it is empty or if the stored text does not carry a finding.
+
+`test_an_unrelated_project_role_does_not_quarantine` claimed to drive the real filter
+and instead re-implemented `exam_reach`'s list comprehension in its own body, so
+inverting the real one left the suite green. `BigQueryEvidence.exam_reach` now has two
+tests of its own and two mutation cases.
+
+The fleet proof asserted `len(trace_id) == 32`, which its own constructor guarantees.
+That assertion could not fail. It now pins the value.
+
+The two IAM grants that role expansion depends on, `roles/iam.roleViewer` and
+`roles/iam.serviceAccountViewer`, were made by hand and no script contained them.
+Without them every role expands to unknown, therefore to reaching, and the reach digest
+differs from the one the certificates were sealed on. They are in
+`27_policy_server_identity.sh` now.
+
+Held, with what was tried named: a chain with no sealed certificate still refuses to
+attest; the Policy Server cache race did not reproduce beyond its stated window; and
+`bq.query`'s parameter encoding, incomplete-query refusal, partial-page refusal and
+insert-error handling all held. No secret, key, token or employer identifier was found
+in the Day 4 files.
+
+Two employer project identifiers had reached the working tree before that scan, one in
+`creds.py` as a hard-coded denylist and one in this log. Both are gone. The guard needs
+no foreign project ids: it refuses everything that is not this project, and the denylist
+is now read from the environment.
+
+### Open, and not mine to decide
+
+Carried unchanged from Day 2: the 2:10 spoken line "The examiner is two hundred lines
+of code", and whether that beat's on-screen numbers are labelled as the injected-turn
+family row.
+
+New: beat 0:38 says the registry listing returns **eight** entries. The listing today
+returns eight, but not those eight: six of ours, one `Workspace Agent` that Google
+created in the project, and one `caseharden-memory` that Vertex registered by itself
+when the Agent Engine was created. Day 5 adds the Proposer and the Analyst Copilot,
+which makes **ten rows on screen**, eight of them ours. Either the spoken line becomes
+"eight of ours" or the caption names the two that are not.
+
+Also new, and larger: section 3 claims Agent Runtime hosts two agents and that the
+registry pattern is proven across both hosts. Nothing runs on Agent Runtime. See the
+decision above.

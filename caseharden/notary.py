@@ -454,7 +454,10 @@ def _describe_approval(payload: dict, links: Sequence[Link]) -> Optional[str]:
 def _recorded_detail(link: Link) -> str:
     p = link.payload
     if link.kind == "FINDING":
-        return f"{p.get('family')}, {len(p.get('sessions', []))} session(s)"
+        total = p.get("sessions_total", len(p.get("sessions", [])))
+        job = p.get("job_id") or ""
+        return (f"{p.get('family')}, {total} session(s)"
+                + (f", job {job.split(':')[-1][:20]}" if job else ""))
     if link.kind == "VERDICT":
         return f"{p.get('disposition')} by {p.get('analyst')}"
     if link.kind == "DRAFT":
@@ -803,14 +806,20 @@ def cmd_seed(args) -> int:
                                          events, "holdout_sealed", access,
                                          evidence.exam_reach())
 
-    sessions = _finding_sessions(args.project, notary_token, args.dataset,
-                                 args.window_start, args.window_end)
+    found = _finding_evidence(args.project, notary_token, args.dataset,
+                              args.window_start, args.window_end)
     finding = {
         "family": "scope-violation",
         "detector": "scope-violation@v1",
         "sql": _FINDING_SQL,
-        "sessions": sessions,
-        "note": "SQL job id and trace id are written by the detector agents on Day 4",
+        "sessions": found["sessions"],
+        # A finding is only re-checkable if a reviewer can re-run the job that
+        # produced it and follow the request that triggered it. The job id is
+        # BigQuery's; the trace ids come from the conduct rows themselves, which
+        # is where the enforcement callback writes them.
+        "job_id": found["job_id"],
+        "trace_ids": found["trace_ids"],
+        "table": found["table"],
     }
     verdict_link = {
         "analyst": args.approver,
@@ -858,19 +867,39 @@ def cmd_seed(args) -> int:
 
 
 _FINDING_SQL = (
-    "SELECT session_id, COUNT(*) AS calls FROM {table} "
+    "SELECT session_id, COUNT(*) AS calls, "
+    "ARRAY_AGG(DISTINCT trace_id IGNORE NULLS LIMIT 5) AS trace_ids FROM {table} "
     "WHERE ts >= TIMESTAMP(@start) AND ts < TIMESTAMP(@end) "
     "AND tool_name IS NOT NULL AND tool_name NOT IN UNNEST(declared_scope) "
     "GROUP BY session_id ORDER BY session_id"
 )
 
+# A chain link holds a bounded payload. A finding over a wide window can name
+# thousands of sessions, and a link that grows without limit is a link nobody
+# reads. Both lists are capped and the payload says so.
+FINDING_CAP = 200
 
-def _finding_sessions(project: str, token: str, dataset: str, start: str,
-                      end: str) -> List[str]:
+
+def _finding_evidence(project: str, token: str, dataset: str, start: str,
+                      end: str) -> dict:
+    """The finding's sessions, its trace ids, and the job that produced them.
+
+    Run through query_job rather than query, because the job id is the point: a
+    reviewer re-runs that exact job instead of taking the link's word for the
+    session list.
+    """
     table = f"`{bq.qualified_table(project, dataset)}`"
-    rows = bq.query(_FINDING_SQL.format(table=table), project, token,
-                    params={"start": start, "end": end})
-    return [r["session_id"] for r in rows]
+    rows, job_id = bq.query_job(_FINDING_SQL.format(table=table), project, token,
+                                params={"start": start, "end": end})
+    sessions = [r["session_id"] for r in rows]
+    traces = sorted({t for r in rows for t in (r.get("trace_ids") or []) if t})
+    return {
+        "sessions": sessions[:FINDING_CAP],
+        "sessions_total": len(sessions),
+        "trace_ids": traces[:FINDING_CAP],
+        "job_id": job_id,
+        "table": table.strip("`"),
+    }
 
 
 def _live_403(project: str, candidate: str, current: str) -> dict:

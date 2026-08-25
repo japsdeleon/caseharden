@@ -192,3 +192,114 @@ def test_the_token_never_reaches_a_url_or_a_command_argument():
 def test_gcloud_is_pinned_to_this_projects_configuration():
     """The machine that builds this has other gcloud configurations on it."""
     assert bq.gcloud_env()["CLOUDSDK_ACTIVE_CONFIG_NAME"] == bq.GCLOUD_CONFIG
+
+
+# --------------------------------------------------------------------------
+# Which roles can reach the sealed exam
+# --------------------------------------------------------------------------
+
+def test_a_role_without_the_read_permission_does_not_reach(monkeypatch):
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: ["bigquery.jobs.create"])
+    assert bq.reads_table_data("roles/bigquery.jobUser", "token") is False
+
+
+def test_a_role_with_the_read_permission_reaches(monkeypatch):
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: ["bigquery.tables.getData"])
+    assert bq.reads_table_data("roles/bigquery.dataViewer", "token") is True
+
+
+def test_a_role_that_cannot_be_expanded_counts_as_reaching(monkeypatch):
+    """Unknown is not innocent. A custom role's permissions are not in its name."""
+    monkeypatch.setattr(bq, "role_permissions", lambda role, token: None)
+    assert bq.reads_table_data("projects/p/roles/looksHarmless", "token") is True
+
+
+def test_the_basic_roles_always_reach(monkeypatch):
+    """roles.get answers for owner without listing bigquery.tables.getData.
+
+    Believing that answer produced `roles/owner reaches=False`, which is exactly
+    backwards: owner reads every table in the project. The three basic roles are
+    pinned rather than expanded.
+    """
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: ["resourcemanager.projects.get"])
+    for role in ("roles/owner", "roles/editor", "roles/viewer"):
+        assert bq.reads_table_data(role, "token") is True, role
+
+
+def test_the_expansion_is_cached_per_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: calls.append(role) or [])
+    monkeypatch.setattr(bq, "_ROLE_CACHE", {})
+    cache = {}
+    for _ in range(4):
+        bq.reads_table_data("roles/bigquery.jobUser", "token", cache)
+    assert calls == ["roles/bigquery.jobUser"]
+
+
+def test_the_expansion_is_cached_across_calls(monkeypatch):
+    """A second caller with its own cache still does not re-expand.
+
+    This is what takes verify from 16.7s back under its SLO, so it is pinned.
+    """
+    calls = []
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: calls.append(role) or [])
+    monkeypatch.setattr(bq, "_ROLE_CACHE", {})
+    bq.reads_table_data("roles/bigquery.jobUser", "token", {})
+    bq.reads_table_data("roles/bigquery.jobUser", "token", {})
+    assert calls == ["roles/bigquery.jobUser"]
+
+
+def test_a_role_name_that_is_not_a_role_is_not_expanded(monkeypatch):
+    """No request is made for something that cannot be a role name."""
+    sent = []
+    monkeypatch.setattr(bq.urllib.request, "urlopen",
+                        lambda *a, **k: sent.append(a) or (_ for _ in ()).throw(AssertionError))
+    assert bq.role_permissions("roles/../../etc/passwd", "token") is None
+    assert bq.role_permissions("deleted:serviceAccount:x", "token") is None
+    assert sent == []
+
+
+def test_a_custom_role_is_never_cached(monkeypatch):
+    """Its permission set is editable, so caching it hides a widening.
+
+    Grant a harmless custom role, then add bigquery.tables.getData to that role,
+    and a cached answer keeps the binding out of the reach digest for the life
+    of the process. The comment defending the cache claimed role permissions are
+    immutable; that is true only of predefined roles.
+    """
+    calls = []
+    monkeypatch.setattr(bq, "_ROLE_CACHE", {})
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: calls.append(role) or [])
+    for _ in range(3):
+        bq.reads_table_data("projects/p/roles/custom", "token", None)
+    assert calls == ["projects/p/roles/custom"] * 3
+    assert bq._ROLE_CACHE == {}
+
+
+def test_a_stale_cached_custom_role_is_not_believed(monkeypatch):
+    """The read side of the cache has to skip custom roles too.
+
+    Asserting only that nothing is written leaves the read path untested: a
+    cache pre-populated by any other means is still consulted, and the widening
+    it hides is exactly the one this is meant to prevent.
+    """
+    monkeypatch.setattr(bq, "_ROLE_CACHE", {"projects/p/roles/custom": False})
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: ["bigquery.tables.getData"])
+    assert bq.reads_table_data("projects/p/roles/custom", "token", None) is True
+
+
+def test_a_predefined_role_is_still_cached(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bq, "_ROLE_CACHE", {})
+    monkeypatch.setattr(bq, "role_permissions",
+                        lambda role, token: calls.append(role) or [])
+    for _ in range(3):
+        bq.reads_table_data("roles/bigquery.jobUser", "token", None)
+    assert calls == ["roles/bigquery.jobUser"]
