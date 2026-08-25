@@ -1080,9 +1080,13 @@ is now read from the environment.
 
 ### Open, and not mine to decide
 
-Carried unchanged from Day 2: the 2:10 spoken line "The examiner is two hundred lines
-of code", and whether that beat's on-screen numbers are labelled as the injected-turn
-family row.
+Carried from Day 2: the 2:10 spoken line "The examiner is two hundred lines of code",
+and whether that beat's on-screen numbers are labelled as the injected-turn family row.
+
+The line count moved and the Day 2 note is now stale. Counted today: `interpreter.py`
+231, `dsl.py` 210, `examiner.py` 408, 849 together. Day 2 recorded 187 and 610. Nothing
+in the Examiner is two hundred lines, so the spoken line needs a number or a rewording,
+and whichever is chosen should be re-counted on the day it is recorded.
 
 New: beat 0:38 says the registry listing returns **eight** entries. The listing today
 returns eight, but not those eight: six of ours, one `Workspace Agent` that Google
