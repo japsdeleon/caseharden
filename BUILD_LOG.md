@@ -929,6 +929,30 @@ own.
 `conduct_live`. Both work; they do not meet. Beat 0:56 needs the detector's finding to
 be link 2, so joining them is Day 5 work and is listed as such below.
 
+### The repo is public
+
+Made public 2026-08-25, after the employer email covering code ownership, development
+infrastructure approval and public repo approval was sent. It had been private since
+Day 1 for exactly that reason; the decision to take it private is in the plan's decision
+log.
+
+Checked before publishing, across all ten commits and not only the working tree, because
+a secret removed from `main` still sits in the history behind it:
+
+| Checked | Result |
+|---|---|
+| Private keys, API keys, OAuth tokens, client secrets | none, in any commit |
+| `.env`, `*key.json`, `*.pem`, credential files ever added | none |
+| Employer project ids or addresses | none, in any commit |
+| Commit author and committer identity on all ten commits | the personal account, not the employer address |
+
+`https://github.com/japsdeleon/caseharden` answers 200 anonymously.
+
+The personal Gmail address appears in three Day 1 and Day 2 captures, as the operator
+principal on the wire in a real IAM refusal. It is the address that owns the repo, so it
+is already public, and removing it would mean editing a capture. The captures stay as
+they were recorded.
+
 ### Carried into Day 5
 
 - Join the fleet to the chain: a `FINDING` link written from a detector's answer, over

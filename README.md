@@ -9,6 +9,8 @@ retention lock rather than by this project's code.
 
 All Things Agentic Hackathon · Fortified Enterprise Fleet · solo entry · europe-west3.
 
+https://github.com/japsdeleon/caseharden
+
 Build in progress. See [`docs/PLAN.md`](docs/PLAN.md) for the specification and
 [`BUILD_LOG.md`](BUILD_LOG.md) for daily progress with measured numbers.
 
