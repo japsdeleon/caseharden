@@ -28,9 +28,11 @@ echo "Service accounts ready."
 # roles/owner does not carry iam.serviceAccounts.getAccessToken, so without this
 # grant 70_prove_seal.sh cannot mint a token and exits before proving anything.
 OPERATOR="${CASEHARDEN_OPERATOR:-$(gcloud config get-value account 2>/dev/null)}"
-for sa in "$SA_PROPOSER" "$SA_EXAMINER" "$SA_NOTARY"; do
+# workload-sa is here because it writes the conduct event stream, and the Day 3
+# tamper is one ordinary late event arriving from that same writer.
+for sa in "$SA_PROPOSER" "$SA_EXAMINER" "$SA_NOTARY" "$SA_WORKLOAD"; do
   gcloud iam service-accounts add-iam-policy-binding "$sa" \
     --member="user:${OPERATOR}" --role=roles/iam.serviceAccountTokenCreator \
     --project="$PROJECT" --quiet >/dev/null
 done
-echo "Impersonation granted to ${OPERATOR} on the three audited principals."
+echo "Impersonation granted to ${OPERATOR} on the four audited principals."

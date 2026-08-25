@@ -383,3 +383,314 @@ repo or generator access on Days 4 and 5, which it must not be.
 The Examiner CLI now defaults to `--backend bq`, the path that carries an identity.
 `--backend local` reads a locally regenerated holdout under no identity at all and
 exists for the test suite.
+
+---
+
+## 2026-08-27 — Day 3
+
+**Exit criterion: the memorable moment is complete on hand-fed links.** Green,
+quarantine, promotion refused, re-attest, green again. Recorded in
+`captures/day3-attestation-lifecycle.txt`, produced by `infra/90_prove_attestation.sh`,
+which asserts six outcomes against the real project and exits non-zero if any of them
+changes.
+
+### Shipped
+
+`caseharden/chain.py`, 469 lines. Links, their hashes, the append-only table, the seal
+into the retention-locked bucket, and the interface verification re-derives from.
+
+Nine link kinds. Two of them are derivations and seven are records, and `verify` prints
+which of the two each link got. `EVIDENCE` states which conduct events justified the
+change and which principals could read the sealed exam. `EXAM` states what the Examiner
+measured. Both are recomputed against the warehouse as it stands now. `FINDING`,
+`VERDICT`, `DRAFT`, `DRAFT-REJECTED`, `HOLDOUT-DENIED` and `APPROVAL` are records,
+protected by the hash chain alone. Section 2 claims re-derivation for the evidence and
+the exam and for nothing else, so the code says so and a test pins the split.
+
+Link 1 also hashes who could read the sealed exam, by two routes rather than one: the
+dataset's access list, and every project-level IAM binding that could carry
+`bigquery.tables.getData`. A grant to the Proposer by either route breaks the chain.
+That is the substitute for the IAM deny policy this project cannot create, and its
+limit is stated in THREATS.md: a deny rule would beat a later grant, while this only
+guarantees the grant cannot go unnoticed.
+
+`caseharden/notary.py`, 964 lines. `verify`, `reattest`, `promote`, `genesis`, `seed`
+and the certificate renderer behind one CLI.
+
+`verify` walks the hash chain first and stops there if it is broken, because
+re-deriving against a payload already shown to be edited answers a question about the
+edit. Then it re-scans the cited conduct window, re-reads the exam's access list,
+re-runs the Examiner over the sealed holdout, and compares the chain root against the
+certificate in the locked bucket. Five break codes name where it stopped:
+`LINK-HASH`, `EVENT-WINDOW`, `HOLDOUT-ACCESS`, `EXAM-SCORE`, `ROOT-MISMATCH`.
+
+`promote` and `seed` both refuse to build on a parent that is not attested, and on a
+parent that was never a version. The first version is registered explicitly with
+`notary genesis`, so "this parent has no chain" cannot be mistaken for "this parent is
+the first one".
+
+`reattest` re-derives against the evidence as it now stands and, if the gate still
+passes, appends an `EVIDENCE-CHANGED` link that supersedes the previous evidence
+statement. The superseded link stays in the chain with the digest it carried at
+promotion. It refuses two cases outright: a break that says the record itself was
+edited, and an exam access list that has been widened. Without those two refusals
+`reattest` is an undo button for the tamper it exists to survive.
+
+`caseharden/policy_server.py`, 201 lines. Three states over a 60-second cache. Every
+response carries `checked_s_ago`, so the staleness is stated rather than hidden. The
+one branch that must never fall through to attested is the exception path: a version
+whose state cannot be established is served `UNKNOWN`, with promotions frozen, the last
+state that was actually established, and an `ALERT` line on stderr.
+
+The policy it serves is read out of the chain's effective exam link, not out of
+`policy.versions`. The registry copy is compared against it and reported as
+`registry_agrees`; a disagreement freezes promotion, because the fleet's configuration
+store and the record then describe different documents.
+
+`caseharden/certificate.py`, 74 lines. One chain rendered to a static HTML page, no
+JavaScript and no server.
+
+`infra/25_chain_tables.sh` creates `chain.links` and `policy.versions`, grants the
+Notary project-scoped `roles/bigquery.metadataViewer`, and then asserts the property
+that grant exists for: the Notary reads *who* may read the exam and is still refused
+the rows. Bound at project scope on purpose, because a dataset-scoped grant would add
+a second entry to `holdout_sealed`'s access list, and that list having exactly one
+entry is the artifact a reviewer opens at 1:52.
+
+`infra/tamper.py` streams one ordinary conduct event into a cited window, under
+`workload-sa`, which is the identity that writes every other conduct event.
+
+`tests/test_chain.py`, 56 tests, and `tests/test_bq.py`, 20. `python3 -m pytest tests -q` is 93 tests in 2.0s.
+
+### Measured
+
+Verify, timed over 20 runs against the live chain by `infra/measure_verify.py`:
+
+| | p50 | p95 | max | mean |
+|---|---:|---:|---:|---:|
+| `verify v4`, 8 links, exam re-derived | 2.46s | **2.91s** | 2.91s | 2.43s |
+
+The plan's target was under 5s p95. Two impersonated tokens cost 2.4s more, paid once
+per process rather than per call, and not paid at all on Cloud Run where the runtime
+supplies the identity.
+
+An earlier figure of 0.84s p95 was measured on a chain that did not re-run the
+Examiner, because of the defect described under M1 below. It is recorded here rather
+than quietly replaced: the number was real and it was measuring the wrong thing.
+
+The lifecycle, every number taken from the capture:
+
+| Step | Result |
+|---|---|
+| `genesis v3` | registered as the active version with no chain |
+| `seed v4 --parent v3` | parent accepted, 7 links, sealed to the locked bucket |
+| `verify v4` | ATTESTED. Re-derived: EVIDENCE, EXAM. Recorded only: FINDING, VERDICT, DRAFT, HOLDOUT-DENIED, APPROVAL |
+| `promote v6 --parent v99` | REFUSED, exit 5, "not a version of this policy" |
+| Policy Server | `ATTESTED`, promotions `OPEN`, verify 2.54s |
+| one streamed event | QUARANTINED at link 1 `EVENT-WINDOW`, offending id named, promotions FROZEN |
+| Policy Server, after the cache expired | `QUARANTINED`, `attested: false`, promotions `FROZEN` |
+| `promote v5 --parent v4` | REFUSED, exit 5, nothing written to the chain |
+| `reattest v4` | link 8 `EVIDENCE-CHANGED`, 423 events, exam re-scored 29/40 at 100%, ATTESTED, new root `ea62e7623db9` |
+| link 1 afterwards | still hashes to `7c003202d555`, still cites 422 events |
+| `promote v5 --parent v4` again | parent accepted |
+| DELETE on the sealed certificate, as project owner | `retentionPolicyNotMet` |
+
+The 403 in link 5 is not a stored string. `seed` runs the Examiner for real under
+`proposer-sa` and refuses to write the link on anything other than a live refusal.
+
+### Deviations from the plan, and why
+
+1. **The root is not yet annotated onto the Agent Registry entry.** No registry entries
+   exist until Day 4. The root is written to `policy.versions` now and the annotation
+   lands with the registry entries it annotates.
+2. **The `FINDING` link carries the detector SQL and the session ids it returned, not
+   the BigQuery job id or the trace id.** Both are produced by the detector agents,
+   which are Day 4. Plumbing a job id through the client today would be plumbing for a
+   producer that does not exist yet.
+3. **The `VERDICT` link carries no Model Armor screening result.** Model Armor is wired
+   on Day 5. The link says so in a field rather than carrying a null that reads as a
+   pass.
+4. **The Policy Server runs, it is not deployed.** Day 3 asked for it to implement the
+   three states, which it does. Cloud Run is Day 4.
+5. **`DRAFT-REJECTED` is a declared link kind with no writer.** Section 2 counts a DSL
+   parse rejection among the negative links the chain records. `verify` displays one
+   and nothing writes one, because the Proposer that would produce it is Day 5.
+6. **Nothing marks a block reason as unattested.** Section 3's `quarantined` row says
+   block reasons are marked unattested. The version keeps enforcing and the Policy
+   Server reports `attested: false`, but the enforcement callback that would carry that
+   into a block reason is Day 4.
+
+### Known limitations, recorded rather than papered over
+
+**Append-only is a convention on `chain.links`, not a platform guarantee.** BigQuery
+has no append-only table mode and `WRITER` on the dataset carries DML delete. What
+makes an edit detectable is the sealed root: a chain rewritten in place, hashes and
+all, still disagrees with the certificate in the retention-locked bucket, and
+`test_a_re_hashed_chain_still_fails_against_its_sealed_root` pins exactly that.
+
+**A tamper is enforced-but-attested for up to 60 seconds**, the Policy Server's cache
+window. Stated in every response as `checked_s_ago`.
+
+**The exam's reach is hashed for BigQuery roles and custom roles only.** A role outside
+that set cannot carry `bigquery.tables.getData`, so hashing every project binding would
+quarantine versions on unrelated IAM churn. The cost of the narrower set is that it
+rests on Google's role definitions being what they say.
+
+**A streamed row cannot be removed by DML for about 90 minutes.** The tamper is one-way
+within a rehearsal, which is why `90_prove_attestation.sh` picks a fresh event id when
+the default one is already in the window rather than pretending the previous run was
+undone.
+
+### Adversarial pass
+
+Two engines, briefed with the plan path, the worktree, the base ref and an
+instruction to attack. Neither was given my summary or my conclusions.
+
+Codex found four defects, three of them serious. All four are closed and each was
+re-checked by re-running the engine's own reproduction command.
+
+**A cited conduct event could be rewritten without losing attestation.** Link 1
+digested the event ids in its window and nothing else, so an insert or a delete broke
+the chain and an UPDATE did not. Codex changed a cited event's `tool_name` to
+`issue_refund` and its tenant to another tenant, keeping the id, and verification
+returned `ATTESTED True OPEN`. That is the entry's central claim failing: the evidence
+a version cites is the content of those rows, not the fact that rows with those ids
+exist. Link 1 now carries a digest of every cited row's full content, computed in
+BigQuery as `SHA256(TO_JSON_STRING(t))` per row over the pruned window. A break now
+reports added, removed **and** altered ids separately, so the same attack quarantines
+and names `e_00000`.
+
+**A chain that was not a promotion attested.** Nothing required the links to be a
+promotion. Codex built a single fabricated `FINDING` link, sealed its own root, and
+verification called it `ATTESTED`: no evidence link, no exam, no approval, and nothing
+re-derived because there was nothing to re-derive. A hash chain proves its links are
+consecutive, not that they say anything. `verify` now requires the grammar before it
+considers a root: sequence numbers 1..N with no gaps, `EVIDENCE` first, and an `EXAM`
+and an `APPROVAL` present. Break code `CHAIN-SHAPE`.
+
+**The Policy Server could serve a stale green over a fresh quarantine.** Cache entries
+were ordered by when a verification finished. Codex raced a slow `ATTESTED` refresh
+against a later `QUARANTINED` one; the slow one landed last and won, reopening
+promotions for a further 60 seconds. Entries are now ordered by when the verification
+started, so an older answer never replaces a newer one.
+
+**The certificate escaping test asserted only an absence.** It checked that the raw
+`<script>` string was not in the page, which is also true of a renderer that returns
+nothing. It now asserts the escaped form is present, that the page has its doctype and
+its heading, and that the hostile payload is built into the chain rather than mutated
+in afterwards. The second point matters more than the first: mutating a payload breaks
+the link hash, so verification skipped every later link and the hostile string never
+reached the renderer at all. The test was passing twice over for the wrong reasons.
+
+On the last of those, Codex's own evidence did not show what it claimed. It stubbed
+`render` in the dict returned by `runpy.run_path`, which is a copy of the module
+namespace rather than the namespace the test function closes over, so the stub was
+never in effect. The finding was correct and the evidence for it was not. Re-checked
+here by patching the function's real `__globals__`, where the old test does pass with
+a stubbed renderer and the new one does not.
+
+Four more came out of reading the code here rather than from either engine, and are
+fixed the same way:
+
+- The link hash is taken over newline-joined fields, and `version` arrives from a
+  command-line flag. A version containing newlines could produce the same hash input as
+  a different link. Versions are now checked against a regex.
+- A version with no sealed certificate was attested on its own say-so. A chain proves
+  its internal consistency, so without an anchor, dropping its last link is invisible.
+  Missing certificate is now break code `NO-CERTIFICATE`.
+- An access-list entry with no member at all, which is what an authorized view is,
+  reduced to the same string as any other. Two such entries were interchangeable
+  without the digest noticing.
+- A malformed payload raised out of `verify` instead of quarantining. It is a
+  defective record, not an outage, so it is now `CHAIN-SHAPE` and names its link.
+
+The in-house validator, run against the same brief, found nine more. Its sandbox held
+working read-only credentials for the project, so several of its claims are checked
+against the live warehouse rather than against a reading of the code.
+
+**The exam stopped being re-derived after the first re-attestation.** This is the worst
+one in the day, and the shape of it matters more than the fix. `EVIDENCE-CHANGED`
+restates both the evidence and the exam, and verification followed it for the evidence
+and not for the exam. So link 6 printed "re-scored under link 8" and link 8 re-scored
+nothing. From the demo's own remedy beat onward, a version reported `ATTESTED` while the
+Examiner's numbers had moved. The validator moved the holdout twice, re-attested in
+between, and got `attested` on the second move. Both link kinds now re-run the Examiner,
+and the capture shows link 8 carrying "the Examiner re-scores 29/40 sealed attack
+sessions at 100% benign pass, unchanged".
+
+That defect also invalidated the published SLO. The 0.84s p95 was measured on the
+post-re-attestation chain, which is the configuration that was skipping the Examiner.
+Measured again with the exam actually re-derived, p95 is 2.91s.
+
+**The promotion freeze was advisory.** `promote` verified the parent and wrote nothing.
+`seed` wrote the chain, marked the version active, and never looked at the parent at
+all. Nothing forced anyone to run `promote` first, and `promote --parent v99` accepted a
+version name that had never existed by calling it a genesis version. The check now lives
+in `parent_basis`, both commands call it, and `seed` refuses before it writes anything. A
+genesis version has to be registered with `notary genesis` to count as one.
+
+**The hashed access list could not see a project-level grant.** Section 2 claims a later
+grant to the Proposer breaks the chain. Link 1 hashed the dataset's access list, and a
+project-level IAM binding reaches the same table without appearing in that list. This
+project demonstrated the gap itself: the Notary reads the exam's metadata through a
+project-scoped role and is nowhere in the exam's one-entry access list, which is exactly
+the shape `roles/bigquery.dataViewer` on `proposer-sa` would take. Link 1 now hashes
+both. Matched rather than enumerated: every predefined BigQuery role and every custom
+role, since a custom role's permissions are not knowable from its name. Ordinary IAM
+churn outside that set does not quarantine a version, which is tested. The Notary reads
+the project IAM policy through a custom role carrying one permission,
+`resourcemanager.projects.getIamPolicy`.
+
+**The served policy was not the attested policy.** The Policy Server read the document
+out of `policy.versions`, a table the Notary can write, and nothing compared it to the
+chain. The attested artifact and the enforced artifact were two different objects. It
+now serves the candidate out of the chain's effective exam link, reports
+`registry_agrees`, and freezes promotion when the two disagree. Related: the approval
+link recorded `approves_exam_hash` and nothing read it, so the binding between an
+approval and the measurements it approved was a note rather than a check. `verify` now
+requires the approval to name an exam link that is in the chain.
+
+**`unknown` did neither of the two things section 3 says it does.** It is defined as
+"last known state retained" and "alert raised". The server replaced the cached good
+answer with the unknown one, and nothing anywhere raised an alert. It now retains the
+last state that was actually established and returns it as `last_known`, and writes an
+`ALERT` line to stderr, which on Cloud Run is a log entry an alerting policy matches on.
+
+**`/policy/active` dropped the connection instead of reporting a state.** The lookup of
+the active version sat outside the handler that turns a failure into `UNKNOWN`. An
+enforcement callback that does not know the version number calls exactly that path, and
+got nothing back rather than `FROZEN`.
+
+**`bq.py` had no test at all.** Every claim this project makes reaches the reader
+through that file. The validator mutated it twice and the whole suite stayed green:
+named query parameters silently dropped, which turns every chain write back into an
+interpolated statement, and `insertErrors` ignored, which is the failure the function's
+own docstring describes. `tests/test_bq.py` pins both, along with the incomplete-result
+cases and the name validation.
+
+**The exit-criterion script never asserted the exam leg.** Every string it checked in
+step 1 is still present on a chain whose Examiner is never re-run, so it would have
+passed throughout the defect above. It now asserts the exam is re-derived, before and
+after re-attestation, and reads the machine-readable output to check which link kinds
+carried a derivation.
+
+**The 2:52 beat's response shape.** The plan writes the quarantine response with the
+offending event as its own field. It was only inside the prose of `break_detail`. The
+attestation now carries `event` separately, so a caller acts on the id instead of
+parsing a sentence for it.
+
+Two of its findings are recorded as deviations rather than fixed: the registry
+annotation, which has no registry to annotate until Day 4, and `DRAFT-REJECTED`, which
+has no writer until Day 5. Both are in the deviation list above.
+
+Every one of these properties was mutation-checked: the assertion was broken in the
+source, the suite was re-run, and the suite failed. Sixteen mutations, sixteen failures.
+`tests/test_chain.py` is 56 tests, `tests/test_bq.py` is 20, and the suite is 93 in 2.0s.
+
+**Unchecked, stated rather than assumed.** Codex's sandbox has no credentials and no
+network, so every BigQuery, Cloud Storage and gcloud claim went unverified by it. The
+validator had read-only credentials and could check the IAM and access-list facts, but
+did not run `infra/90_prove_attestation.sh`, which writes to the live project. That
+script was re-run here after every fix and its capture regenerated. Both engines were
+reading a worktree I was editing at the same time; the validator said so and re-verified
+against a fixed snapshot, and every finding below was re-checked against the final tree.

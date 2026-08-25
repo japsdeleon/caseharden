@@ -36,6 +36,7 @@ usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -63,8 +64,12 @@ UNLABELLED = "<unlabelled>"
 # Corpora
 # --------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=1)
 def local_corpora() -> Dict[str, List[dict]]:
     """Regenerate the corpora from the committed seeded script.
+
+    Cached: the generator is deterministic, and verification re-scores twice per
+    call. Callers must not mutate what they get back.
 
     Not a fixture and not a copy: the same function that loaded BigQuery, run
     again. If the two disagree, --check-equivalence says so.

@@ -32,8 +32,15 @@ HERE="$(dirname "$0")"
 
 # Read access, per dataset. The Proposer gets the training window and the benign
 # corpus. It is not on the holdout's list.
-python3 "$HERE/bq_grant.py" "$PROJECT" conduct_train  READER "$SA_PROPOSER" "$SA_EXAMINER" "$SA_FOREMAN"
+# The Notary is a reader of the conduct events because re-deriving link 1 means
+# re-scanning them. It is not a reader of the exam, and never becomes one: it
+# reads holdout_sealed's access list through project-scoped metadataViewer,
+# granted in 25_chain_tables.sh, which does not carry tables.getData.
+python3 "$HERE/bq_grant.py" "$PROJECT" conduct_train  READER "$SA_PROPOSER" "$SA_EXAMINER" "$SA_FOREMAN" "$SA_NOTARY"
 python3 "$HERE/bq_grant.py" "$PROJECT" benign_corpus  READER "$SA_PROPOSER" "$SA_EXAMINER"
+# The workload agent writes one conduct event per turn it takes. It is the only
+# writer of the event stream, and it cannot read the stream back.
+python3 "$HERE/bq_grant.py" "$PROJECT" conduct_train  WRITER "$SA_WORKLOAD"
 python3 "$HERE/bq_grant.py" "$PROJECT" chain          WRITER "$SA_NOTARY"
 python3 "$HERE/bq_grant.py" "$PROJECT" policy         WRITER "$SA_NOTARY"
 
