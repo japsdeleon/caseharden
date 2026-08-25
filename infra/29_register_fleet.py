@@ -42,6 +42,7 @@ FLEET = {
     "caseharden-detector-privilege-sequencing": ("detector", "privilege-sequencing"),
     "caseharden-support-agent": ("workload", None),
     "caseharden-foreman": ("orchestrator", None),
+    "caseharden-proposer": ("proposer", None),
 }
 
 

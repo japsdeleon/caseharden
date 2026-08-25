@@ -318,6 +318,28 @@ class ChainStore:
                     "root": root, "uri": certificate_uri},
         )
 
+    def repoint(self, version: str, root: str, certificate_uri: str) -> None:
+        """Move a version's root to a new certificate, changing nothing else.
+
+        Re-attestation used `register`, which marks the version it writes active
+        and every other version inactive. Re-attesting an OLD version therefore
+        put that version back in force: on Day 5 a re-attestation of v4, run as
+        part of a proof, silently demoted the freshly promoted v5 and the fleet
+        went back to enforcing v4. The Policy Server reported it truthfully,
+        which is the only reason it was caught.
+
+        Re-derivation must never change what is enforced. It changes what a
+        version can claim, and promotion is the only thing that changes which
+        version is in force.
+        """
+        target = bq.qualified_table(self.project, "policy", "versions")
+        bq.query(
+            f"UPDATE `{target}` SET root = @root, certificate_uri = @uri"
+            f" WHERE version = @version",
+            self.project, self.token,
+            params={"version": version, "root": root, "uri": certificate_uri},
+        )
+
 
 # --------------------------------------------------------------------------
 # The retention-locked seal

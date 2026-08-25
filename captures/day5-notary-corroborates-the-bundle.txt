@@ -1,0 +1,31 @@
+Caseharden — Day 5 capture
+The Notary corroborates a bundle's claims, or refuses to write a chain.
+
+A bundle is a file. It carries the detector's finding, the analyst's verdict,
+the approval, and the refusal the Proposer received. Every one of those names
+something outside this process, so the Notary looks each one up before it seals
+anything, and refuses rather than record a claim it could not stand behind.
+
+1. The real bundle from the v5 run, offered for a version it does not belong to.
+   The finding's job and the analyst's verdict both check out and say so. The
+   approval does not: a human approved v5, and an approval of v5 is not an
+   approval of v6. Nothing is written.
+
+$ notary seed --version v6 --parent v5 --bundle out/run-v5.json
+APPROVAL decision ap_8c8f6481c1c3 is a APPROVAL on 'v5', not a APPROVAL on 'v6'. Nothing written.
+parent accepted: v5 attested at root e2a559358933
+corroborated: BigQuery job job_1IpPlMAwmLLVhMAvUVqCpk_h exists and completed
+corroborated: VERDICT vd_bdae6d344808 was written by the Copilot as analyst@caseharden.example
+
+2. The same bundle, with the detector's job id replaced by one that never ran.
+
+$ notary seed --version v6 --parent v5 --bundle out/run-v6-forged-job.json
+the Notary could not look up job europe-west3:job_thisJobNeverRan00000000, which the bundle's finding cites: HTTPError: HTTP Error 404: Not Found. Nothing written.
+parent accepted: v5 attested at root e2a559358933
+
+3. The same bundle, with the analyst's rationale rewritten after they typed it.
+
+$ notary seed --version v6 --parent v5 --bundle out/run-v6-forged-verdict.json
+the bundle's verdict text differs from the row the Copilot wrote for vd_bdae6d344808. Nothing written.
+parent accepted: v5 attested at root e2a559358933
+corroborated: BigQuery job job_1IpPlMAwmLLVhMAvUVqCpk_h exists and completed

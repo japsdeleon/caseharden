@@ -1122,3 +1122,319 @@ which makes **ten rows on screen**, eight of them ours. Either the spoken line b
 Also new, and larger: section 3 claims Agent Runtime hosts two agents and that the
 registry pattern is proven across both hosts. Nothing runs on Agent Runtime. See the
 decision above.
+
+## 2026-08-29 — Day 5
+
+**Exit criterion: the loop ran for real, end to end, against the deployed fleet.**
+An incident the active policy allowed, a fan-out, a detector's finding, a verdict a
+human typed into the Analyst Copilot, a draft from the deployed Proposer, that
+Proposer's own 403 on the sealed holdout, the Examiner's gate, an approval, and a
+promotion to **v5** with a green certificate. Transcript in
+`captures/day5-loop-promotes-v5.txt`.
+
+### Shipped
+
+**The Proposer, on Cloud Run under `proposer-sa`.** Three tools and no others.
+`reviewer_precedent` reads Memory Bank, which is what the Foreman writes each
+investigation into, so the precedent is the fleet's own review history.
+`training_base_rate` counts tool calls at a threshold over the 76-day training
+window, which is the only conduct this identity may read; a threshold in a draft
+is now a number the model checked rather than one it liked. `self_check` asks
+BigQuery for the sealed holdout **as itself** and returns the refusal. That tool
+raises if the read ever succeeds, because a Proposer that can read the exam makes
+every measurement downstream of it worthless and must not be able to look like a
+passing run.
+
+The draft is judged outside the agent. A draft that fails the grammar comes back
+as a rejection carrying the parser's message and is written to the chain as its
+own link, before the draft that survived, because that is the order they
+happened in.
+
+**The Analyst Copilot, via `adk deploy cloud_run --with_ui`, unmodified.** Two
+tools, `record_verdict` and `approve`, under a new `analyst-sa`. They write rows
+into `review.decisions`, a dataset of its own: WRITER carries DML delete, so
+putting the analyst's writes in `policy` would let a chat window delete the
+version registry. `infra/32_analyst_identity.sh` asserts two boundaries against
+the live project rather than describing them, and both refusals are HTTP 403.
+
+**Model Armor in both directions.** Inbound on the analyst's own words, in the
+Copilot, with the result stored beside the row. Outbound on the Proposer's
+rationale, through `sanitizeModelResponse`, before an analyst reads it or the
+chain records it. Both results go into the VERDICT link. Neither is decorative:
+the run refuses to pass a text on when its screening blocked or did not happen.
+
+**Span export is wired, and it does not work from Cloud Run.** Day 4 recorded
+that every trace id in this project was derived from the session and turn, and
+that Cloud Trace held nothing. `agents/common/tracing.py` points the OTLP
+exporter that was already in the image at `telemetry.googleapis.com`;
+`auth.signing_client` puts the W3C traceparent on each A2A hop and an ASGI
+middleware takes it off the other end. No new dependency: the alternative was
+`opentelemetry-exporter-gcp-trace`, which this image does not have.
+
+From a workstation this works end to end. A span written through the module
+resolves in Cloud Trace by its id, under the operator's identity and again under
+`workload-sa`'s, which is the identity the deployed workload runs as. **From the
+deployed services it does not.** The provider is global and ours (the service
+logs `ours=True`), the processor is attached, the per-request flush runs and
+returns true, no export is refused, and every trace id the fleet records still
+answers 404. Where those spans go has not been established, and saying so is the
+point of this paragraph.
+
+What did change: a deployed conduct row now carries a real span id rather than a
+derived one. What did not: that id is still not a handle a reviewer can open.
+Four things were tried and each was a real defect fixed on the way, none of them
+the cause. `roles/cloudtrace.agent` is the classic write path and the OTLP
+endpoint wants `roles/telemetry.tracesWriter`; Cloud Run throttles a container's
+CPU between requests so the batch processor's thread never ran, which is why the
+flush moved onto the response path; `set_tracer_provider` is a one-shot, so the
+module now attaches its processor to whatever provider is global instead of
+insisting on its own; and the fleet proof's trace assertion passed for any
+32-hex string, which is why none of this surfaced sooner.
+
+**Section 3's sentence about a chain link opening the execution DAG, and the
+trace-DAG shot in beat 0:56, are not supported by the deployment.** That is the
+entrant's call: drop the beat, or spend Day 6 time on it.
+
+**The fleet is joined to the chain.** The FINDING link is a detector's own
+answer now. `infra/110_run_loop.py` takes the BigQuery job id the fan-out
+reported, fetches **that job's own results** rather than re-running the query or
+trusting the model's prose, and cites the window the job scanned. Day 4's
+FINDING was written by `notary seed` over a different table from the one the
+fleet scans; the two never met, and now they do.
+
+**`notary seed --bundle`, and what a bundle is not allowed to claim.** The bundle
+is a file, so every claim in it that the Notary can check itself, it checks: the
+cited BigQuery job must exist and have completed, the verdict and the approval
+must be rows the Copilot wrote with matching text and subject, and the 403 is
+re-taken live and compared before the Proposer's own wording is kept. It refuses
+rather than record a claim it cannot stand behind.
+`captures/day5-notary-corroborates-the-bundle.txt` shows one real bundle and two
+forged ones.
+
+### Measured
+
+| | |
+|---|---|
+| Chain for v5 | 7 links, root `e2a559358933`, ATTESTED |
+| Finding behind it | `injected-turn`, 13 sessions, from job `job_1IpPlMAwmLLVhMAv` over `conduct_live` |
+| Cited window | 2026-08-22T15:47:45Z to 2026-08-25T15:48:08Z, 22 conduct events |
+| Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
+| Human decisions in the chain | 2, both written by the Copilot (`vd_bdae6d344808`, `ap_8c8f6481c1c3`) |
+| `verify` p95 on v5 | **3.66s** (p50 3.16s, 12 runs, cold IAM cache) against a 5s target |
+| Tests | 156 passing |
+| Registry rows | 9 agents (7 ours, plus Google's `Workspace Agent` and Vertex's `caseharden-memory`); the services listing returns 7, all ours |
+| Cloud Run services | 9 private (8 from one image, plus the Copilot's own) |
+| Fleet proof | 8 of 9 assertions hold; the trace-resolution assertion fails, on purpose |
+
+### The gate refused four real candidates
+
+A second run, `v6` on top of v5, promoted nothing. Its transcript is
+`captures/day5-gate-refuses-the-proposer.txt` and it is the more useful of the
+two runs.
+
+The Proposer's first candidate caught **31 of 40** sealed attack sessions, one
+more than the active version, and was thrown out because benign traffic fell from
+100% to 99.7%. Two legitimate turns. The three that followed were refused for no
+improvement on sealed attacks, and the last of those also for a benign
+regression. Nothing was written to the chain.
+
+That is the plan's section 9 risk 2 discharged with a real candidate rather than
+a hand-written one: the gate's rejection beat does not need a fixture. The
+reason there was nothing left to win is worth stating plainly. v5 had already
+taken the one improvement a per-turn rule can take here, and the ten sealed
+attack sessions still uncaught are the `privilege-sequencing` family, which no
+per-event predicate in this DSL can express. That is a property of the grammar,
+stated on purpose in section 1, not a gap in the Proposer.
+
+A hand-written over-blocking candidate is kept as well, in
+`policies/v5-candidate-a-overblocking.json`, because it produces the numbers the
+demo script describes: 40/40 attacks caught, benign 100% → **94.5%**, 35
+legitimate turns denied, 2766.20 of refund value blocked, `PROMOTION DENIED —
+BENIGN REGRESSION`. **That candidate is hand-written and the capture says so in
+its first paragraph.** The Examiner's run against it is real.
+
+### Re-attestation was quietly changing which policy the fleet enforced
+
+`reattest` re-pointed a version at its new certificate through `ChainStore.register`,
+which marks its own version active and every other version inactive. So
+re-attesting an **old** version put that version back in force. It happened on
+this machine: `90_prove_attestation.sh` re-attested v4 an hour after v5 was
+promoted, and the fleet went back to enforcing v4. The Policy Server reported it
+truthfully, which is the only reason it was caught, by an assertion about
+something else.
+
+Attestation gates authority, not availability, and re-derivation must not change
+what is enforced. `ChainStore.repoint` now moves the root and nothing else, and
+`tests/test_chain.py` pins that the statement it issues contains no `active`.
+
+### The deploy script had been writing empty public URLs
+
+`28_deploy_fleet.sh` read each service's URL with a mangled `--format` argument.
+Every `describe` failed with `Name expected`, the failure was swallowed by the
+assignment, and the next line wrote an **empty** `CASEHARDEN_PUBLIC_URL` onto the
+service. An agent card then advertises `localhost` and A2A refuses it on a
+same-origin check. Four services were in that state before it was noticed. The
+quoting is fixed and the function now refuses to continue without a URL.
+
+### Two silent-empty failures, both of the same kind
+
+The fleet proof reported an empty Memory Bank for a write that had landed four
+seconds earlier. Two separate causes, one class. `memories.list` trails
+`memories.create`, so the proof polls now and asserts a memory this run did not
+start with, rather than a non-empty bank that any earlier run could satisfy. And
+the engine id, when read back through `gcloud --format=value(...)`, arrives as
+`['4537...']`, so every request 404'd; `memory.read` swallowed that into an empty
+list. It raises now, and the proof parses the id.
+
+### Four real defects on the way to a span that still does not resolve
+
+Granting `roles/cloudtrace.agent` was not enough: the OTLP endpoint wants
+`telemetry.traces.write`, which is `roles/telemetry.tracesWriter`. With only the
+first, exports were refused, and the ALERT line that now prints did not exist to
+say so.
+
+With both roles the spans still did not arrive. Cloud Run throttles a container's
+CPU to nearly nothing between requests, so `BatchSpanProcessor`'s background
+thread never ran, and every service here runs with `--min-instances=0`, so the
+instance was reclaimed with the batch still in it. Spans are flushed at the end
+of each request now, in the same middleware that continues the caller's trace,
+with the exit-time flush as a backstop.
+
+Then the flush reported success while exporting nothing, because
+`set_tracer_provider` is a one-shot and both providers are the same class, so a
+provider installed before this module's would silently keep the spans while this
+module flushed an empty one. The processor attaches to whatever provider is
+global now, and the startup line prints whether the provider is ours.
+
+And underneath all three, the fleet proof's trace assertion had been passing for
+any 32-hex string, including `"0" * 32`, because it only asked whether the id
+differed from the derived fallback. It resolves the id in Cloud Trace now, which
+is what turned this from a claim in a docstring into a red assertion.
+
+The fourth fix did not produce a resolving trace, and the assertion is left
+failing rather than softened.
+
+### Decisions
+
+**The Proposer is on Cloud Run, not Agent Runtime.** Nothing runs on Agent
+Runtime today. An Agent Engine exists and backs Memory Bank. Day 4 recorded that
+section 3's claim about "both hosts" is not true, and Day 5 has not made it true:
+the hour-5 rule was applied again in favour of finishing the loop. **This remains
+the entrant's call**, and the two branches are unchanged: move one agent onto
+Agent Runtime, or remove the second host from section 3 and the Devpost text.
+
+**The Analyst Copilot is not in the Agent Registry roster.** `adk deploy
+cloud_run --with_ui` serves no agent card, with or without `--a2a`, and
+`29_register_fleet.py` registers the card a service actually serves. A
+hand-written card for a service that serves none is the one thing that roster
+exists to rule out. The Copilot is a human's window, not a worker the Foreman
+discovers.
+
+**The workload's read tool is `lookup_account` again.** Sections 1 and 3 name
+`lookup_account` and `issue_refund`; what shipped on Day 4 was `lookup_order`,
+which recorded no account, so every refund looked like a write to an unread
+account and the privilege-sequencing check could not mean anything. The rename is
+back to the specification.
+
+### Limitations, and what is not claimed
+
+**Structured output is prompt-instructed, not schema-bound.** Section 3 says the
+Proposer uses "structured output constrained to the Caseharden DSL". What ships
+tells the model the grammar, derived from `dsl.py` so it cannot go stale, and
+judges the answer with the real parser afterwards. That is a deliberate reading
+of the requirement that a rejected draft must be recorded: a generation-time
+schema makes the DRAFT-REJECTED link unreachable. It is a different mechanism
+from the one section 3 names and it is recorded here rather than left to be
+found.
+
+**Verification still re-derives the evidence and the exam, and nothing else.**
+The FINDING, VERDICT, DRAFT and HOLDOUT-DENIED links are corroborated when they
+are written and hash-protected afterwards. A reviewer can re-run the job the
+finding names; `verify` does not do it for them. Section 2 claims re-derivation
+for exactly two links and that is still the claim.
+
+**Gate refusals are recorded inside the EXAM link, not as their own kind.** They
+are in the chain, under the Examiner that refused them. A separate link kind
+would have changed what `verify` requires of a chain's shape, on the day the loop
+first ran.
+
+**The v5 chain predates three of today's own additions.** It was sealed before
+bundle corroboration, the precedent ids and the outbound rationale screening
+existed. All three are exercised: corroboration by the capture above, the other
+two by the v6 run, which reached the gate four times.
+
+### Mutations
+
+40 mutations, 40 caught, 0 survived. Two were added today, for the two Day 5
+properties that carry the most weight: that re-attestation cannot put an old
+version back in force, and that a HOLDOUT-DENIED link cannot record something
+other than a refusal. The second one **survived** on its first run, which is the
+harness doing its job: the guard existed and no test drove it. Two tests now do.
+
+### Adversarial pass
+
+Both engines ran, as the contract requires. Codex is a genuinely different model;
+the in-house validator is the same model as the author and is a checklist pass.
+Six confirmed findings from Codex and a long report from the validator, each
+re-checked here before acting.
+
+Fixed as a result:
+
+- A bundle's FINDING, VERDICT and HOLDOUT-DENIED payloads were trusted. A
+  fabricated job, a screening that never happened and a 403 that was never taken
+  would all have sealed as attested. The Notary corroborates them now, and
+  `_shape_of_payload` refuses a structurally empty link.
+- `bq.job_results` accepted an unfinished or truncated answer, so a partial page
+  could have become "the finding's rows". It makes the same three refusals
+  `query` makes.
+- `first_json_object` counted braces inside JSON strings, so a rationale
+  containing `}` turned a valid candidate into a recorded rejection. It tracks
+  strings and escapes now, with the adversary's own input as a test.
+- The fleet proof's trace assertion passed for any 32-hex string, including
+  `"0" * 32`. It resolves the id in Cloud Trace now, which is what caught the
+  frozen exporter above.
+- A Model Armor block on an analyst's verdict was recorded and then ignored, and
+  the text went into the Proposer's prompt regardless. The run refuses on a
+  block, on a screening failure and on an unscreened turn, in both directions.
+- `tracing.flush` was defined and never called; `span`, `current_ids` and
+  `exporting` were dead. The first is wired to every request and to exit, the
+  rest are gone.
+- Comments and docstrings that no longer matched the code: spans "not wired",
+  "six services", the Copilot's boundary claims, the Proposer's precedent claim,
+  and the armor direction with no caller.
+- `--resume` was documented and unimplemented; `--analyst` was declared and never
+  read. Both gone.
+
+Held, with what was tried named: the DSL's literal and threshold validation, the
+deny-only grammar, the closed feature vocabulary, no new dependency, no custom
+UI, Flash only, and no credential in any new file.
+
+### Carried into Day 6
+
+- The screen recordings. Day 5 produced the transcripts the video is cut from,
+  and the recordings themselves are the entrant's to make.
+- Span export from Cloud Run, or the trace-DAG beat. One of the two.
+- README and Devpost text, including the measured numbers in this entry and the
+  hand-written-candidate disclosure.
+- THREATS.md, with the additions below.
+- The Agent Runtime decision, and section 3's "both hosts" sentence.
+
+### For THREATS.md on Day 6
+
+Everything Day 4 listed, plus:
+
+- A bundle is corroborated, not re-derived. The Notary checks that the job ran,
+  that the human rows exist and match, and that the 403 reproduces. It does not
+  re-run the detector's query, so a finding whose rows changed after the job ran
+  is not detected by verification.
+- `analyst-sa` can write `review.decisions` and therefore can write a verdict the
+  chain will later cite. What it cannot do is approve its own promotion without a
+  row, or alter one after the Notary read it, because the payload must match.
+- Spans are flushed on the response path. A crash between the tool call and the
+  response loses that turn's span, and the conduct row then carries a trace id
+  Cloud Trace answers 404 for.
+- The tracing middleware trusts an inbound `traceparent`. A caller that can reach
+  a private service can therefore attach its spans to a trace of its choosing.
+- `roles/bigquery.resourceViewer` on `notary-sa` lets it see every job in the
+  project. It carries no `bigquery.tables.getData`, checked with the same role
+  expansion `verify` uses, so it does not widen the exam's reach.

@@ -19,6 +19,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="${VERSION:-v4}"
+# A version name for the promotion-refusal probes. It must be one that does not
+# exist: v5 was promoted for real on Day 5, and a probe that names a live
+# version is a probe whose refusal could come from the wrong reason.
+PROBE="${PROBE_VERSION:-v9-probe}"
 CANDIDATE="${CANDIDATE:-policies/v4-candidate-b.json}"
 PORT="${PORT:-8099}"
 
@@ -147,7 +151,7 @@ echo "=============================================================="
 echo " 4. Nothing may be promoted on top of an unattested version"
 echo "=============================================================="
 set +e
-python3 -m caseharden.notary promote --version v5 --parent "$VERSION" \
+python3 -m caseharden.notary promote --version "$PROBE" --parent "$VERSION" \
   --candidate "$CANDIDATE" > "$TMP/refused.txt" 2>&1
 RC=$?
 set -e
@@ -199,7 +203,7 @@ echo "=============================================================="
 echo " 6. Promotion is open again, and the certificate cannot be deleted"
 echo "=============================================================="
 set +e
-python3 -m caseharden.notary promote --version v5 --parent "$VERSION" --candidate "$CANDIDATE" \
+python3 -m caseharden.notary promote --version "$PROBE" --parent "$VERSION" --candidate "$CANDIDATE" \
   > "$TMP/allowed.txt" 2>&1
 RC=$?
 set -e

@@ -132,7 +132,11 @@ def make_chain(version="v4", events=None, access=None, candidate=GOOD, current=A
         ("EVIDENCE", stored(notary._evidence_payload(
             DATASET, START, END, cited, "holdout_sealed", access or SEALED_ACCESS,
             reach if reach is not None else SEALED_REACH))),
-        ("FINDING", stored({"family": "scope-violation", "sessions": ["s_1", "s_2"]})),
+        # The job id is not decoration in this fixture: a FINDING that names no
+        # job is a finding nobody can re-run, and `_shape_of_payload` refuses it.
+        ("FINDING", stored({"family": "scope-violation", "sessions": ["s_1", "s_2"],
+                            "job_id": "europe-west3:job_fixture0001",
+                            "table": "p.conduct_train.turns"})),
         ("VERDICT", stored({"analyst": "a@example", "disposition": "confirmed abuse"})),
         ("DRAFT", stored({"version": candidate.version, "rule_count": len(candidate.rules)})),
         ("HOLDOUT-DENIED", stored({"principal": "proposer-sa@p", "dataset": "holdout_sealed",
@@ -443,7 +447,9 @@ def test_the_certificate_page_escapes_what_it_renders():
     """
     links = make_chain()
     links[1] = Link("v4", 2, "FINDING",
-                    stored({"family": "<script>alert(1)</script>", "sessions": []}),
+                    stored({"family": "<script>alert(1)</script>", "sessions": [],
+                            "job_id": "europe-west3:job_fixture0001",
+                            "table": "p.conduct_train.turns"}),
                     links[0].hash)
     for i in range(2, len(links)):
         links[i] = Link("v4", links[i].seq, links[i].kind, links[i].payload,
@@ -736,6 +742,30 @@ def test_the_exam_is_still_re_derived_after_a_re_attestation():
     assert (after.state, after.break_code, after.break_seq) == (QUARANTINED, EXAM_SCORE, 8)
 
 
+def test_a_holdout_denied_link_that_records_no_refusal_quarantines():
+    """The 1:52 beat's artifact. A link that says the Proposer was refused, and
+    carries a success, is the one payload in this chain that must not verify.
+    """
+    links = make_chain()
+    broken = notary.bind_approval(chain.build("v4", [
+        (l.kind, dict(l.payload, http_code=200) if l.kind == "HOLDOUT-DENIED"
+         else l.payload) for l in links]))
+    att = verify("v4", broken, FakeEvidence(), certificate(broken))
+    assert att.state == QUARANTINED
+    assert att.break_code == notary.CHAIN_SHAPE
+    assert "refusal" in att.break_detail
+
+
+def test_a_holdout_denied_link_must_name_the_principal_that_was_refused():
+    links = make_chain()
+    broken = notary.bind_approval(chain.build("v4", [
+        (l.kind, {k: v for k, v in l.payload.items() if k != "principal"}
+         if l.kind == "HOLDOUT-DENIED" else l.payload) for l in links]))
+    att = verify("v4", broken, FakeEvidence(), certificate(broken))
+    assert att.state == QUARANTINED
+    assert att.break_code == notary.CHAIN_SHAPE
+
+
 def test_the_approval_must_name_the_exam_it_approved():
     """Otherwise the approval is a signature on nothing in particular."""
     links = make_chain()
@@ -948,6 +978,45 @@ class FakeStore:
 
     def versions(self):
         return self._rows
+
+
+def test_reattestation_does_not_change_which_version_is_in_force():
+    """Re-derivation changes what a version may claim, never what runs.
+
+    `reattest` used the promotion path to re-point a version at its new
+    certificate, and that path marks its own version active and every other one
+    inactive. Re-attesting an older version therefore put that version back in
+    force. It happened for real: a proof re-attested v4 an hour after v5 was
+    promoted, and the fleet went back to enforcing v4.
+    """
+    statements = []
+
+    class RecordingStore(chain.ChainStore):
+        def __init__(self):
+            pass  # no project, no token: only the SQL is under test
+
+        @property
+        def project(self):
+            return "devpost-hackathon-506416"
+
+        @property
+        def token(self):
+            return "unused"
+
+    store = RecordingStore()
+    original = chain.bq.query
+    chain.bq.query = lambda sql, project, token, params=None: statements.append(
+        (sql, params or {})) or []
+    try:
+        store.repoint("v4", "newroot", "gs://bucket/certificates/v4/010-newroot.json")
+    finally:
+        chain.bq.query = original
+
+    assert len(statements) == 1, "re-pointing a root is one statement, not a re-registration"
+    sql, params = statements[0]
+    assert "active" not in sql.lower(), sql
+    assert sql.strip().startswith("UPDATE")
+    assert params["version"] == "v4" and params["root"] == "newroot"
 
 
 def test_a_promotion_onto_a_quarantined_parent_is_refused_at_the_source():

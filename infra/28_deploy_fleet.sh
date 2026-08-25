@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build one image; deploy it seven times.
+# Build one image; deploy it eight times.
 #
-# Four of those seven are the same detector with a different check family, which
-# is the claim the roster makes visible. The other three are the workload agent,
-# the Foreman, and the Policy Server.
+# Four of those eight are the same detector with a different check family, which
+# is the claim the roster makes visible. The other four are the workload agent,
+# the Foreman, the Proposer, and the Policy Server.
 #
 # Every service is private. A public endpoint in front of a model is an unmetered
 # way to spend a fixed credit, so callers sign each hop with an identity token
@@ -54,8 +54,18 @@ deploy() {
     --memory=1Gi --cpu=1 --timeout=300 \
     --set-env-vars="$env" --quiet >/dev/null
   local url
+  # The quoting here was mangled and every describe failed with "Name expected".
+  # Nothing stopped: the failure was swallowed by the assignment, and the update
+  # below then wrote an EMPTY public url onto four services, whose agent cards
+  # went back to advertising localhost. Read the url, and refuse to continue
+  # without one.
   url="$(gcloud run services describe "$name" --region="$REGION" \
-         --format='"'"'value(status.url)'"'"')"
+         --format='value(status.url)')"
+  if [ -z "$url" ]; then
+    echo "FAIL: could not read the URL of $name; refusing to write an empty" >&2
+    echo "      CASEHARDEN_PUBLIC_URL, which would make its agent card unreachable" >&2
+    exit 1
+  fi
   # A second pass, because an agent card has to advertise the service's own
   # public hostname and the service does not learn it until it exists. The
   # hostname is NOT guessable from the service name: Cloud Run issues a
@@ -101,6 +111,19 @@ fi
 FOREMAN_URL="$(deploy caseharden-foreman "$SA_FOREMAN" "$FOREMAN_ENV")"
 echo "foreman        $FOREMAN_URL"
 
+# The Proposer runs as proposer-sa, which is the whole point of it: the identity
+# that drafts a rule is the identity BigQuery refuses the sealed exam to, and the
+# agent tries the read itself rather than being told it would fail.
+# The Proposer reads Memory Bank for reviewer precedent before it drafts, and
+# records the memory ids it used in the chain's DRAFT link, so it needs the same
+# engine the Foreman writes to.
+PROPOSER_ENV="${COMMON},${VERTEX},CASEHARDEN_AGENT=proposer"
+if [ -n "${CASEHARDEN_MEMORY_ENGINE:-}" ]; then
+  PROPOSER_ENV="${PROPOSER_ENV},CASEHARDEN_MEMORY_ENGINE=${CASEHARDEN_MEMORY_ENGINE}"
+fi
+PROPOSER_URL="$(deploy caseharden-proposer "$SA_PROPOSER" "$PROPOSER_ENV")"
+echo "proposer       $PROPOSER_URL"
+
 # Who may call whom. The Foreman calls the detectors and the workload; the
 # workload calls the Policy Server; the operator drives the Foreman and the
 # workload, and reads the Policy Server for the demo curl.
@@ -111,7 +134,7 @@ done
 invoker caseharden-policy "serviceAccount:${SA_WORKLOAD}"
 invoker caseharden-policy "serviceAccount:${SA_FOREMAN}"
 invoker caseharden-policy "user:${OPERATOR}"
-for svc in caseharden-support-agent caseharden-foreman; do
+for svc in caseharden-support-agent caseharden-foreman caseharden-proposer; do
   invoker "$svc" "serviceAccount:${SA_FOREMAN}"
   invoker "$svc" "user:${OPERATOR}"
 done
@@ -128,13 +151,31 @@ for sa in "$SA_WORKLOAD" "$SA_PROPOSER"; do
 done
 gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${SA_FOREMAN}" \
   --role=roles/agentregistry.viewer --condition=None --quiet >/dev/null
-echo "model, screener and registry access granted"
+
+# Spans. Until Day 5 every trace id in this project was derived from the session
+# and turn: a stable correlation key, and not a handle Cloud Trace could open.
+# The fleet exports OpenTelemetry spans now, so the id in a chain link resolves
+# to the execution that produced it. roles/cloudtrace.agent is write-only.
+# Two roles, because the export goes to the Telemetry API's OTLP endpoint and
+# the read goes through Cloud Trace. roles/cloudtrace.agent carries
+# cloudtrace.traces.patch, which is the classic write path; the OTLP endpoint
+# wants telemetry.traces.write. With only the first, every export was refused
+# and every trace id in a chain link answered 404, which is the state Day 4
+# recorded and Day 5 exists to end.
+for sa in "$SA_WORKLOAD" "$SA_DETECTOR" "$SA_FOREMAN" "$SA_PROPOSER"; do
+  for role in roles/cloudtrace.agent roles/telemetry.tracesWriter; do
+    gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${sa}" \
+      --role="$role" --condition=None --quiet >/dev/null
+  done
+done
+echo "model, screener, registry and trace access granted"
 
 cat > "${ROOT}/infra/fleet.env" <<EOF
 # Written by 28_deploy_fleet.sh. Not a secret: these are service URLs.
 CASEHARDEN_POLICY_URL=${POLICY_URL}
 CASEHARDEN_SUPPORT_URL=${SUPPORT_URL}
 CASEHARDEN_FOREMAN_URL=${FOREMAN_URL}
+CASEHARDEN_PROPOSER_URL=${PROPOSER_URL}
 EOF
 echo "wrote infra/fleet.env"
 echo

@@ -54,16 +54,45 @@ the access list and takes a 403 on the rows. Both are bound at project scope on 
 because a dataset-scoped grant would add a second entry to `holdout_sealed`'s access
 list, and that list having exactly one entry is the artifact a reviewer opens.
 
-Then Day 4, which deploys the fleet and proves it:
+Then Day 4 and Day 5, which deploy the fleet and prove it. The two days share a
+sequence because Day 5 adds two services to it: the Proposer, from the same
+image, and the Analyst Copilot, which ADK builds and deploys itself.
 
 ```bash
 bash infra/26_conduct_live.sh              # conduct_live.turns and detector-sa
 bash infra/27_policy_server_identity.sh    # the reads the Policy Server needs
 export CASEHARDEN_MEMORY_ENGINE=$(python3 infra/31_memory_bank.py --id-only)
-bash infra/28_deploy_fleet.sh              # one image, seven Cloud Run services
-python3 infra/29_register_fleet.py         # publish the six agents into the registry
-python3 infra/100_prove_fleet.py           # seven assertions, exit non-zero on any
+bash infra/32_analyst_identity.sh          # analyst-sa, review.decisions, and its two refusals
+bash infra/28_deploy_fleet.sh              # one image, eight Cloud Run services
+bash infra/33_deploy_copilot.sh            # adk deploy cloud_run --with_ui, its own image
+python3 infra/29_register_fleet.py         # publish the seven agents into the registry
+python3 infra/100_prove_fleet.py           # eight assertions, exit non-zero on any
 ```
+
+Then the Day 5 run, which is the loop end to end against the deployed fleet:
+
+```bash
+python3 infra/110_run_loop.py --version v6 --parent v5 \
+  --verdict-text "Record a verdict on finding {subject}: ..." \
+  --approval-text "Approve {version}. ..."
+python3 infra/29_register_fleet.py         # the promotion changed the active root
+```
+
+Leaving `--verdict-text` and `--approval-text` off makes the run wait for a
+human to type the verdict and the approval into the Copilot's chat window, which
+is what the recorded run does. Either way the chain reads the row the Copilot
+wrote, never a command-line flag.
+
+The Copilot is deployed private and is opened through an authenticated proxy:
+
+```bash
+gcloud run services proxy caseharden-analyst-copilot --region=europe-west3
+```
+
+It is NOT in the Agent Registry roster. `29_register_fleet.py` registers the
+agent card a service actually serves, and `adk deploy cloud_run --with_ui`
+serves none: the Copilot is a human's window, not a worker the Foreman
+discovers.
 
 Deploy and register are separate steps because a service has no URL until it exists,
 and the registry publishes the agent card a running service actually serves rather than

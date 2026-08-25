@@ -21,7 +21,17 @@ import urllib.request
 from typing import Callable, Dict, Optional
 
 API = ("https://modelarmor.{region}.rep.googleapis.com/v1/projects/{project}"
-       "/locations/{region}/templates/{template}:sanitizeUserPrompt")
+       "/locations/{region}/templates/{template}:{method}")
+
+# The two directions Model Armor screens, and the request key each one wants.
+# Inbound is the analyst's free-text verdict and the customer's ticket; outbound
+# is what a model wrote, which for this fleet is the Proposer's rationale. They
+# are different endpoints on the same template, so a caller cannot screen a
+# model's output by pointing the prompt screener at it.
+DIRECTIONS = {
+    "prompt": ("sanitizeUserPrompt", "userPromptData"),
+    "response": ("sanitizeModelResponse", "modelResponseData"),
+}
 
 TEMPLATE = os.environ.get("CASEHARDEN_ARMOR_TEMPLATE", "caseharden-conduct")
 
@@ -64,13 +74,21 @@ def to_fields(sanitization: dict) -> dict:
 def screener(project: str, region: str,
              token_fn: Callable[[], str],
              template: str = TEMPLATE,
-             timeout: float = 8.0) -> Callable[[str], dict]:
-    """A callable that screens one string. Wired into Enforcer as `armor`."""
+             timeout: float = 8.0,
+             direction: str = "prompt") -> Callable[[str], dict]:
+    """A callable that screens one string. Wired into Enforcer as `armor`.
 
-    url = API.format(project=project, region=region, template=template)
+    `direction` picks which way the text is going. "prompt" screens input, which
+    is what the enforcement callback does per turn and what the Analyst Copilot
+    does to a verdict. "response" screens what a model wrote: infra/110_run_loop
+    puts the Proposer's rationale through it before an analyst reads it, and the
+    result is recorded in the chain's VERDICT link.
+    """
+    method, key = DIRECTIONS[direction]
+    url = API.format(project=project, region=region, template=template, method=method)
 
     def screen(text: str) -> dict:
-        body = json.dumps({"userPromptData": {"text": text}}).encode()
+        body = json.dumps({key: {"text": text}}).encode()
         request = urllib.request.Request(
             url, data=body,
             headers={"Authorization": "Bearer " + token_fn(),

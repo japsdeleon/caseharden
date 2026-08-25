@@ -58,6 +58,13 @@ python3 "${HERE}/bq_grant.py" "$PROJECT" conduct_train READER "$SA_DETECTOR"
 python3 "${HERE}/bq_grant.py" "$PROJECT" conduct_live WRITER "$SA_WORKLOAD"
 python3 "${HERE}/bq_grant.py" "$PROJECT" conduct_live READER "$SA_FOREMAN"
 python3 "${HERE}/bq_grant.py" "$PROJECT" conduct_live READER "$SA_PROPOSER"
+# The Notary reads this table because a chain whose finding came from the live
+# stream cites the live stream, and verification re-scans the cited window as
+# notary-sa. Without it every such chain verifies as unknown, which reads as an
+# outage rather than as a missing grant. Dataset-scoped: a project-level read
+# would put another principal within reach of the sealed exam's neighbourhood
+# and would change the reach digest every chain in the project is sealed on.
+python3 "${HERE}/bq_grant.py" "$PROJECT" conduct_live READER "$SA_NOTARY"
 echo "granted conduct_live and conduct_train reads"
 
 # The seal covers every identity, not just the Proposer's. A detector that could

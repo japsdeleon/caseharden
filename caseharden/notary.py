@@ -34,6 +34,8 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -410,6 +412,24 @@ def _shape_of_payload(link: Link) -> None:
     is malformed instead of the chain as a whole.
     """
     p = link.payload
+    # What each recorded kind must at least carry. Verification re-derives the
+    # evidence and the exam and nothing else, so for these kinds the check is
+    # that the link says something rather than that what it says is true. An
+    # adversarial pass sealed a chain whose HOLDOUT-DENIED link was an empty
+    # object and verification called it attested.
+    required = {
+        "FINDING": ("family", "job_id"),
+        "DRAFT-REJECTED": ("error",),
+        "HOLDOUT-DENIED": ("principal", "dataset", "permission", "http_code"),
+    }.get(link.kind)
+    if required:
+        for key in required:
+            if key not in p or p[key] in (None, "", {}, []):
+                raise KeyError(key)
+        if link.kind == "HOLDOUT-DENIED" and str(p["http_code"]) != "403":
+            raise ValueError(
+                f"a HOLDOUT-DENIED link records a refusal; this one records "
+                f"HTTP {p['http_code']}")
     if link.kind in ("EVIDENCE", "EVIDENCE-CHANGED"):
         for key in ("dataset", "window_start", "window_end", "event_digest",
                     "exam_dataset", "access_digest", "exam_reach_digest", "row_count"):
@@ -680,8 +700,11 @@ def cmd_reattest(args) -> int:
                      args.notary_sa)
     rows = [r for r in store.versions() if r["version"] == args.version]
     if rows:
-        store.register(args.version, rows[0]["parent"], rows[0]["policy"],
-                       chain.root_of(links), uri)
+        # repoint, not register: register marks its version active and every
+        # other one inactive, so re-attesting an old version would put that
+        # version back in force. Re-derivation changes what a version can claim.
+        # It must never change what the fleet enforces.
+        store.repoint(args.version, chain.root_of(links), uri)
     else:
         # A chain with no registry row was never promoted, so there is nothing to
         # re-point at the new root. Say so rather than writing a half row that the
@@ -776,18 +799,31 @@ def cmd_certificate(args) -> int:
 
 
 def cmd_seed(args) -> int:
-    """Hand-feed one promotion's seven links from real artifacts.
+    """Write one promotion's chain, from artifacts the fleet produced or this made.
 
-    Every number here is measured, not narrated: the events are re-scanned from
-    BigQuery, the 403 is taken live from BigQuery by asking as proposer-sa, and
-    the exam is the Examiner's own output. The two human inputs, the analyst's
-    disposition and the finding narrative, are human inputs in production too.
+    Two ways in. Without `--bundle` the Notary produces the finding itself, by
+    running its own SQL over the training window, and the human inputs are
+    command-line flags. That is what Day 3 meant by hand-fed links, and it still
+    works, because a chain has to be writable before the agents that fill it
+    exist.
 
-    The agents that will produce these links live on Days 4 and 5. Seeding them
-    now is what the plan's Day 3 exit criterion means by hand-fed links.
+    With `--bundle` the links come from the run that actually happened: the
+    FINDING is a detector's answer with that detector's BigQuery job id, the
+    VERDICT is the row a human wrote through the Analyst Copilot with the Model
+    Armor result on their words, the DRAFT is what the Proposer emitted, any
+    draft the grammar refused is its own link, and HOLDOUT-DENIED is the refusal
+    the Proposer itself received when it tried to score against the exam.
+
+    Either way the numbers are measured here rather than copied in: the cited
+    events are re-scanned from BigQuery and the exam is the Examiner's own
+    output, run now, under examiner-sa.
     """
     notary_token, evidence, store = _tokens(args.project, args)
     candidate, current = load(args.candidate), load(args.current)
+    bundle = json.loads(Path(args.bundle).read_text()) if args.bundle else {}
+    for field in ("dataset", "window_start", "window_end", "approver"):
+        if bundle.get(field):
+            setattr(args, field.replace("-", "_"), bundle[field])
 
     if store.read(args.version):
         print(f"{args.version} already has a chain. Delete it or pick another version.")
@@ -806,33 +842,64 @@ def cmd_seed(args) -> int:
                                          events, "holdout_sealed", access,
                                          evidence.exam_reach())
 
-    found = _finding_evidence(args.project, notary_token, args.dataset,
-                              args.window_start, args.window_end)
-    finding = {
-        "family": "scope-violation",
-        "detector": "scope-violation@v1",
-        "sql": _FINDING_SQL,
-        "sessions": found["sessions"],
-        # A finding is only re-checkable if a reviewer can re-run the job that
-        # produced it and follow the request that triggered it. The job id is
-        # BigQuery's; the trace ids come from the conduct rows themselves, which
-        # is where the enforcement callback writes them.
-        "job_id": found["job_id"],
-        "trace_ids": found["trace_ids"],
-        "table": found["table"],
-    }
-    verdict_link = {
+    if bundle.get("finding"):
+        # The detector's own answer, with the job id it ran and the trace ids of
+        # the conduct rows it cited. Day 4 shipped a FINDING the Notary wrote
+        # itself over a different table from the one the fleet scans, so the two
+        # never met; this is where they do.
+        finding = bundle["finding"]
+    else:
+        found = _finding_evidence(args.project, notary_token, args.dataset,
+                                  args.window_start, args.window_end)
+        finding = {
+            "family": "scope-violation",
+            "detector": "scope-violation@v1",
+            "sql": _FINDING_SQL,
+            "sessions": found["sessions"],
+            # A finding is only re-checkable if a reviewer can re-run the job
+            # that produced it and follow the request that triggered it. The job
+            # id is BigQuery's; the trace ids come from the conduct rows
+            # themselves, which is where the enforcement callback writes them.
+            "job_id": found["job_id"],
+            "trace_ids": found["trace_ids"],
+            "table": found["table"],
+        }
+    verdict_link = bundle.get("verdict") or {
         "analyst": args.approver,
         "disposition": "confirmed abuse",
         "rationale": "tool calls outside the session's declared scope, repeated across tenants",
         "model_armor": "not wired until Day 5; this link carries no screening result",
     }
-    draft = {
-        "version": candidate.version,
-        "rule_count": len(candidate.rules),
-        "policy": json.loads(canonical_json(candidate)),
-    }
+    draft = dict(bundle.get("draft") or {},
+                 version=candidate.version,
+                 rule_count=len(candidate.rules),
+                 policy=json.loads(canonical_json(candidate)))
+
+    # A bundle is a file. Every claim in it that this Notary can check itself,
+    # it checks, and it refuses to write a chain rather than record a claim it
+    # could not stand behind. An adversarial pass wrote a bundle asserting a
+    # detector job that never ran, a screening that never happened and a 403
+    # that was never taken, and the chain sealed all three as attested.
+    if bundle:
+        corroborate(args, notary_token, finding, verdict_link, bundle)
+
+    # The refusal is always taken live, whatever the bundle says. The Proposer
+    # reports its own 403 from the hosted service and that message is kept; what
+    # is not taken on trust is that the refusal happened at all.
     denied = _live_403(args.project, args.candidate, args.current)
+    claimed = bundle.get("holdout_denied")
+    if claimed:
+        for field in ("principal", "dataset", "permission", "http_code"):
+            if str(claimed.get(field)) != str(denied.get(field)):
+                raise SystemExit(
+                    f"the bundle claims the Proposer was refused with "
+                    f"{field}={claimed.get(field)!r}, and asking BigQuery now "
+                    f"gives {denied.get(field)!r}. Nothing was written.")
+        # The Proposer's own words for the refusal it received, kept verbatim,
+        # now that the refusal itself has been reproduced.
+        denied = dict(denied, message=claimed.get("message", denied["message"]),
+                      reported_by="the Proposer, on the hosted service",
+                      reproduced_by="the Notary, at seal time")
 
     cand_score = evidence.score(candidate)
     curr_score = evidence.score(current)
@@ -845,16 +912,30 @@ def cmd_seed(args) -> int:
         return 1
     exam = _exam_payload(candidate, current, cand_score, curr_score, gate_verdict)
 
-    links = bind_approval(chain.build(args.version, [
+    # The refused candidates belong to the Examiner's record, because the
+    # Examiner is what refused them. They are in the chain either way; putting
+    # them here says who did the refusing.
+    if bundle.get("refused_by_gate"):
+        exam = dict(exam, refused=bundle["refused_by_gate"])
+
+    steps = [
         ("EVIDENCE", evidence_payload),
         ("FINDING", finding),
         ("VERDICT", verdict_link),
-        ("DRAFT", draft),
-        ("HOLDOUT-DENIED", denied),
-        ("EXAM", exam),
-        ("APPROVAL", {"approver": args.approver, "verdict": gate_verdict.reason,
-                      "approves_exam_hash": None}),
-    ]))
+    ]
+    # Every draft the grammar refused, in the order it refused them, and BEFORE
+    # the one that survived, because that is the order they happened in. A retry
+    # that leaves no record turns "the model got it wrong twice" into "the model
+    # got it right".
+    steps.extend(("DRAFT-REJECTED", r) for r in bundle.get("rejected_drafts", []))
+    steps.append(("DRAFT", draft))
+    steps.append(("HOLDOUT-DENIED", denied))
+    steps.append(("EXAM", exam))
+    steps.append(("APPROVAL", dict(bundle.get("approval") or {},
+                                   approver=args.approver,
+                                   verdict=gate_verdict.reason,
+                                   approves_exam_hash=None)))
+    links = bind_approval(chain.build(args.version, steps))
 
     store.append_all(links)
     root = chain.root_of(links)
@@ -864,6 +945,78 @@ def cmd_seed(args) -> int:
     print(f"root   {root}")
     print(f"sealed {uri}")
     return 0
+
+
+def corroborate(args, token: str, finding: dict, verdict: dict, bundle: dict) -> None:
+    """Check a bundle's claims against the systems that would have produced them.
+
+    Three of the four links a bundle supplies name something outside this
+    process: a BigQuery job, a row a human wrote through the Analyst Copilot,
+    and an approval of the same kind. Each is looked up. A claim that cannot be
+    corroborated stops the promotion, because the alternative is a chain that
+    verifies while asserting a detector ran, a human was screened and a refusal
+    was taken, none of which need have happened.
+
+    What is NOT claimed by this: that the rows the finding cites are still what
+    the job returned, or that the human meant what they typed. Verification
+    re-derives the evidence and the exam and nothing else, and section 2 of the
+    plan claims exactly that much.
+    """
+    job_id = str(finding.get("job_id") or "")
+    if not job_id:
+        raise SystemExit("the bundle's finding names no BigQuery job. A finding a "
+                         "reviewer cannot re-run is not a finding. Nothing written.")
+    location, _, bare = job_id.partition(":") if ":" in job_id else ("", "", job_id)
+    url = (f"https://bigquery.googleapis.com/bigquery/v2/projects/{args.project}"
+           f"/jobs/{urllib.parse.quote(bare)}"
+           + (f"?location={urllib.parse.quote(location)}" if location else ""))
+    try:
+        request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            job = json.load(response)
+    except Exception as exc:
+        raise SystemExit(
+            f"the Notary could not look up job {job_id}, which the bundle's "
+            f"finding cites: {type(exc).__name__}: {str(exc)[:200]}. Nothing written.")
+    state = (job.get("status") or {}).get("state")
+    if state != "DONE" or (job.get("status") or {}).get("errorResult"):
+        raise SystemExit(f"job {job_id} is {state!r} and did not complete cleanly. "
+                         f"Nothing written.")
+    print(f"corroborated: BigQuery job {bare[:28]} exists and completed")
+
+    for kind, payload, subject in (
+            ("VERDICT", verdict, str(finding.get("job_id") or "")),
+            ("APPROVAL", bundle.get("approval") or {}, args.version)):
+        decision_id = payload.get("decision_id")
+        if not decision_id:
+            raise SystemExit(
+                f"the bundle's {kind} names no decision id, so no row a human "
+                f"wrote can be found for it. Nothing written.")
+        rows = bq.query(
+            f"SELECT kind, analyst, subject, disposition, rationale, ma_verdict,"
+            f" approved FROM `{bq.qualified_table(args.project, 'review', 'decisions')}`"
+            f" WHERE decision_id = @id",
+            args.project, token, params={"id": decision_id})
+        if not rows:
+            raise SystemExit(
+                f"{kind} decision {decision_id} is not in review.decisions. The "
+                f"Analyst Copilot writes that table and nothing else may. "
+                f"Nothing written.")
+        row = rows[0]
+        if row["kind"] != kind or row["subject"] != subject:
+            raise SystemExit(
+                f"{kind} decision {decision_id} is a {row['kind']} on "
+                f"{row['subject']!r}, not a {kind} on {subject!r}. Nothing written.")
+        if kind == "VERDICT" and row["rationale"] != payload.get("rationale"):
+            raise SystemExit(
+                f"the bundle's verdict text differs from the row the Copilot "
+                f"wrote for {decision_id}. Nothing written.")
+        if kind == "APPROVAL" and str(row.get("approved")).lower() not in ("true", "1"):
+            raise SystemExit(
+                f"decision {decision_id} does not record an approval of "
+                f"{args.version}. Nothing written.")
+        print(f"corroborated: {kind} {decision_id} was written by the Copilot "
+              f"as {row['analyst']}")
 
 
 _FINDING_SQL = (
@@ -971,6 +1124,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     s.add_argument("--window-start", default="2026-08-14T00:00:00Z")
     s.add_argument("--window-end", default="2026-08-15T00:00:00Z")
     s.add_argument("--approver", default="analyst@caseharden.example")
+    s.add_argument("--bundle", default=None,
+                   help="JSON from infra/110_run_loop.py: the finding, verdict, "
+                        "refused drafts and the Proposer's own 403")
     s.set_defaults(func=cmd_seed)
 
     g = sub.add_parser("genesis")

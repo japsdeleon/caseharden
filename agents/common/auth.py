@@ -110,12 +110,21 @@ def origin(url: str) -> str:
 
 
 def signing_client(timeout: float = 120.0):
-    """An httpx.AsyncClient that signs every request for its destination."""
+    """An httpx.AsyncClient that signs every request for its destination.
+
+    It also carries the W3C traceparent, so the detector's spans land under the
+    fan-out that asked for them. Without that header each hop begins its own
+    trace and one investigation is four unrelated pictures in Cloud Trace.
+    """
     import httpx
+
+    from agents.common import tracing
 
     async def sign(request):
         token = id_token(origin(str(request.url)))
         if token:
             request.headers["Authorization"] = "Bearer " + token
+        for key, value in tracing.inject({}).items():
+            request.headers[key] = value
 
     return httpx.AsyncClient(timeout=timeout, event_hooks={"request": [sign]})

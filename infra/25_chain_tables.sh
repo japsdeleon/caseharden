@@ -45,6 +45,18 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --condition=None --quiet >/dev/null
 echo "granted roles/bigquery.metadataViewer to notary-sa at project scope"
 
+# A finding names the BigQuery job that produced it, and the Notary refuses to
+# write a chain citing a job it cannot see. The detectors run those jobs as
+# detector-sa, and jobs.get on somebody else's job needs a project-level role.
+# roles/bigquery.resourceViewer carries jobs.get and jobs.list and does NOT
+# carry bigquery.tables.getData, so it does not put the Notary within reach of
+# the sealed exam and does not change the reach digest every certificate is
+# sealed on. Checked with the same expansion `verify` uses, not assumed.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:$SA_NOTARY" --role=roles/bigquery.resourceViewer \
+  --condition=None --quiet >/dev/null
+echo "granted roles/bigquery.resourceViewer to notary-sa, so it can see the jobs it cites"
+
 # A dataset access list is not the only way to reach a table. A project-level
 # IAM binding grants the same permission and never appears in that list, so
 # hashing the list alone left the easier of the two grants unnoticed. Link 1

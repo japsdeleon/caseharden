@@ -229,6 +229,52 @@ def query_job(sql: str, project: str, token: str, location: str = "europe-west3"
     return rows, job_id
 
 
+def job_results(project: str, token: str, job_id: str,
+                location: str = "europe-west3", max_rows: int = 200) -> List[dict]:
+    """The rows one already-run job produced, fetched by its id.
+
+    This is how a detector's finding reaches the chain without being retyped. A
+    detector reports the job id it ran; the Notary fetches that job's own
+    results rather than re-running the query or trusting the model's summary, so
+    the rows in the FINDING link are the rows the detector saw and a reviewer
+    opens the same job.
+
+    Accepts either `location:jobId` or a bare job id.
+    """
+    if not NAME_RE.match(project):
+        raise ValueError(f"not a usable project id: {project!r}")
+    if ":" in job_id:
+        location, job_id = job_id.split(":", 1)
+    if not re.match(r"^[A-Za-z0-9_\-]{1,1024}$", job_id):
+        raise ValueError(f"not a usable job id: {job_id!r}")
+    if not re.match(r"^[A-Za-z0-9_\-]{1,64}$", location):
+        raise ValueError(f"not a usable job location: {location!r}")
+    url = (f"https://bigquery.googleapis.com/bigquery/v2/projects/{project}"
+           f"/queries/{urllib.parse.quote(job_id)}"
+           f"?location={urllib.parse.quote(location)}&maxResults={int(max_rows)}")
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise BigQueryError(json.load(exc)) from None
+    # The same three refusals `query` makes. Without them a truncated or
+    # unfinished answer comes back as a short list, and the caller writes those
+    # rows into a chain link as though they were the finding's whole result set.
+    if "error" in payload:
+        raise BigQueryError(payload)
+    if not payload.get("jobComplete", False):
+        raise IncompleteResult(f"job {job_id} has not finished")
+    if payload.get("pageToken"):
+        raise IncompleteResult(
+            f"job {job_id} returned a partial page; this client does not paginate")
+    fields = payload.get("schema", {}).get("fields", [])
+    return [
+        {f["name"]: _decode(f, c) for f, c in zip(fields, row.get("f", []))}
+        for row in payload.get("rows", [])
+    ]
+
+
 def get_dataset(project: str, dataset: str, token: str) -> dict:
     """Dataset metadata, including its access list.
 

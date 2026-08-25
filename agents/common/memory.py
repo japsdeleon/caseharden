@@ -47,12 +47,25 @@ def write(engine: str, project: str, region: str, token_fn: Callable[[], str],
 
 def read(engine: str, project: str, region: str, token_fn: Callable[[], str],
          timeout: float = 60.0) -> List[dict]:
-    """Every stored memory. Used by the fleet proof to show the write landed."""
+    """Every stored memory. Used by the fleet proof to show the write landed.
+
+    Raises on a refusal rather than answering with an empty list. Swallowing the
+    error made a bank that could not be read indistinguishable from a bank with
+    nothing in it, which is the failure this module exists to close on the write
+    side. It cost a proof run: an engine id read back through
+    `gcloud --format=value(...)` arrived as "['4537...']" rather than the id,
+    every request 404'd, and the proof reported an empty Memory Bank for a write
+    that had landed four seconds earlier.
+    """
+    if not engine:
+        raise ValueError("no memory engine configured")
     request = urllib.request.Request(
         API.format(region=region, project=project, engine=engine),
         headers={"Authorization": "Bearer " + token_fn()})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response).get("memories", [])
-    except urllib.error.HTTPError:
-        return []
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Memory Bank refused a read of engine {engine!r}: HTTP {exc.code} "
+            f"{exc.read().decode()[:300]}") from None

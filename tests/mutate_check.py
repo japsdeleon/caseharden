@@ -27,6 +27,13 @@ CASES = [
   "an exam and an approval are not required"),
  ("notary.py", "                _shape_of_payload(link)", "                pass",
   "payload shapes are not checked"),
+ # Day 5. Re-derivation must not change what is enforced, and a chain link
+ # that records a refusal must record a refusal.
+ ("chain.py", 'f" WHERE version = @version",',
+  'f", active = TRUE WHERE version = @version",',
+  "re-attestation puts an old version back in force"),
+ ("notary.py", '        if link.kind == "HOLDOUT-DENIED" and str(p["http_code"]) != "403":',
+  '        if False:', "a HOLDOUT-DENIED link can record something other than a refusal"),
  ("policy_server.py", "            if current is None or started > current[0]:", "            if True:",
   "a stale refresh overwrites a newer one"),
  ("notary.py", 'altered = sorted(k for k in set(actual) & set(stored) if actual[k] != stored[k])',
