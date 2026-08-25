@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Five datasets and the role grants. The deny binding is separate, in 30_iam_deny.sh.
+# Five datasets, and job-running rights only. Read access is granted per dataset
+# in 30_seal_holdout.sh, never project-wide.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
@@ -9,33 +10,18 @@ mk() {
 }
 
 mk conduct_train  "Synthetic agent conduct events, days 1-76. The training window. Readable by the Proposer."
-mk holdout_sealed "Labelled attack holdout, days 77-90. Read by examiner-sa only. proposer-sa is IAM-denied."
+mk holdout_sealed "Labelled attack holdout, days 77-90. examiner-sa is the only reader."
 mk benign_corpus  "Legitimate tool-call turns. The benign side of the two-sided promotion gate."
 mk chain          "Append-only hash-linked provenance chain."
 mk policy         "Guardrail policy versions and their attestation state."
 
-grant() { gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:$1" --role="$2" --condition=None --quiet >/dev/null; }
-
-# Everyone who queries needs to run jobs.
+# Running a query and reading a table are separate permissions. Every principal
+# needs the first. None of them gets the second at project scope, because a
+# project-wide reader is a reader of the holdout too.
 for sa in "$SA_PROPOSER" "$SA_EXAMINER" "$SA_NOTARY" "$SA_FOREMAN" "$SA_WORKLOAD"; do
-  grant "$sa" roles/bigquery.jobUser
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:$sa" --role=roles/bigquery.jobUser \
+    --condition=None --quiet >/dev/null
 done
 
-# The Proposer holds an ordinary project-wide read. The deny binding in 30_iam_deny.sh
-# carves holdout_sealed out of it. That ordering is the point: the 403 is a deny
-# overriding a real grant, not the absence of one.
-grant "$SA_PROPOSER" roles/bigquery.dataViewer
-grant "$SA_EXAMINER" roles/bigquery.dataViewer
-grant "$SA_FOREMAN"  roles/bigquery.dataViewer
-grant "$SA_WORKLOAD" roles/bigquery.dataViewer
-
-# The Notary is the only writer to the chain and the policy registry.
-bq --project_id="$PROJECT" add-iam-policy-binding \
-   --member="serviceAccount:$SA_NOTARY" --role=roles/bigquery.dataEditor \
-   "${PROJECT}:chain" >/dev/null
-bq --project_id="$PROJECT" add-iam-policy-binding \
-   --member="serviceAccount:$SA_NOTARY" --role=roles/bigquery.dataEditor \
-   "${PROJECT}:policy" >/dev/null
-
-echo "Datasets and grants ready."
+echo "Datasets created. No principal holds a project-wide BigQuery read."
