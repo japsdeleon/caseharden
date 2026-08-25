@@ -1,0 +1,20 @@
+# never commit credentials
+*.json.key
+*-key.json
+service-account*.json
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# local artifacts
+out/
+*.local
+.DS_Store
