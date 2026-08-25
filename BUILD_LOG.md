@@ -22,9 +22,9 @@ Five BigQuery datasets in europe-west3: `conduct_train`, `holdout_sealed`,
 holds a project-wide BigQuery read.
 
 Certificate bucket `gs://caseharden-certificates-506416`, europe-west3, uniform
-bucket-level access, public access prevention enforced, 30-day retention policy.
-**The policy is set but not yet locked.** Locking is irreversible and is a separate
-guarded step, `infra/62_lock_retention.sh`.
+bucket-level access, public access prevention enforced, 30-day retention policy,
+**locked** (`isLocked: true`). Locking is irreversible, so it sits behind its own
+guard in `infra/62_lock_retention.sh` and was run only after explicit sign-off.
 
 Seeded synthetic conduct generator, `generator/generate_conduct.py`, with a self-check.
 
@@ -88,16 +88,39 @@ or object retention and cannot be deleted or overwritten until 2026-09-23T23:03:
 the same call against the JSON API, where the reason is stated. Both are in the capture.
 Overwrite is refused on the same grounds, so the record cannot be edited either.
 
+The obvious way around an unlocked policy is to clear the policy first and delete
+after. That is closed too:
+
+```
+HTTP 403  retentionPolicyNotMet
+Bucket 'caseharden-certificates-506416' has a locked Retention Policy which cannot be removed.
+```
+
+### Decided today
+
+**The isolation guarantee is dataset access control, not an IAM deny binding.** IAM
+deny policies need `roles/iam.denyAdmin`, which binds only at organization or folder
+scope, and this project has no parent. `iam.denypolicies.create` is also rejected from
+custom roles, so there is no project-scoped route to it. Both errors are quoted in
+`infra/30_seal_holdout.sh`.
+
+The seal is built the other way instead: no principal holds a project-wide BigQuery
+read, `holdout_sealed` has its inherited `projectReaders` and `projectWriters` entries
+stripped, and exactly one service account is granted it. The 403 is unchanged and the
+audit log still names `bigquery.tables.getData`. What is lost is that a future
+owner-level grant would not be overridden.
+
+Section 2 of the plan is reworded to match, and the gap is closed on Day 3 rather than
+conceded: the Notary hashes the `holdout_sealed` access list into chain link 1, so
+granting the Proposer access later breaks re-derivation and quarantines the version.
+The isolation guarantee becomes evidence-derived like everything else, which is closer
+to the thesis than the deny binding was.
+
 ### Carried over
 
-1. **The isolation guarantee is a dataset ACL, not an IAM deny binding.** IAM deny
-   policies need `roles/iam.denyAdmin`, which is grantable only at organization level,
-   and this personal project has no organization. `iam.denypolicies.create` is also
-   barred from custom roles, so there is no project-scoped route to it. The 403 is real
-   and the audit log names the denied permission, but the mechanism is "the exam has
-   exactly one reader" rather than "a deny rule overrides a grant". Section 2 of the
-   plan is worded as a deny binding and needs a decision before the README is written.
-2. **The retention policy is not locked.** Unlocked, an owner could remove the policy
-   and then delete. The claim needs the lock. Irreversible, so it is a separate step.
-3. Employer email covering code ownership, development infrastructure approval and
-   public repo approval is still outstanding.
+1. **Day 3, chain link 1 must include the `holdout_sealed` access list hash.** This is
+   the substitute for the deny binding and it is load-bearing, not decorative. One
+   pytest: mutate the access list, assert `verify` quarantines.
+2. Employer email covering code ownership, development infrastructure approval and
+   public repo approval is still outstanding. The repo is **private** until it is sent,
+   then flips back to public with its commit history intact.

@@ -27,7 +27,9 @@ MSG
   exit 1
 fi
 
-gcloud storage buckets update "gs://${BUCKET}" --lock-retention-period \
+# gcloud prompts here and --quiet answers its default, which is no. The guard above
+# is this script's confirmation, so answer the prompt.
+printf "y\n" | gcloud storage buckets update "gs://${BUCKET}" --lock-retention-period \
   --project="$PROJECT"
 
 gcloud storage buckets describe "gs://${BUCKET}" --project="$PROJECT" \

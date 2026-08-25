@@ -5,6 +5,7 @@ location: EUROPE-WEST3
 name: caseharden-certificates-506416
 retention_policy:
   effectiveTime: '2026-08-25T06:03:43.701000+00:00'
+  isLocked: true
   retentionPeriod: '2592000'
 
 ===============================================================
@@ -70,3 +71,27 @@ RESULT: delete REFUSED and overwrite REFUSED by the Cloud Storage retention poli
   name                     certificates/day1-seal-check.json
   timeCreated              2026-08-25T06:03:14.307Z
   retentionExpirationTime  2026-09-24T06:03:14.307Z
+===============================================================
+ and attempts to remove the retention policy itself
+===============================================================
+  An unlocked policy can be cleared by the owner and the object deleted after.
+  A locked one cannot, which is what closes that path.
+$ curl -X PATCH https://storage.googleapis.com/storage/v1/b/caseharden-certificates-506416 -d '{"retentionPolicy":null}'
+{
+  "error": {
+    "code": 403,
+    "message": "Bucket 'caseharden-certificates-506416' has a locked Retention Policy which cannot be removed.",
+    "errors": [
+      {
+        "message": "Bucket 'caseharden-certificates-506416' has a locked Retention Policy which cannot be removed.",
+        "domain": "global",
+        "reason": "retentionPolicyNotMet"
+      }
+    ]
+  }
+}
+
+HTTP 403
+
+
+RESULT: the retention policy itself is REFUSED removal. The lock holds.

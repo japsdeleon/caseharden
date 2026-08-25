@@ -83,3 +83,29 @@ echo
 
 rule; echo " the object is unchanged"; rule
 meta
+
+rule; echo " and attempts to remove the retention policy itself"; rule
+echo "  An unlocked policy can be cleared by the owner and the object deleted after."
+echo "  A locked one cannot, which is what closes that path."
+echo "\$ curl -X PATCH https://storage.googleapis.com/storage/v1/b/${BUCKET} -d '{\"retentionPolicy\":null}'"
+CLR="$(curl -s -w '\nHTTP %{http_code}' -X PATCH -H "Authorization: Bearer ${TOK}" \
+  -H "Content-Type: application/json" --data '{"retentionPolicy":null}' \
+  "https://storage.googleapis.com/storage/v1/b/${BUCKET}")"
+echo "$CLR" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+body, _, code = raw.rpartition("\n")
+try:
+    e = json.loads(body)["error"]
+    print(json.dumps({"code": e["code"], "reason": e["errors"][0]["reason"], "message": e["message"]}, indent=2))
+except Exception:
+    print(body)
+print(code)
+'
+echo
+if echo "$CLR" | grep -q "locked Retention Policy which cannot be removed"; then
+  echo "RESULT: the retention policy itself is REFUSED removal. The lock holds."
+else
+  echo "RESULT: *** the retention policy was removable ***"
+  exit 1
+fi
