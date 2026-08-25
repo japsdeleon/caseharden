@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Exit criterion 2: a sealed certificate can be neither deleted nor overwritten,
+# and the refusal comes from Cloud Storage rather than from any code here.
+#
+# Both attempts are made as the project OWNER on purpose. Owner is the strongest
+# principal available in this project, and the retention policy refuses it anyway.
+#
+# gcloud reports the refusal as an opaque GcsApiError, so the same call is repeated
+# against the JSON API, which states the reason verbatim. Both are shown: the first
+# is what an operator sees, the second is what a reviewer needs.
+set -uo pipefail
+source "$(dirname "$0")/env.sh"
+
+OBJ="certificates/day1-seal-check.json"
+ENC="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$OBJ")"
+API="https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${ENC}"
+TOK="$(gcloud auth print-access-token 2>/dev/null)"
+
+rule() { printf '%s\n' "==============================================================="; }
+meta() {
+  curl -s -H "Authorization: Bearer ${TOK}" "$API" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if "error" in d:
+    print("  object not present"); sys.exit(0)
+for k in ("name", "timeCreated", "retentionExpirationTime"):
+    print(f"  {k:<24} {d.get(k)}")
+'
+}
+
+rule; echo " the retention policy on the certificate bucket"; rule
+gcloud storage buckets describe "gs://${BUCKET}" --project="$PROJECT" \
+  --format="yaml(name,location,retention_policy)"
+echo
+
+rule; echo " the sealed object"; rule
+if ! curl -s -o /dev/null -f -H "Authorization: Bearer ${TOK}" "$API"; then
+  TMP="$(mktemp)"
+  printf '{"note":"Day 1 seal check. Written to prove the retention policy refuses deletion and overwrite."}\n' > "$TMP"
+  gcloud storage cp "$TMP" "gs://${BUCKET}/${OBJ}" --project="$PROJECT" >/dev/null 2>&1
+fi
+meta
+echo
+
+rule; echo " the project owner attempts to delete it"; rule
+echo "  acting as: $(gcloud config get-value account 2>/dev/null)"
+echo
+echo "\$ gcloud storage rm gs://${BUCKET}/${OBJ}"
+gcloud storage rm "gs://${BUCKET}/${OBJ}" --project="$PROJECT" 2>&1 | grep -E "ERROR|Removing gs" | head -2
+echo
+echo "  gcloud reports the refusal without a reason. The same call, verbatim:"
+echo "\$ curl -X DELETE https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${ENC}"
+DEL="$(curl -s -w '\nHTTP %{http_code}' -X DELETE -H "Authorization: Bearer ${TOK}" "$API")"
+echo "$DEL"
+echo
+
+rule; echo " and attempts to overwrite it"; rule
+echo "\$ curl -X POST .../upload/storage/v1/b/${BUCKET}/o?name=${ENC}"
+PUT="$(curl -s -w '\nHTTP %{http_code}' -X POST \
+  -H "Authorization: Bearer ${TOK}" -H "Content-Type: application/json" \
+  --data '{"note":"tampered"}' \
+  "https://storage.googleapis.com/upload/storage/v1/b/${BUCKET}/o?uploadType=media&name=${ENC}")"
+echo "$PUT" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+body, _, code = raw.rpartition("\n")
+try:
+    e = json.loads(body)["error"]
+    print(json.dumps({"code": e["code"], "reason": e["errors"][0]["reason"], "message": e["message"]}, indent=2))
+except Exception:
+    print(body)
+print(code)
+'
+echo
+
+if echo "$DEL" | grep -q "retentionPolicyNotMet" && echo "$PUT" | grep -q "retentionPolicyNotMet"; then
+  echo "RESULT: delete REFUSED and overwrite REFUSED by the Cloud Storage retention policy."
+else
+  echo "RESULT: *** IMMUTABILITY FAILED ***"
+  exit 1
+fi
+echo
+
+rule; echo " the object is unchanged"; rule
+meta

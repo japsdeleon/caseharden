@@ -1,0 +1,54 @@
+===============================================================
+ 1. proposer-sa reads the training window it is entitled to
+===============================================================
+principal on the wire: proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+$ SELECT COUNT(*) FROM devpost-hackathon-506416.conduct_train.turns
+HTTP 200   rows: 32687
+
+===============================================================
+ 2. the same principal reads the sealed holdout
+===============================================================
+principal on the wire: proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+$ SELECT COUNT(*) FROM devpost-hackathon-506416.holdout_sealed.turns
+HTTP 403  PERMISSION_DENIED
+{
+  "error": {
+    "code": 403,
+    "message": "Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.",
+    "errors": [
+      {
+        "message": "Access Denied: Table devpost-hackathon-506416:holdout_sealed.turns: User does not have permission to query table devpost-hackathon-506416:holdout_sealed.turns, or perhaps it does not exist.",
+        "domain": "global",
+        "reason": "accessDenied"
+      }
+    ],
+    "status": "PERMISSION_DENIED"
+  }
+}
+
+RESULT: DENIED by BigQuery. No code in this project ran.
+
+===============================================================
+ 3. examiner-sa, the only principal granted the holdout
+===============================================================
+principal on the wire: examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+$ SELECT COUNT(*) FROM devpost-hackathon-506416.holdout_sealed.turns
+HTTP 200   rows: 5421
+
+===============================================================
+ the holdout_sealed access list, as a reviewer reads it in the console
+===============================================================
+  OWNER  projectOwners
+  OWNER  mrjpdeleon@gmail.com
+  READER examiner-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+
+===============================================================
+ 4. the same refusal in the Cloud Audit log, which names the permission
+===============================================================
+  logName        data_access
+  timestamp      2026-08-25T06:02:05.619513Z
+  principalEmail proposer-sa@devpost-hackathon-506416.iam.gserviceaccount.com
+  methodName     jobservice.query
+  status.code    7  (PERMISSION_DENIED)
+  DENIED         bigquery.tables.getData  (DATA_READ)
+                 on projects/devpost-hackathon-506416/datasets/holdout_sealed/tables/turns

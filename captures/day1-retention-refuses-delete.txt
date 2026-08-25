@@ -1,0 +1,72 @@
+===============================================================
+ the retention policy on the certificate bucket
+===============================================================
+location: EUROPE-WEST3
+name: caseharden-certificates-506416
+retention_policy:
+  effectiveTime: '2026-08-25T06:03:43.701000+00:00'
+  retentionPeriod: '2592000'
+
+===============================================================
+ the sealed object
+===============================================================
+  name                     certificates/day1-seal-check.json
+  timeCreated              2026-08-25T06:03:14.307Z
+  retentionExpirationTime  2026-09-24T06:03:14.307Z
+
+===============================================================
+ the project owner attempts to delete it
+===============================================================
+  acting as: mrjpdeleon@gmail.com
+
+$ gcloud storage rm gs://caseharden-certificates-506416/certificates/day1-seal-check.json
+Removing gs://caseharden-certificates-506416/certificates/day1-seal-check.json...
+ERROR: Task 'gs://caseharden-certificates-506416/certificates/day1-seal-check.json' failed: GcsApiError('')
+
+  gcloud reports the refusal without a reason. The same call, verbatim:
+$ curl -X DELETE https://storage.googleapis.com/storage/v1/b/caseharden-certificates-506416/o/certificates%2Fday1-seal-check.json
+{
+  "error": {
+    "code": 403,
+    "message": "Object 'caseharden-certificates-506416/certificates/day1-seal-check.json' is subject to bucket's retention policy or object retention and cannot be deleted or overwritten until 2026-09-23T23:03:14.307887-07:00",
+    "errors": [
+      {
+        "message": "Object 'caseharden-certificates-506416/certificates/day1-seal-check.json' is subject to bucket's retention policy or object retention and cannot be deleted or overwritten until 2026-09-23T23:03:14.307887-07:00",
+        "domain": "global",
+        "reason": "retentionPolicyNotMet"
+      }
+    ]
+  }
+}
+
+HTTP 403
+
+===============================================================
+ and attempts to overwrite it
+===============================================================
+$ curl -X POST .../upload/storage/v1/b/caseharden-certificates-506416/o?name=certificates%2Fday1-seal-check.json
+{
+  "error": {
+    "code": 403,
+    "message": "Object 'caseharden-certificates-506416/certificates/day1-seal-check.json' is subject to bucket's retention policy or object retention and cannot be deleted or overwritten until 2026-09-23T23:03:14.307887-07:00",
+    "errors": [
+      {
+        "message": "Object 'caseharden-certificates-506416/certificates/day1-seal-check.json' is subject to bucket's retention policy or object retention and cannot be deleted or overwritten until 2026-09-23T23:03:14.307887-07:00",
+        "domain": "global",
+        "reason": "retentionPolicyNotMet"
+      }
+    ]
+  }
+}
+
+HTTP 403
+
+
+RESULT: delete REFUSED and overwrite REFUSED by the Cloud Storage retention policy.
+
+===============================================================
+ the object is unchanged
+===============================================================
+  name                     certificates/day1-seal-check.json
+  timeCreated              2026-08-25T06:03:14.307Z
+  retentionExpirationTime  2026-09-24T06:03:14.307Z
