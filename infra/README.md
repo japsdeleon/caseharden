@@ -61,6 +61,12 @@ python3 infra/tamper.py --event-id e_88214   # one late conduct event, as worklo
 python3 infra/measure_verify.py --runs 20    # the verify p50/p95 the README publishes
 ```
 
+The suite itself is checked the same way:
+
+```bash
+python3 tests/mutate_check.py    # breaks each property, asserts the suite notices
+```
+
 ## Re-running
 
 `00` through `50`, `70`, `80` and `90` are idempotent. Two are not, deliberately:

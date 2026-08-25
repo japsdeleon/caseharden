@@ -683,8 +683,11 @@ Two of its findings are recorded as deviations rather than fixed: the registry
 annotation, which has no registry to annotate until Day 4, and `DRAFT-REJECTED`, which
 has no writer until Day 5. Both are in the deviation list above.
 
-Every one of these properties was mutation-checked: the assertion was broken in the
-source, the suite was re-run, and the suite failed. Sixteen mutations, sixteen failures.
+Every one of these properties is mutation-checked by `tests/mutate_check.py`, the
+counterpart to the generator's: it breaks each property in the source in turn, re-runs
+the suite against the break, and exits non-zero if any mutation survives. 21 mutations,
+21 caught. Two of them survived on the first attempt, which is how the missing coverage
+on `seed`'s parent check and on the served-policy comparison was found.
 `tests/test_chain.py` is 56 tests, `tests/test_bq.py` is 20, and the suite is 93 in 2.0s.
 
 **Unchecked, stated rather than assumed.** Codex's sandbox has no credentials and no
