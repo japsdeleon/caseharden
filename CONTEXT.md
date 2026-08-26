@@ -76,8 +76,9 @@ occurred.
 
 ## The record
 
-The chain is the provenance record. It is hash-linked and append-only, and its end is sealed
-outside the project's own control.
+The chain is the provenance record. It is hash-linked, append-only by convention rather than
+by a platform guarantee, and its end is sealed outside the project's own control. The seal is
+what makes an edit detectable.
 
 | Term | Means |
 |---|---|
@@ -87,7 +88,7 @@ outside the project's own control.
 | **Root** | The hash of the last link. The chain's identity in one value. |
 | **Certificate** | The sealed statement of a root and the links under it, written to a retention-locked Cloud Storage bucket. |
 | **Seal** | Writing that certificate. After it, the object cannot be deleted, overwritten or unlocked, including by the project owner. |
-| **Re-derive** | Recompute a link's content from the live warehouse and compare it to what the link says. Two kinds are re-derived: `EVIDENCE` and `EXAM`. |
+| **Re-derive** | Recompute a link's content from the live warehouse and compare it to what the link says. Three kinds are re-derived: `EVIDENCE`, `EVIDENCE-CHANGED` and `EXAM`. |
 | **Corroborate** | Check a recorded link against an independent source at the moment it is written, for kinds that cannot be re-derived later. |
 
 ### Link kinds
@@ -112,8 +113,8 @@ called justified.
 
 | State | Means | Enforcement | Promotion |
 |---|---|---|---|
-| `attested` | Every link re-derives right now | in force | open |
-| `quarantined` | A link no longer re-derives, and the failing link and offending id are named | **in force**, block reasons marked unattested | frozen |
+| `attested` | Every re-derived link reproduces from the warehouse right now, every link hash and the sealed root still agree, and the chain's shape is a promotion | in force | open |
+| `quarantined` | One of those checks failed, and the break code, the failing link and the offending id are named | **in force**, block reasons marked unattested | frozen |
 | `unknown` | Verification could not run | in force, last known state retained | frozen |
 
 | Term | Means | Does not mean |

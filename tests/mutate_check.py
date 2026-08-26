@@ -138,8 +138,23 @@ CASES = [
   """    if len(raw) <= limit:\n        return {"value": str(text), "truncatedByteCount": 0}""",
   """    if True:\n        return {"value": str(text), "truncatedByteCount": 0}""",
   "a value over the API's byte limit is sent unchanged"),
- ("agents/common/tracing.py", "        kept = items[:MAX_ATTRIBUTES]", "        kept = items",
+ ("agents/common/tracing.py", "        if len(kept) >= MAX_ATTRIBUTES:", "        if False:",
   "more attributes than the API accepts are sent"),
+ ("agents/common/tracing.py",
+  """    return {"value": kept, "truncatedByteCount": len(raw) - len(kept.encode("utf-8"))}""",
+  """    return {"value": kept, "truncatedByteCount": len(raw) - limit}""",
+  "a cut inside a character under-counts the bytes it dropped"),
+ ("agents/common/tracing.py", "        name_key = _clip(key, KEY_BYTES)",
+  "        name_key = str(key)[:KEY_BYTES]",
+  "an attribute key is limited by characters, so a multi-byte key exceeds the API's limit"),
+ ("agents/common/tracing.py",
+  """        if name_key in kept:
+            dropped += 1
+            continue""",
+  """        if False:
+            dropped += 1
+            continue""",
+  "two keys that collide after truncation silently overwrite, losing one uncounted"),
  ("agents/common/tracing.py",
   """    if parent_id:\n        payload["parentSpanId"] = parent_id""",
   """    payload["parentSpanId"] = str(parent_id or "")""",

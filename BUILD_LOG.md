@@ -1562,11 +1562,18 @@ while the real bug was unsolved it was one more layer that could have been losin
 and the direct call returns a status code this module reads and prints as an ALERT. No new
 dependency either way.
 
-Measured after the fix: `100_prove_fleet.py` **ALL HELD**, 9 of 9, in
-`captures/day7-fleet-proof-all-held.txt`. The workload's conduct row carries trace
-`1b1c7d008e48db19`, which opens a 60-span DAG including ADK's own `invoke_agent support_agent`
-and `invocation` spans. A Foreman fan-out is one trace carrying spans from all four detector
-services, so the W3C propagation across the A2A hop works.
+Measured after the fix: `100_prove_fleet.py` **ALL HELD**, all eight sections and 32
+assertions, in `captures/day7-fleet-proof-all-held.txt`. That capture is from the final code,
+re-taken after the adversarial pass below. The workload's conduct row carries trace
+`86b6fc68628e2a99c6ee20a49cbc4d43`, and the capture prints the 60 spans it held, including
+ADK's own `invoke_agent support_agent` and `invocation` spans. Spans keep arriving for about a
+minute after a request, so a count taken later is higher than one taken at the moment of the
+assertion; the committed number is the capture's.
+
+One Foreman fan-out is trace `55183e5a66a53b2a5e6818b85cf9123e`: **361 spans carrying the
+Foreman and all four detector services in a single trace**, so the W3C traceparent survives the
+A2A hop. That one is a manual query against the Cloud Trace API, not a proof assertion, and is
+recorded here rather than claimed in a capture.
 
 `span_payload` is a pure function and `tests/test_tracing.py` holds every rule about the wire
 format that returns a 400: the trace id travels in the resource name and nowhere else, a root
@@ -1631,3 +1638,50 @@ vocabulary had drifted in exactly the places the audit found overclaims: "the re
 
 Tests are 179 and mutations 45. The chain is unchanged: no promotion happened today, v5 is still
 active with 7 links and root `e2a559358933`, so `fixtures/v5` needs no re-export.
+
+### The adversarial pass on the day's own diff, and what it found
+
+A second independent review, this one on `git diff HEAD~1 HEAD` rather than on the prose. It
+found five defects in code written the same day, and two of them were mine to be embarrassed
+about.
+
+**The middleware could run a request twice.** The span was opened inside a `try` whose
+`except Exception` called the application again. An exception raised after the response had
+started would have re-run the whole request: in this fleet that means a second conduct event
+and possibly a second tool call. A telemetry wrapper had become able to duplicate a governed
+action. The guard now covers setup only, and once the application is invoked its exceptions
+propagate.
+
+**`truncatedByteCount` under-counted a cut inside a character.** Slicing encoded bytes can land
+mid-character and `errors="ignore"` then discards that whole character, so `_truncatable("😀", 1)`
+emitted nothing and reported three bytes dropped out of four. The count is now taken from the
+value actually emitted, and a parametrised test asserts that every input byte is either kept or
+counted.
+
+**Attribute keys were limited in characters, not bytes.** A 128-character multi-byte key is up
+to 512 bytes and Cloud Trace refuses the whole batch. Keys are clipped on a UTF-8 boundary now,
+and two keys that collide after clipping are counted as dropped rather than one silently
+overwriting the other.
+
+**`token_fn()` was called outside the exporter's `try`.** A token refresh failure would have
+escaped into the batch processor's export thread with no ALERT printed.
+
+**`start()` reported success when it did not own the provider.** If a library installs a real
+`TracerProvider` first, this module attaches its processor but does not choose the sampler,
+which is exactly the condition that hid the bug for two days. The startup line now prints
+`sampler_forced=` and an ALERT says so when it is false.
+
+The same review corrected three claims: the fleet proof declares eight sections and the capture
+carries 32 assertions, not "9 of 9"; the committed capture shows 47 spans, not the 60 a later
+query returned; and `CONTEXT.md` said two link kinds are re-derived when `DERIVED_KINDS` has
+three, called the chain append-only without the "by convention", and defined `attested` as
+though every link were re-derived.
+
+One finding was declined. The reviewer wanted `span_payload` to validate trace and span ids for
+length, case and non-zero. The only caller formats them from an OpenTelemetry span context,
+which cannot produce anything else, and a non-recording span is never exported. Validating it
+would be guarding against a caller that does not exist.
+
+Tests are 185 and mutations 48. The four new mutations break the truncation count, the key byte
+limit, the collision count and the attribute cap, and each is caught by the test that asserts
+that property rather than by collateral damage.

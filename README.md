@@ -130,8 +130,8 @@ Every number here is measured on the live project, not estimated. Sources in
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
 | Tests | 179 |
 | Mutations broken and caught | 45 of 45 |
-| Fleet proof | 9 of 9 assertions hold ([capture](captures/day7-fleet-proof-all-held.txt)) |
-| Cloud Trace | a conduct row's trace id opens a 60-span DAG; one fan-out is one trace across four detector services |
+| Fleet proof | all 8 sections, 32 assertions ([capture](captures/day7-fleet-proof-all-held.txt)) |
+| Cloud Trace | the conduct row's trace id opens a 60-span DAG in the capture above; one fan-out is a 361-span trace spanning the Foreman and all four detectors ([log](BUILD_LOG.md)) |
 
 ## The gate, and an honest note about the demo
 

@@ -57,11 +57,11 @@ def test_timestamps_keep_their_nanoseconds():
     assert out["endTime"] == "2026-08-26T05:33:09.373456789Z"
 
 
-def test_a_span_that_never_ended_is_still_wellformed():
-    """The exporter passes start_ns for end_ns rather than None, because a null
-    endTime is refused and losing the span loses the whole batch with it."""
+def test_a_zero_length_span_keeps_both_timestamps():
+    """The exporter substitutes start for a missing end rather than sending null,
+    because a null endTime is refused and one refusal loses the whole batch."""
     out = payload(end_ns=START)
-    assert out["endTime"] == out["startTime"]
+    assert out["endTime"] == out["startTime"] == "2026-08-26T05:33:09.123456789Z"
 
 
 def test_an_unknown_kind_falls_back_rather_than_being_sent():
@@ -82,6 +82,42 @@ def test_truncation_counts_bytes_and_not_characters():
     out = payload(name=name)
     assert len(out["displayName"]["value"].encode()) <= tracing.NAME_BYTES
     assert out["displayName"]["truncatedByteCount"] == 200 - tracing.NAME_BYTES
+
+
+@pytest.mark.parametrize("text,limit,value,dropped", [
+    ("\U0001f600", 1, "", 4),               # one 4-byte character, cut at 1
+    ("a\U0001f600", 2, "a", 4),             # the cut lands inside the emoji
+    ("é", 1, "", 2),                        # 2-byte character, cut at 1
+    ("ab", 1, "a", 1),                      # ASCII, no split
+])
+def test_a_cut_inside_a_character_counts_every_byte_it_dropped(
+        text, limit, value, dropped):
+    """`truncatedByteCount` is what was left out of `value`, not the overshoot
+    against the limit. Slicing encoded bytes can land inside a character, and
+    decoding with errors="ignore" then discards that whole character, so the two
+    readings differ by up to three bytes per cut. Cloud Trace is told the first.
+    """
+    out = tracing._truncatable(text, limit)
+    assert out == {"value": value, "truncatedByteCount": dropped}
+    assert len(out["value"].encode()) + out["truncatedByteCount"] == len(
+        text.encode()), "every byte of the input is either kept or counted"
+
+
+def test_an_attribute_key_is_limited_by_bytes_like_a_value():
+    """Keys have their own byte limit and a key over it fails the whole batch."""
+    key = "\U0001f600" * 64          # 256 bytes, 64 characters
+    out = payload(attributes={key: "x"})
+    only = next(iter(out["attributes"]["attributeMap"]))
+    assert len(only.encode()) <= tracing.KEY_BYTES
+
+
+def test_two_keys_that_collide_after_truncation_are_counted_not_overwritten():
+    """Truncating to a byte limit can map two distinct keys onto one. Writing the
+    second over the first loses an attribute and reports nothing lost."""
+    stem = "k" * tracing.KEY_BYTES
+    out = payload(attributes={stem + "one": 1, stem + "two": 2})
+    assert len(out["attributes"]["attributeMap"]) == 1
+    assert out["attributes"]["droppedAttributesCount"] == 1
 
 
 def test_a_boolean_attribute_is_not_written_as_an_integer():

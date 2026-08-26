@@ -93,13 +93,32 @@ def _rfc3339(nanos: int) -> str:
     return stamp.strftime("%Y-%m-%dT%H:%M:%S") + f".{remainder:09d}Z"
 
 
+def _clip(text: str, limit: int) -> str:
+    """The longest prefix of `text` that fits in `limit` UTF-8 bytes.
+
+    Slicing the encoded bytes can land inside a character, and `errors="ignore"`
+    then drops that whole character. So the cut has to be measured after the
+    decode, not before it, or every count taken from it is wrong.
+    """
+    raw = str(text).encode("utf-8")
+    if len(raw) <= limit:
+        return str(text)
+    return raw[:limit].decode("utf-8", errors="ignore")
+
+
 def _truncatable(text: str, limit: int) -> dict:
-    """A TruncatableString, counting the bytes dropped rather than hiding them."""
+    """A TruncatableString, counting the bytes dropped rather than hiding them.
+
+    `truncatedByteCount` is what was left out of `value`, not the overshoot
+    against the limit. Cutting a four-byte emoji at one byte emits nothing and
+    drops four; the difference between the two readings is one byte per split
+    character, and the API is told the first.
+    """
     raw = str(text).encode("utf-8")
     if len(raw) <= limit:
         return {"value": str(text), "truncatedByteCount": 0}
-    return {"value": raw[:limit].decode("utf-8", errors="ignore"),
-            "truncatedByteCount": len(raw) - limit}
+    kept = _clip(text, limit)
+    return {"value": kept, "truncatedByteCount": len(raw) - len(kept.encode("utf-8"))}
 
 
 def _attribute(value) -> dict:
@@ -131,14 +150,26 @@ def span_payload(project: str, trace_id: str, span_id: str,
     }
     if parent_id:
         payload["parentSpanId"] = parent_id
-    items = [(str(key)[:KEY_BYTES], value)
-             for key, value in (attributes or {}).items() if value is not None]
-    if items:
-        kept = items[:MAX_ATTRIBUTES]
-        payload["attributes"] = {
-            "attributeMap": {key: _attribute(value) for key, value in kept},
-            "droppedAttributesCount": len(items) - len(kept),
-        }
+    kept: dict = {}
+    dropped = 0
+    for key, value in (attributes or {}).items():
+        if value is None:
+            continue
+        if len(kept) >= MAX_ATTRIBUTES:
+            dropped += 1
+            continue
+        # Keys are limited in bytes, like values. Two keys that differ only past
+        # the limit collapse into one, and writing the second over the first
+        # loses an attribute without saying so, which is the failure this whole
+        # module exists to make impossible. Count it instead.
+        name_key = _clip(key, KEY_BYTES)
+        if name_key in kept:
+            dropped += 1
+            continue
+        kept[name_key] = _attribute(value)
+    if kept or dropped:
+        payload["attributes"] = {"attributeMap": kept,
+                                 "droppedAttributesCount": dropped}
     return payload
 
 
@@ -189,12 +220,16 @@ class BatchWriteExporter:
         )
 
     def _post(self, spans: list) -> bool:
-        request = urllib.request.Request(
-            self.url, data=json.dumps({"spans": spans}).encode("utf-8"),
-            method="POST",
-            headers={"Authorization": "Bearer " + self.token_fn(),
-                     "Content-Type": "application/json"})
         try:
+            # Minting the token is inside the guard on purpose. It shells out to
+            # gcloud on a workstation and reads the metadata server in a
+            # container, and both can fail; raising here would escape into the
+            # batch processor's export thread rather than printing an ALERT.
+            request = urllib.request.Request(
+                self.url, data=json.dumps({"spans": spans}).encode("utf-8"),
+                method="POST",
+                headers={"Authorization": "Bearer " + self.token_fn(),
+                         "Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=10):
                 return True
         except urllib.error.HTTPError as exc:
@@ -248,7 +283,8 @@ def start(service_name: str, token_fn: Optional[Callable[[], str]] = None,
         # invisible in exactly the way this module must not be, because both
         # providers are the same class and even the flush answers True.
         provider = trace.get_tracer_provider()
-        if not hasattr(provider, "add_span_processor"):
+        ours = not hasattr(provider, "add_span_processor")
+        if ours:
             # ALWAYS_ON, and this is the whole reason the deployed fleet recorded
             # trace ids that answered 404 for two days. Cloud Run's front end puts
             # a W3C traceparent on every inbound request with the sampled flag
@@ -272,8 +308,19 @@ def start(service_name: str, token_fn: Optional[Callable[[], str]] = None,
         print(f"caseharden span export ON service={service_name} "
               f"api={TRACE_API} project={project} "
               f"provider={type(_provider).__name__} "
-              f"ours={_provider is provider}",
+              f"sampler_forced={ours}",
               file=sys.stderr, flush=True)
+        if not ours:
+            # We attached a processor to somebody else's provider, so we did not
+            # choose its sampler. If it is the default parent-based one, every
+            # span under Cloud Run's unsampled inbound traceparent is created and
+            # never recorded, and this module exports nothing while reporting
+            # success. That is precisely the state it took two days to find, so
+            # it is named here rather than left to be rediscovered.
+            print("ALERT caseharden did not install its own tracer provider, so "
+                  "the sampler is not forced. If it is parent-based, an unsampled "
+                  "inbound traceparent drops every span and export goes silent.",
+                  file=sys.stderr, flush=True)
         # One span of this module's own, at startup, pushed immediately. If the
         # export path is broken, the ALERT is printed before a single request is
         # served rather than being discovered days later as a chain link whose
@@ -339,34 +386,45 @@ class Middleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             return await self.app(scope, receive, send)
+        # Setup only. Nothing below this block may call the application, because
+        # the fallback at the end of it calls the application itself: if the app
+        # were invoked inside a guard that also retries, an exception raised
+        # after the response had begun would run the whole request a second time.
+        # In this fleet that request writes a conduct event and may take a tool
+        # call, so a silent second invocation is not a telemetry bug.
         try:
             from opentelemetry import context as otel_context
             from opentelemetry import trace
             from opentelemetry.propagate import extract
 
-            carrier = {k.decode(): v.decode() for k, v in scope.get("headers", [])}
+            # HTTP header bytes are latin-1 by specification. Decoding as UTF-8
+            # raises on a header this process did not write, and the only effect
+            # of that here would be to turn tracing off for the request.
+            carrier = {k.decode("latin-1"): v.decode("latin-1")
+                       for k, v in scope.get("headers", [])}
             token = otel_context.attach(extract(carrier))
-            try:
-                # One span this module owns, per request. Everything ADK records
-                # hangs under it, and its existence does not depend on which
-                # tracer provider a library decided to use: the first deployment
-                # of this module exported nothing while reporting success, and a
-                # span opened here is the one thing that cannot happen silently.
-                name = f"{scope.get('method', 'HTTP')} {scope.get('path', '/')}"
-                tracer = trace.get_tracer("caseharden")
-                with tracer.start_as_current_span(name, kind=trace.SpanKind.SERVER):
-                    return await self.app(scope, receive, send)
-            finally:
-                otel_context.detach(token)
-                # Flush here, per request, rather than trusting the batch
-                # processor's background thread. Cloud Run throttles a container's
-                # CPU to nearly nothing between requests, so that thread does not
-                # run once the response is sent and the batch is still sitting in
-                # memory when the instance is frozen or reclaimed. The symptom is
-                # exactly the one this module exists to end: trace ids written
-                # into conduct rows and chain links that Cloud Trace answers 404
-                # for. Measured, not assumed: eight traces existed in the project
-                # and none of them were ours.
-                flush(FLUSH_MS)
-        except Exception:
+            name = f"{scope.get('method', 'HTTP')} {scope.get('path', '/')}"
+            tracer = trace.get_tracer("caseharden")
+            kind = trace.SpanKind.SERVER
+        except Exception:  # noqa: BLE001 - telemetry never blocks enforcement
             return await self.app(scope, receive, send)
+
+        try:
+            # One span this module owns, per request. Everything ADK records
+            # hangs under it, and its existence does not depend on which tracer
+            # provider a library decided to use: the first deployment of this
+            # module exported nothing while reporting success, and a span opened
+            # here is the one thing that cannot happen silently.
+            with tracer.start_as_current_span(name, kind=kind):
+                return await self.app(scope, receive, send)
+        finally:
+            otel_context.detach(token)
+            # Flush here, per request, rather than trusting the batch processor's
+            # background thread. Cloud Run throttles a container's CPU to nearly
+            # nothing between requests, so that thread does not run once the
+            # response is sent and the batch is still sitting in memory when the
+            # instance is frozen or reclaimed. The symptom is exactly the one this
+            # module exists to end: trace ids written into conduct rows and chain
+            # links that Cloud Trace answers 404 for. Measured, not assumed: eight
+            # traces existed in the project and none of them were ours.
+            flush(FLUSH_MS)

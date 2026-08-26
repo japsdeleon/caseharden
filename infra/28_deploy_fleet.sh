@@ -108,10 +108,14 @@ echo "support-agent  $SUPPORT_URL"
 # once: the warning below was printed, scrolled past, and the fan-out filed no
 # precedent for the rest of the session.
 if [ -z "${CASEHARDEN_MEMORY_ENGINE:-}" ]; then
+  # Ask for that one variable by name. Scraping the whole environment and taking
+  # the first long run of digits will happily return a date stamp out of some
+  # other variable when this one is absent, and a wrong engine id fails at the
+  # first Memory Bank call rather than at deploy time.
   RECOVERED="$(gcloud run services describe caseharden-foreman --region="$REGION" \
-    --format='value(spec.template.spec.containers[0].env)' 2>/dev/null \
-    | tr ',' '\n' | grep -A1 CASEHARDEN_MEMORY_ENGINE | grep -o '[0-9]\{6,\}' \
-    | head -1 || true)"
+    --format='value(spec.template.spec.containers[0].env.filter(
+      "name:CASEHARDEN_MEMORY_ENGINE").extract("value"))' 2>/dev/null \
+    | grep -o '[0-9]\{6,\}' | head -1 || true)"
   if [ -n "$RECOVERED" ]; then
     CASEHARDEN_MEMORY_ENGINE="$RECOVERED"
     echo "memory engine recovered from the deployed Foreman: $CASEHARDEN_MEMORY_ENGINE"
