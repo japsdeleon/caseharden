@@ -8,9 +8,14 @@ reviewer checks, and on Day 3 it becomes a link in the chain.
 usage: show_denial_audit.py <project> <service_account_email>
 """
 import json
+import os
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from caseharden import creds
 
 project, sa = sys.argv[1], sys.argv[2]
 flt = (f'protoPayload.authenticationInfo.principalEmail="{sa}" '
@@ -22,7 +27,11 @@ for attempt in range(12):
     raw = subprocess.run(
         ["gcloud", "logging", "read", flt, "--limit=1", "--freshness=10m",
          f"--project={project}", "--format=json"],
-        capture_output=True, text=True).stdout
+        # Pinned, like every other gcloud call in this repo. Without it this one
+        # ran under whatever gcloud configuration happened to be active, which on
+        # the machine that builds this is an employer account. `--project` aims
+        # the read; it does not decide who makes it.
+        capture_output=True, text=True, env=creds.gcloud_env()).stdout
     entries = json.loads(raw or "[]")
     if entries:
         break
