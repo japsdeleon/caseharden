@@ -145,8 +145,8 @@ Every number here is measured on the live project, not estimated. Sources in
 | Active version | v5, 7 chain links, root `e2a559358933`, attested |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
-| Tests | 237 |
-| Mutations broken and caught | 51 of 51 |
+| Tests | 244 |
+| Mutations broken and caught | 54 of 54 |
 | Fleet proof | all 8 sections, 32 assertions ([capture](captures/day7-fleet-proof-all-held.txt)) |
 | Cloud Trace | the conduct row's trace id opens a 60-span DAG in the capture above; one fan-out is a 361-span trace spanning the Foreman and all four detectors ([log](BUILD_LOG.md)) |
 
@@ -229,12 +229,18 @@ bash infra/80_prove_gate.sh          # the gate refuses three ways and passes on
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
 python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
-python3 -m caseharden.workbench --fixture fixtures/v5   # the same record, in a browser
-python3 -m pytest tests -q           # 237 tests, no cloud project needed
-python3 tests/mutate_check.py        # 51 mutations; every one must be caught
+python3 -m pytest tests -q           # 244 tests, no cloud project needed
+python3 tests/mutate_check.py        # 54 mutations; every one must be caught
 ```
 
-Each script exits non-zero if the guarantee it tests does not hold.
+Each of those exits non-zero if the guarantee it tests does not hold. The
+workbench is the one thing here that is not a check: it is a server, it runs
+until you stop it, and its exit code means nothing.
+
+```bash
+python3 -m caseharden.workbench --fixture fixtures/v5   # the same record, in a browser
+```
+
 [`infra/README.md`](infra/README.md) has the full numbered sequence from an empty project.
 
 ## Clean-room disclosure

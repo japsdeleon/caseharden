@@ -239,12 +239,28 @@ def run_checks(directory: Path, skip_replay: bool = False,
     links = load_links(directory / "chain.jsonl")
     certificate = json.loads((directory / "certificate.json").read_text())
 
-    check_hashes(links, result)
-    check_certificate(links, certificate, result)
-    check_shape(links, result)
-    check_evidence(links, result)
+    def guarded(title: str, check, *args) -> None:
+        """Run one check; a crash inside it is a failed check, not a traceback.
+
+        These checks index into payloads a tamper controls. Deleting the
+        `benign` key from an EXAM link made check_exam raise a KeyError, which
+        walked past every remaining check and out of the program. That is the
+        wrong direction twice over: the record was edited, which is exactly what
+        this is for, and the workbench renders these checks in a browser where an
+        exception is a blank pane rather than a message.
+        """
+        try:
+            check(*args)
+        except Exception as exc:  # noqa: BLE001 - a crash is a failed check
+            result.add(False, title, f"{type(exc).__name__}: {exc}"[:200])
+
+    guarded("the link hashes could be checked", check_hashes, links, result)
+    guarded("the certificate could be compared", check_certificate,
+            links, certificate, result)
+    guarded("the chain's shape could be read", check_shape, links, result)
+    guarded("the evidence link could be checked", check_evidence, links, result)
     if not skip_replay:
-        check_exam(links, result)
+        guarded("the Examiner replay could be run", check_exam, links, result)
     return result
 
 
@@ -267,10 +283,18 @@ def recheck(directory: Path, skip_replay: bool = False) -> int:
             print(f"    - {title}" + (f": {detail}" if detail else ""))
         return 1
     print(f"  ALL {len(result.checks)} CHECKS HELD.")
-    print("  Hashes and the seal prove the record was not edited. The Examiner replay")
-    print("  proves its measurements were not invented. Whether the record was true when")
-    print("  it was written is what the live `caseharden verify` re-derives, against the")
-    print("  warehouse, and it cannot be answered from a fixture.")
+    print("  Hashes and the seal prove the record was not edited.")
+    # Claimed only when it ran. --skip-replay used to end on "the Examiner
+    # replay proves its measurements were not invented", which is the one claim
+    # that flag turns off.
+    if skip_replay:
+        print("  The Examiner replay was NOT run, so nothing here says the recorded")
+        print("  measurements are real. Re-run without --skip-replay for that.")
+    else:
+        print("  The Examiner replay proves its measurements were not invented.")
+    print("  Whether the record was true when it was written is what the live")
+    print("  `caseharden verify` re-derives, against the warehouse, and it cannot be")
+    print("  answered from a fixture.")
     return 0
 
 

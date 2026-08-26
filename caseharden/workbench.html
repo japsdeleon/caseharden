@@ -165,8 +165,10 @@
   writes the review row itself under <code>analyst-sa</code>. This console
   offers a verdict and stores nothing; what gets stored is decided by the
   Copilot service, which is also where the approval belongs. It never runs
-  <code>verify</code> and holds no credential for the sealed exam, so the
-  attestation above is the Policy Server's answer, not its own.
+  <code>verify</code> and holds no credential for the sealed exam.
+  <span id="attest-source">
+    The attestation above comes from somewhere other than this console.
+  </span>
 </footer>
 
 <script>
@@ -230,14 +232,31 @@ function detail(summary, payload) {
 
 const SESSION = "wb-" + Math.random().toString(36).slice(2, 10);
 let jobId = null;
-let prefilled = false;
+// Which job the compose box was filled for, and with what. A plain "have I
+// prefilled yet" boolean was a page-lifetime latch: a second finding rendered
+// into the same page left the FIRST job's id sitting in the box, which is the
+// subject-mismatch failure this console exists to prevent, handed to the
+// analyst pre-typed. Keyed on the job instead, and the text is kept so an
+// analyst's own words are never overwritten.
+let prefilledFor = null;
+let prefillText = "";
 // null means "whatever the registry says is active", which is what the fleet is
 // enforcing. Clicking a registry row pins the page to one version instead.
 let selected = null;
 
 async function get(path) {
   const response = await fetch(path, { headers: { "Accept": "application/json" } });
-  return await response.json();
+  const body = await response.json().catch(() => null);
+  // The status is read, not ignored. Without this an error body was handed
+  // straight to the render functions, which found no versions, no links and no
+  // mode in it and drew a complete, blank, calm-looking console: no chain, no
+  // registry, state UNKNOWN. An empty chain pane and a real empty chain are the
+  // same picture, which on this console is the worst thing it can do. Throwing
+  // leaves the last good render on screen and puts the reason in the banner.
+  if (!response.ok) {
+    throw new Error((body && body.error) || ("HTTP " + response.status + " from " + path));
+  }
+  return body;
 }
 
 function renderHeader(s) {
@@ -262,6 +281,16 @@ function renderHeader(s) {
   } else {
     $("freshness").textContent = "";
   }
+
+  // The footer's last sentence is only true in live mode. In fixture mode the
+  // checks below ARE computed in this process, offline, from the directory
+  // alone: there is no Policy Server involved and claiming one would be the
+  // console lying about its own provenance on the page a judge is told to run.
+  $("attest-source").textContent = a.offline
+    ? "In fixture mode the state above is not an attestation at all. It is this "
+      + "process re-checking hashes and the seal offline, in-process, with no "
+      + "Policy Server and no cloud access."
+    : "The attestation above is the Policy Server's answer, not this console's.";
 
   const errors = Object.entries(s.errors || {}).map(([k, v]) => k + ": " + v);
   if (a.error) errors.push(text(a.error));
@@ -404,9 +433,26 @@ function renderEvidence(payload) {
 
   const rows = Array.isArray(f.rows) ? f.rows : [];
   if (rows.length) {
-    const columns = Object.keys(rows[0]).filter((c) => typeof rows[0][c] !== "object");
+    // Columns are the union across every row, not the keys of row 0, and a
+    // column is dropped only if some row actually holds an object there.
+    // `typeof null === "object"` in JavaScript, so keying off row 0 alone
+    // deleted any column that happened to be null in the first row, from the
+    // header and from every later row that did have a value. On an evidence
+    // pane that silently hides cited conduct.
+    const keys = [];
+    rows.forEach((r) => Object.keys(r).forEach((c) => {
+      if (!keys.includes(c)) keys.push(c);
+    }));
+    const columns = keys.filter(
+      (c) => !rows.some((r) => r[c] !== null && typeof r[c] === "object"));
+    const nested = keys.filter((c) => !columns.includes(c));
     target.appendChild(el("div", "muted", rows.length + " cited row(s)"));
-    target.appendChild(table(columns, rows.map((r) => columns.map((c) => text(r[c])))));
+    target.appendChild(table(columns, rows.map((r) => columns.map(
+      (c) => (r[c] === null || r[c] === undefined) ? "—" : text(r[c])))));
+    if (nested.length) {
+      target.appendChild(el("div", "muted",
+        "nested column(s) shown in the full finding below: " + nested.join(", ")));
+    }
   }
   target.appendChild(detail("the detector's whole finding", f));
 
@@ -452,16 +498,20 @@ function renderEvidence(payload) {
   if (payload.decision_error) note.appendChild(el("div", "fail", payload.decision_error));
   target.appendChild(note);
 
-  if (jobId && !prefilled && !$("say").value) {
+  // Re-fill whenever the job changes, and only over an empty box or over a
+  // prefill nobody edited. Anything the analyst typed themselves survives.
+  const current = $("say").value;
+  if (jobId && prefilledFor !== jobId && (current === "" || current === prefillText)) {
     // The subject is spelled out as an instruction, not just mentioned. The
     // Copilot's model chooses what it passes to record_verdict, and its tool
     // docstring offers "the investigation id, or the BigQuery job id", so a
     // sentence that merely contains the id can still store a normalised one.
-    $("say").value =
+    prefillText =
       "Record my verdict on this finding. Use exactly this string as the " +
       "finding argument, including the location prefix, and do not shorten " +
       "it: " + jobId + "\nDisposition: confirmed abuse. Rationale: ";
-    prefilled = true;
+    $("say").value = prefillText;
+    prefilledFor = jobId;
   }
   $("chat-note").textContent = jobId
     ? "subject must be exactly " + jobId

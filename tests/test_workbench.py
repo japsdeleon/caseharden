@@ -551,6 +551,74 @@ def test_no_other_host_is_accepted(served, host):
     assert status == 403, f"host {host!r} reached the console"
 
 
+def test_the_console_refuses_to_be_framed(served):
+    """The Host and content-type checks stop a hostile page reading or posting.
+
+    Neither stops it framing the console invisibly and letting the analyst's own
+    clicks land on it, which needs no cross-origin read at all.
+    """
+    connection = http.client.HTTPConnection(*served, timeout=30)
+    connection.request("GET", "/", headers={"Host": "127.0.0.1"})
+    response = connection.getresponse()
+    response.read()
+    csp = response.getheader("Content-Security-Policy") or ""
+    assert "frame-ancestors 'none'" in csp, csp
+    assert (response.getheader("X-Frame-Options") or "").upper() == "DENY"
+    connection.close()
+
+
+# --------------------------------------------------------------------------
+# An attestation failure must not take the panes that read fine with it
+# --------------------------------------------------------------------------
+
+def test_a_thrown_attestation_does_not_blank_the_other_panes(monkeypatch):
+    """IncompleteRead is not URLError, OSError or ValueError, and the token mint
+    used to sit outside the try, so a missing gcloud escaped too. Either one
+    blanked the chain and registry panes that had already read successfully."""
+    import http.client as httplib
+
+    monkeypatch.setattr(workbench.bq, "access_token", lambda sa: "t")
+    monkeypatch.setattr(workbench.ChainStore, "versions",
+                        lambda self: [{"version": "v6", "active": "true"}])
+    monkeypatch.setattr(workbench.ChainStore, "read",
+                        lambda self, v: chain_build_all_kinds()[:2])
+
+    def truncated(*_a, **_k):
+        raise httplib.IncompleteRead(b"{\"versi")
+
+    monkeypatch.setattr(workbench.urllib.request, "urlopen", truncated)
+    source = workbench.LiveSource("devpost-hackathon-506416",
+                                  "https://policy.example.run.app", workbench.Tokens())
+    state = source.state(None)
+    assert state["versions"], "a working registry read was discarded"
+    assert state["links"], "a working chain read was discarded"
+    assert state["attestation"]["attested"] is False
+    assert state["attestation"]["state"] == "UNREACHABLE"
+
+
+def test_a_missing_gcloud_during_the_mint_is_the_unknown_state(monkeypatch):
+    monkeypatch.setattr(workbench.bq, "access_token", lambda sa: "t")
+    monkeypatch.setattr(workbench.ChainStore, "versions",
+                        lambda self: [{"version": "v6", "active": "true"}])
+    monkeypatch.setattr(workbench.ChainStore, "read", lambda self, v: [])
+
+    import agents.common.auth as auth
+
+    monkeypatch.setattr(auth, "id_token", lambda audience: (_ for _ in ()).throw(
+        FileNotFoundError(2, "No such file or directory: 'gcloud'")))
+    source = workbench.LiveSource("devpost-hackathon-506416",
+                                  "https://policy.example.run.app", workbench.Tokens())
+    attestation = source.state(None)["attestation"]
+    assert attestation["attested"] is False
+    assert "FileNotFoundError" in attestation["error"]
+
+
+def chain_build_all_kinds():
+    from caseharden.chain import build
+
+    return build("v6", [(k, {"k": k}) for k in KINDS])
+
+
 # --------------------------------------------------------------------------
 # The subject divergence the guard cannot prevent
 # --------------------------------------------------------------------------
@@ -692,3 +760,73 @@ def test_all_nine_link_kinds_reach_the_browser():
     page = workbench.PAGE.read_text()
     for kind in KINDS:
         assert f".k-{kind}" in page, f"the timeline has no styling for {kind}"
+
+
+# --------------------------------------------------------------------------
+# The offline re-check must report a crash as a failed check
+# --------------------------------------------------------------------------
+
+def test_a_malformed_exam_payload_is_a_failed_check_not_a_traceback(tmp_path):
+    """These checks index into payloads a tamper controls.
+
+    Deleting the `benign` key made check_exam raise a KeyError that walked past
+    every remaining check and out of the program. In the workbench that is a
+    blank pane; on the command line it is a traceback where a FAIL line belongs.
+    """
+    from caseharden.recheck import run_checks
+
+    directory = tmp_path / "v5"
+    directory.mkdir()
+    for name in ("chain.jsonl", "certificate.json", "source.json"):
+        (directory / name).write_text((FIXTURE / name).read_text())
+
+    lines = (directory / "chain.jsonl").read_text().splitlines()
+    for i, line in enumerate(lines):
+        row = json.loads(line)
+        if row["kind"] == "EXAM":
+            row["payload"].get("exam", row["payload"]).pop("benign", None)
+            lines[i] = json.dumps(row, sort_keys=True)
+    (directory / "chain.jsonl").write_text("\n".join(lines) + "\n")
+
+    result = run_checks(directory, quiet=True)
+    assert result.failed, "a crashing check recorded nothing"
+    assert any("could be run" in title or "KeyError" in str(detail)
+               for _ok, title, detail in result.failed)
+
+
+def test_the_workbench_renders_a_fixture_whose_exam_is_malformed(tmp_path):
+    """Fixture mode is the recovery path, so it must survive a broken fixture."""
+    directory = tmp_path / "v5"
+    directory.mkdir()
+    for name in ("chain.jsonl", "certificate.json", "source.json"):
+        (directory / name).write_text((FIXTURE / name).read_text())
+    lines = (directory / "chain.jsonl").read_text().splitlines()
+    for i, line in enumerate(lines):
+        row = json.loads(line)
+        if row["kind"] == "EXAM":
+            row["payload"].get("exam", row["payload"]).pop("benign", None)
+            lines[i] = json.dumps(row, sort_keys=True)
+    (directory / "chain.jsonl").write_text("\n".join(lines) + "\n")
+
+    state = workbench.FixtureSource(directory).state(None)
+    assert state["attestation"]["attested"] is False
+    assert state["attestation"]["checks_failed"]
+
+
+def test_skip_replay_does_not_claim_the_replay(tmp_path, capsys):
+    """--skip-replay used to end on 'The Examiner replay proves its measurements
+    were not invented', which is the one claim that flag turns off."""
+    from caseharden.recheck import recheck
+
+    assert recheck(FIXTURE, skip_replay=True) == 0
+    out = capsys.readouterr().out
+    assert "NOT run" in out
+    assert "replay proves its measurements were not invented" not in out
+
+
+def test_a_full_recheck_still_claims_the_replay(capsys):
+    from caseharden.recheck import recheck
+
+    assert recheck(FIXTURE) == 0
+    out = capsys.readouterr().out
+    assert "replay proves its measurements were not invented" in out

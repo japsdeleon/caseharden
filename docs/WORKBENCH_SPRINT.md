@@ -5,7 +5,7 @@ two independent engines (Codex CLI and an in-house reviewer) attacked the draft
 plan against this repo; every decision below survived or was reshaped by that
 review. Submission: Devpost, 2026-08-31 17:00 PT.
 
-## Built on Day 8 (2026-08-27), against this plan
+## Built on Day 8 (2026-08-26), against this plan
 
 The code half of Day 1 and Day 2 is written and its tests pass. What remains on
 those days is the live work: running `115_prove_copilot_session.py` against the
@@ -21,7 +21,7 @@ status.
 | `tests/test_workbench.py` | 52 tests; the identity rule and the subject guard are asserted, not documented |
 | README, DEVPOST, PLAN, THREATS, `agents/copilot/agent.py` | the reconciliation below |
 
-Test count is **237**, not 179 and not 161. The 179 in this document was stale
+Test count is **244**, not 179 and not 161. The 179 in this document was stale
 when it was written; the repo was already at 185 before this sprint.
 
 ## Decisions locked

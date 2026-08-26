@@ -172,6 +172,16 @@ CASES = [
  ("workbench.py", '                    != "application/json":',
   '                    != "":',
   "a cross-origin form post reaches the Copilot without a preflight"),
+ # Day 8, second pass. Three the first two adversarial passes did not reach.
+ ("workbench.py", '''        except Exception as exc:  # noqa: BLE001 - every failure is the unknown state''',
+  '''        except (urllib.error.URLError, OSError, ValueError) as exc:''',
+  "a truncated Policy Server body blanks the chain and registry panes"),
+ ("workbench.py", '''                             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")''',
+  '''                             "base-uri 'none'; form-action 'none'")''',
+  "the console can be framed, so the analyst's clicks land on it"),
+ ("recheck.py", "        except Exception as exc:  # noqa: BLE001 - a crash is a failed check",
+  "        except NotImplementedError as exc:",
+  "a tampered payload crashes the re-check instead of failing a check"),
 ]
 
 def suite():

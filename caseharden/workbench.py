@@ -249,22 +249,31 @@ class LiveSource(Source):
     def attestation(self, version: Optional[str]) -> dict:
         path = f"/policy/{version}" if version else "/policy/active"
         url = self.policy_url + path
-        headers = {}
-        parts = urllib.parse.urlsplit(url)
-        if parts.hostname not in ("127.0.0.1", "localhost", "::1"):
-            from agents.common import auth
-
-            token = auth.id_token(auth.origin(url))
-            if token:
-                headers["Authorization"] = "Bearer " + token
+        # Everything is inside the try, minting included. Two failures used to
+        # escape this function and blank the chain and registry panes that had
+        # already read successfully: a truncated response body raises
+        # http.client.IncompleteRead, which is neither URLError, OSError nor
+        # ValueError, and minting an identity token shells out to gcloud, which
+        # raises FileNotFoundError when gcloud is not on PATH. The mint sat
+        # outside the try, so even that OSError went uncaught. The deployed
+        # Policy Server is the configuration infra/README.md documents, and it
+        # is the one that mints.
         try:
+            headers = {}
+            parts = urllib.parse.urlsplit(url)
+            if parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+                from agents.common import auth
+
+                token = auth.id_token(auth.origin(url))
+                if token:
+                    headers["Authorization"] = "Bearer " + token
             request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.load(response)
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 - every failure is the unknown state
             # A console that cannot reach the Policy Server does not know the
             # state, and "unknown" is a state this system already defines. It is
-            # never rendered as attested.
+            # never rendered as attested, so a broad catch fails closed.
             return {"version": version, "attested": False, "state": "UNREACHABLE",
                     "promotions": "FROZEN",
                     "error": f"{type(exc).__name__}: {exc}"[:300],
@@ -478,9 +487,19 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
             # The page is one file with no external anything. Saying so means a
             # stray script tag fails loudly rather than reaching the network from
             # a page holding an analyst's session.
+            #
+            # frame-ancestors closes the gap the Host and Content-Type checks
+            # leave open. Those stop a hostile page reading from this server or
+            # posting to it. Neither stops it framing the console invisibly and
+            # letting the analyst's own clicks land on it, which needs no
+            # cross-origin read at all. X-Frame-Options repeats it for browsers
+            # that predate the CSP directive.
             self.send_header("Content-Security-Policy",
                              "default-src 'none'; style-src 'unsafe-inline'; "
-                             "script-src 'unsafe-inline'; connect-src 'self'")
+                             "script-src 'unsafe-inline'; connect-src 'self'; "
+                             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(body)
 

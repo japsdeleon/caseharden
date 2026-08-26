@@ -98,8 +98,17 @@ def main(argv=None) -> int:
             print(f"          {line.strip()[:140]}")
 
     write_check_ran = False
+    after = None
     if before is not None:
-        after = review_row_count()
+        try:
+            after = review_row_count()
+        except Exception as exc:  # noqa: BLE001
+            # The first read worked and this one did not, which is ordinary: it
+            # re-mints an impersonated token and the two reads straddle two chat
+            # turns. Unguarded, it killed the process before any summary printed,
+            # so a probe whose chat turns both passed reported nothing at all.
+            print(f"  ....  the second read of review.decisions failed: {str(exc)[:140]}")
+    if before is not None and after is not None:
         if after == before:
             print(f"  ok    nothing was written: review.decisions still holds {after}")
             write_check_ran = True

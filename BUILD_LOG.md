@@ -1685,3 +1685,131 @@ would be guarding against a caller that does not exist.
 Tests are 185 and mutations 48. The four new mutations break the truncation count, the key byte
 limit, the collision count and the attribute cap, and each is caught by the test that asserts
 that property rather than by collateral damage.
+
+## 2026-08-26 — Day 8
+
+The analyst workbench, and an audit of the documents it made false.
+
+A note on the dates above, since this one breaks their sequence. The headers in this file are
+build-day labels, not calendar dates: `git log --date=short` shows Days 1 through 5 all landed
+on 2026-08-25. Following the sequence would have dated this entry 2026-09-01, which is after
+the submission deadline. It carries its real date instead. The earlier headers are left as
+written rather than rewritten after the fact.
+
+### What was built
+
+`caseharden/workbench.py` plus one HTML file: a local operator console over the chain, the
+version registry, the finding under review and the attestation state. It is deliberately
+outside the trust boundary. It reads what a terminal could read, it takes attestation from the
+Policy Server instead of deciding it, and its one write is a message to the unmodified Analyst
+Copilot, which screens the text and writes the review row itself under `analyst-sa`.
+
+Two properties are asserted against the parsed module rather than described. It names exactly
+one service account, `notary-sa`, and `verify`, `reattest` and `caseharden.notary` appear
+nowhere in it. And it refuses to pass on a verdict that does not carry the job id the Notary is
+waiting for.
+
+`caseharden/copilot_client.py` holds the ADK session flow, moved out of `infra/110_run_loop.py`
+so the console reaches it without importing the Proposer's drafting code.
+`infra/115_prove_copilot_session.py` proves that flow standalone, and the turn it exists for is
+the second one: ADK answers 400 or 409 for a session that already exists, so a client that
+reads that as an error works exactly once.
+
+`infra/110_run_loop.py` now writes the finding to `out/finding-live.json` after the fan-out
+answers and before it starts waiting. Nothing reaches `chain.links` until the promotion, so
+there is no other source for the one part of a run a person is inside.
+
+### Measured
+
+| | |
+|---|---|
+| Tests | **244** (185 at the end of Day 7; 52 in `tests/test_workbench.py`) |
+| Mutations broken and caught | **54 of 54** (48 at the end of Day 7) |
+| Offline re-check | 17 checks, `fixtures/v5`, root `e2a559358933`, no cloud access |
+| Fixture-mode poll | 0.52s cold, 0.02s warm; `local_corpora()` caches the replay |
+
+The six new mutations break the subject guard, the Host check, the JSON content-type check,
+the attestation catch, the frame-ancestors header and the re-check's crash guard. Each is
+caught by the test that asserts that property.
+
+### The counts published before this day were wrong
+
+`README.md` and `docs/DEVPOST.md` claimed 179 tests and 45 mutations. The repository was at 185
+and 48 before this sprint began, so both numbers were stale independently of the workbench, and
+`docs/WORKBENCH_SPRINT.md` had inherited the wrong one when it was written. Every published
+count in this repository is now a number the repository produces.
+
+### Four adversarial passes, and what they cost
+
+The first two read the diff: an in-house reviewer and Codex. The third read the fixes the first
+two produced, which is where the interesting failure was. The fourth was a four-lens sweep
+whose findings were each handed to a separate agent told to refute them; 12 of 25 candidates
+died there, and the 13 that survived were reproduced against the running code.
+
+**The scratch file, and a fix that did not fix it.** Concurrent runs shared one
+`finding-live.json.part`, so the second `replace` died with `FileNotFoundError`, 100 times out
+of 100 paired runs. The first fix added the pid, which separates two processes and not two
+threads; re-running the reporter's own reproduction is the only reason that was caught. The
+name now carries a random suffix and a failed write no longer leaves the file behind.
+
+**The token cache minted outside its lock**, so two concurrent polls both shelled out to
+gcloud, which is the cost the cache exists to remove. Measured at `mints=2`.
+
+**`json.loads` raises `RecursionError`, not `JSONDecodeError`,** on deeply nested input. A
+1,100-level array dropped the handler at both decode sites.
+
+**`115_prove_copilot_session.py` printed ALL HELD when its write check had been skipped**,
+which is the one claim it exists to make.
+
+**`get()` in the page never read `response.ok`.** An error body was handed to the render
+functions, which found no versions and no links in it and drew a complete, calm, blank console.
+On a console about provenance, an empty chain pane and a real empty chain are the same picture.
+
+**The prefill was a page-lifetime latch.** A second finding in the same page left the first
+job's id in the compose box, which is the subject-mismatch failure this console exists to
+prevent, pre-typed for the analyst.
+
+**The cited-rows table took its columns from row 0** and filtered with `typeof !== "object"`.
+`typeof null === "object"`, so any column null in the first row vanished from the header and
+from every later row that did have a value. An evidence pane was hiding evidence.
+
+**`attestation()` could throw past two panes that had read successfully.** A truncated response
+body raises `http.client.IncompleteRead`, which is not `URLError`, `OSError` or `ValueError`,
+and the identity-token mint sat outside the `try`, so `FileNotFoundError` from a missing gcloud
+escaped as well. Both blanked the chain and registry panes.
+
+**`recheck` claimed the Examiner replay under `--skip-replay`.** The success epilogue ended on
+"The Examiner replay proves its measurements were not invented" after the flag had turned that
+check off. A check inside `run_checks` could also raise instead of recording a failure, so a
+tampered payload produced a traceback rather than a failed check.
+
+**The console was framable.** The Host and content-type checks stop a hostile page reading from
+this server or posting to it. Neither stops it framing the console invisibly and letting the
+analyst's own clicks land on it. `frame-ancestors 'none'` and `X-Frame-Options: DENY` now.
+
+Two claims were withdrawn rather than defended. "The workbench submits only a verdict" was not
+enforced and cannot be: the console sends free text and the Copilot decides what it stores. And
+the footer told a judge running `--fixture` that the state above came from the Policy Server,
+when in that mode it is computed in-process, offline, from the directory alone.
+
+### Documents reconciled
+
+The claim that no UI was written is withdrawn from `README.md`, `docs/DEVPOST.md` and the
+Copilot's docstring, with a decision-log entry at the top of `docs/PLAN.md`. The section 7
+rejection it partially reverses stands unedited: what that rejected was a custom console as the
+*agent* surface, and what exists is an operator console outside the trust boundary.
+
+`THREATS.md` and `docs/DEVPOST.md` still said spans do not reach Cloud Trace, which Day 7 fixed.
+Rewritten in the past tense, keeping the `traceparent`-trust residual, which is still true.
+`THREATS.md` gains an entry for the console itself and now lists six holes, not five.
+
+`infra/README.md` points the console at the deployed Policy Server. Running one on the
+workstation would put `examiner-sa` on the analyst's machine and give back exactly what the
+console is designed to give up.
+
+### Not proved
+
+`infra/115_prove_copilot_session.py` has not been run. It needs the deployed Copilot, and it is
+the gate for the thin-chat verdict pane. The live BigQuery path is also unexercised: every
+live-mode test substitutes the token and the chain store, so the chain read, the registry read
+and the `review.decisions` query have not run against the project.

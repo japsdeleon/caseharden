@@ -72,7 +72,7 @@ python3 infra/100_prove_fleet.py           # eight assertions, exit non-zero on 
 Then the Day 5 run, which is the loop end to end against the deployed fleet:
 
 ```bash
-python3 infra/115_prove_copilot_session.py # two turns on one ADK session, storing nothing
+python3 infra/115_prove_copilot_session.py # two turns on one ADK session; exits 2 if unchecked
 python3 infra/110_run_loop.py --version v6 --parent v5 \
   --verdict-text "Record a verdict on finding {subject}: ..." \
   --approval-text "Approve {version}. ..."
@@ -89,6 +89,12 @@ pane and not for the run itself. It proves the second turn on an existing ADK
 session works, which is the turn that breaks: ADK answers 400 or 409 for a
 session that already exists, and a client that reads that as an error works once
 and then stops.
+
+It also checks that asking the Copilot a question stores no `review.decisions`
+row. That check needs `notary-sa` on the review table. When it cannot run, the
+script exits 2 and says the property is unknown rather than printing a pass:
+"stores nothing it was not asked to store" is the claim the script exists to
+make, and a run that skipped it has not made it.
 
 While a run waits for the human, `110_run_loop.py` writes the finding to
 `out/finding-live.json` and the analyst workbench reads it from there:
