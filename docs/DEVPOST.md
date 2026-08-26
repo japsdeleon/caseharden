@@ -53,8 +53,14 @@ re-derives.
 ## How I built it
 
 Nine private Cloud Run services in europe-west3. Eight run from one image and differ only by
-environment; the ninth is `adk deploy cloud_run --with_ui`, unmodified, because the analyst
-surface had to be something I did not write.
+environment; the ninth is `adk deploy cloud_run --with_ui`, unmodified: the agent surface is
+ADK's own and the two tools behind it are the part I wrote. The analyst also gets a local
+operator console, which reads the chain, the registry and the finding under review and takes
+attestation from the Policy Server rather than deciding it. Its one write goes *through* the
+unmodified Copilot, not around it, so the console is outside the trust boundary by
+construction: it offers a verdict and writes nothing itself, and what is stored is decided by
+the Copilot service under its own identity. It runs against a committed fixture with no
+credentials at all.
 
 - **Agent Registry** is the roster and the discovery layer. The orchestrator's source names
   no detector. Each entry carries the chain root of the policy version it was registered
@@ -83,9 +89,15 @@ which is the only reason it was caught.
 URL lookup fail, the failure was swallowed by a shell assignment, and four services then
 advertised `localhost` in their agent cards.
 
-**Spans still do not reach Cloud Trace from Cloud Run.** Four real faults were found and
-fixed on the way there and none of them was the cause. The README and THREATS.md say so, and
-one assertion in the fleet proof fails on it rather than claiming otherwise.
+**Spans did not reach Cloud Trace from Cloud Run, for three days, and the transport was never
+the problem.** Four real faults were found and fixed on the way there and none of them was the
+cause. It was the sampler: Cloud Run puts a `traceparent` on every inbound request with the
+sampled flag off, OpenTelemetry's default sampler honours that, and every request span was
+created with a valid context and never recorded. `current_trace_id()` then wrote a real span
+id for a trace that was never written, so nothing failed anywhere. `ALWAYS_ON` on the provider
+is the whole fix, and what made it findable was emitting one parentless span at container boot:
+that span landed while every request span vanished, and the asymmetry separated "the transport
+is broken" from "the spans are never recorded".
 
 ## Accomplishments I am proud of
 
@@ -93,8 +105,8 @@ The gate refused the real Proposer's real candidate. It caught one more sealed a
 the active version and blocked two legitimate turns, and that was enough. No fixture was
 involved.
 
-Every number published is measured. `verify` p95 is 3.66s against a 5s target. 179 tests. 45
-mutations broken on purpose and all 45 caught, including one that survived its first run and
+Every number published is measured. `verify` p95 is 3.66s against a 5s target. 237 tests. 51
+mutations broken on purpose and all 51 caught, including one that survived its first run and
 now has two tests.
 
 ## What I learned
@@ -126,7 +138,7 @@ Python · OpenTelemetry
 - Repository: https://github.com/japsdeleon/caseharden
 - Specification: `docs/PLAN.md` · Daily build log with measured numbers: `BUILD_LOG.md`
 - Terminal captures for every claim: `captures/`
-- Threat model, including five holes stated plainly: `THREATS.md`
+- Threat model, including six holes stated plainly: `THREATS.md`
 
 ## Clean-room disclosure
 

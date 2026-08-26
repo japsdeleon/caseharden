@@ -42,7 +42,6 @@ import re
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -50,8 +49,8 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from agents.common import armor, auth
-from caseharden import bq, creds
+from agents.common import armor
+from caseharden import bq, copilot_client, creds
 from caseharden.dsl import Policy, canonical_json, load, parse
 from caseharden.examiner import gate, score_bq
 from caseharden.interpreter import structurally_monotonic
@@ -251,8 +250,6 @@ def family_of(job_id: str, token: str) -> str:
     location, _, bare = job_id.partition(":")
     url = (f"https://bigquery.googleapis.com/bigquery/v2/projects/{PROJECT}"
            f"/jobs/{bare}?location={location}")
-    import urllib.request
-
     try:
         request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -277,45 +274,19 @@ def family_of(job_id: str, token: str) -> str:
 # 3 and 7. What a human decided
 # --------------------------------------------------------------------------
 
-COPILOT_APP = "analyst_copilot"
-
-
 def copilot(text: str, session: str, user: str = "analyst") -> str:
-    """Say one thing to the deployed Analyst Copilot, over ADK's own API.
+    """Say one thing to the deployed Analyst Copilot, and show both sides.
 
-    Not A2A. `adk deploy cloud_run --with_ui` serves ADK's API server and its
-    chat window, and it publishes no agent card, so there is nothing for the
-    registry to list and nothing for drive_agent to speak to. What this reaches
-    is the same app a person uses, running the same two tools under analyst-sa.
+    The transport lives in `caseharden/copilot_client.py`. It was moved there so
+    the analyst workbench can drive the same surface without importing this
+    module, which pulls in the Proposer's drafting code and the A2A client at
+    import time.
     """
-    base = run_url("caseharden-analyst-copilot")
-    token = auth.id_token(auth.origin(base))
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = "Bearer " + token
-
-    def post(path: str, body: dict):
-        request = urllib.request.Request(
-            base + path, data=json.dumps(body).encode(), headers=headers)
-        with urllib.request.urlopen(request, timeout=600) as response:
-            return json.load(response)
-
-    try:
-        post(f"/apps/{COPILOT_APP}/users/{user}/sessions/{session}", {})
-    except urllib.error.HTTPError as exc:
-        if exc.code not in (400, 409):  # already exists
-            raise
     print(f"  > {text[:150]}")
-    events = post("/run", {
-        "appName": COPILOT_APP, "userId": user, "sessionId": session,
-        "newMessage": {"role": "user", "parts": [{"text": text}]},
-    })
-    said = [part["text"] for event in events
-            for part in ((event.get("content") or {}).get("parts") or [])
-            if part.get("text")]
-    for line in [l for l in "\n".join(said).splitlines() if l.strip()][-6:]:
+    said = copilot_client.say(text, session, user)
+    for line in [l for l in said.splitlines() if l.strip()][-6:]:
         print(f"    {line.strip()[:150]}")
-    return "\n".join(said)
+    return said
 
 
 # A screening verdict that nothing branches on is a note, not a boundary. These
@@ -540,6 +511,52 @@ def draft_loop(args, active: Policy, finding: dict, verdict: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# What the analyst is looking at while this waits
+# --------------------------------------------------------------------------
+
+LIVE_FINDING = "finding-live.json"
+
+
+def publish_finding(out: Path, finding: dict) -> None:
+    """Put the finding where the workbench can read it, before the wait starts.
+
+    Between here and step 3 this program does nothing but poll `review.decisions`
+    for a row a human has not typed yet. Nothing has reached `chain.links` at
+    this point and nothing will until step 8, so a console that polled the chain
+    for work to show would have no source for the only part of the run a person
+    is in. This file is that source.
+
+    Written whole and moved into place. The workbench polls it every few seconds
+    and a partial read of a half-written file is a race that costs an analyst a
+    blank pane at the exact moment they are being recorded.
+
+    The scratch name is unique per call. A fixed one was shared by every run:
+    two drivers alive at once, which is what a re-run after a failed take looks
+    like, wrote the same scratch file and the second `replace` died with
+    FileNotFoundError because the first had already moved it away. An adversarial
+    pass reproduced that 100 times out of 100 paired runs.
+
+    Pid alone was not enough, and the same reproduction said so: it separates two
+    processes and not two threads. The random suffix is what actually makes the
+    name unique, and `replace` is atomic, so the loser of a race is overwritten
+    rather than crashed.
+    """
+    target = out / LIVE_FINDING
+    scratch = target.parent / f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part"
+    try:
+        scratch.write_text(json.dumps(finding, indent=2, default=str) + "\n")
+        scratch.replace(target)
+    finally:
+        # A failed write leaves a uniquely named file behind, and every retry
+        # leaves another. After a successful replace there is nothing here to
+        # remove, which is why this is missing_ok.
+        scratch.unlink(missing_ok=True)
+    print(f"\n  wrote {target}")
+    print(f"  the workbench reads it from there: "
+          f"python3 -m caseharden.workbench")
+
+
+# --------------------------------------------------------------------------
 # The run
 # --------------------------------------------------------------------------
 
@@ -576,6 +593,7 @@ def main(argv=None) -> int:
     incident_row = ({"session_id": "(skipped)", "window_start": started}
                     if args.skip_incident else incident(args))
     finding = investigate(args, incident_row)
+    publish_finding(out, finding)
 
     head("3. The analyst's verdict, screened and recorded by the Copilot")
     subject = finding["job_id"]

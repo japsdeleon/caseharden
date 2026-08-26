@@ -113,9 +113,26 @@ Agent Registry, each entry carrying the chain root of the policy version it was 
 against, so the roster states what each worker's authority rests on and not only where it
 lives. The Foreman's source names no detector; the fleet proof greps it to keep that true.
 
-The Analyst Copilot is `adk deploy cloud_run --with_ui`, unmodified. No UI was written for
-this entry. It serves no agent card, so it is not in the roster: it is a human's window, not
-a worker the Foreman discovers.
+The Analyst Copilot is `adk deploy cloud_run --with_ui`, unmodified. It serves no agent card,
+so it is not in the roster: it is a human's window, not a worker the Foreman discovers. What
+this entry wrote is the pair of tools behind it.
+
+There is one local page as well, and where it sits matters more than what it looks like.
+`python3 -m caseharden.workbench` is an operator console: it runs on the analyst's own
+machine, reads the chain, the version registry and the finding under review, and takes the
+attestation state from the Policy Server rather than deciding it. It never runs `verify` and
+holds no credential for the sealed exam, because the only principal allowed to re-score that
+exam is the one the Policy Server runs as, and a second holder of that identity is exactly the
+widening chain link 1 exists to expose. Its one write is a message to the unmodified Copilot,
+which screens the text through Model Armor and writes the review row itself under
+`analyst-sa`. The console offers a verdict and writes nothing itself; what gets stored is
+decided by the Copilot service. It has no approve affordance, and it also cannot stop an
+operator who types an approval into it, which is why the claim is about what it offers rather
+than about what is possible. Deleting the console removes a window, not a control.
+
+```bash
+python3 -m caseharden.workbench --fixture fixtures/v5   # a sealed record, no credentials
+```
 
 ## Measured
 
@@ -128,8 +145,8 @@ Every number here is measured on the live project, not estimated. Sources in
 | Active version | v5, 7 chain links, root `e2a559358933`, attested |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
-| Tests | 179 |
-| Mutations broken and caught | 45 of 45 |
+| Tests | 237 |
+| Mutations broken and caught | 51 of 51 |
 | Fleet proof | all 8 sections, 32 assertions ([capture](captures/day7-fleet-proof-all-held.txt)) |
 | Cloud Trace | the conduct row's trace id opens a 60-span DAG in the capture above; one fan-out is a 361-span trace spanning the Foreman and all four detectors ([log](BUILD_LOG.md)) |
 
@@ -212,8 +229,9 @@ bash infra/80_prove_gate.sh          # the gate refuses three ways and passes on
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
 python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
-python3 -m pytest tests -q           # 179 tests, no cloud project needed
-python3 tests/mutate_check.py        # 45 mutations; every one must be caught
+python3 -m caseharden.workbench --fixture fixtures/v5   # the same record, in a browser
+python3 -m pytest tests -q           # 237 tests, no cloud project needed
+python3 tests/mutate_check.py        # 51 mutations; every one must be caught
 ```
 
 Each script exits non-zero if the guarantee it tests does not hold.

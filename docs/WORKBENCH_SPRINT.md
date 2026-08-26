@@ -5,6 +5,25 @@ two independent engines (Codex CLI and an in-house reviewer) attacked the draft
 plan against this repo; every decision below survived or was reshaped by that
 review. Submission: Devpost, 2026-08-31 17:00 PT.
 
+## Built on Day 8 (2026-08-27), against this plan
+
+The code half of Day 1 and Day 2 is written and its tests pass. What remains on
+those days is the live work: running `115_prove_copilot_session.py` against the
+deployed Copilot, which is the gate for decision 5, and chasing the approval
+status.
+
+| | |
+|---|---|
+| `caseharden/workbench.py`, `caseharden/workbench.html` | the console: evidence, verdict chat, chain timeline, registry, attestation pane, offline fixture mode, 50-minute token cache |
+| `caseharden/copilot_client.py` | the ADK session flow, extracted so nothing imports the loop driver to reach it |
+| `infra/115_prove_copilot_session.py` | the standalone gate: two turns on one session, and nothing written to `review.decisions` |
+| `infra/110_run_loop.py` | writes `out/finding-live.json` after the fan-out answers, atomically |
+| `tests/test_workbench.py` | 52 tests; the identity rule and the subject guard are asserted, not documented |
+| README, DEVPOST, PLAN, THREATS, `agents/copilot/agent.py` | the reconciliation below |
+
+Test count is **237**, not 179 and not 161. The 179 in this document was stale
+when it was written; the repo was already at 185 before this sprint.
+
 ## Decisions locked
 
 1. **Target**: everything serves the 4:00 demo video. Live deployment of the new

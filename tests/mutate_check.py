@@ -159,6 +159,19 @@ CASES = [
   """    if parent_id:\n        payload["parentSpanId"] = parent_id""",
   """    payload["parentSpanId"] = str(parent_id or "")""",
   "a root span claims an empty parent"),
+ # Day 8. The workbench's two rules. Both are the kind that keeps working
+ # visibly after it has stopped working: a verdict filed against the wrong
+ # subject still stores and still screens, and a console that answers any Host
+ # still serves the analyst correctly.
+ ("workbench.py", "        if job_id and job_id not in text:",
+  "        if False:",
+  "a verdict may be filed against a subject the Notary will never look for"),
+ ("workbench.py", "            if host not in allowed_hosts:",
+  "            if False:",
+  "a rebound hostname reaches the console, and through it the Copilot"),
+ ("workbench.py", '                    != "application/json":',
+  '                    != "":',
+  "a cross-origin form post reaches the Copilot without a preflight"),
 ]
 
 def suite():

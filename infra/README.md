@@ -72,6 +72,7 @@ python3 infra/100_prove_fleet.py           # eight assertions, exit non-zero on 
 Then the Day 5 run, which is the loop end to end against the deployed fleet:
 
 ```bash
+python3 infra/115_prove_copilot_session.py # two turns on one ADK session, storing nothing
 python3 infra/110_run_loop.py --version v6 --parent v5 \
   --verdict-text "Record a verdict on finding {subject}: ..." \
   --approval-text "Approve {version}. ..."
@@ -82,6 +83,36 @@ Leaving `--verdict-text` and `--approval-text` off makes the run wait for a
 human to type the verdict and the approval into the Copilot's chat window, which
 is what the recorded run does. Either way the chain reads the row the Copilot
 wrote, never a command-line flag.
+
+`115_prove_copilot_session.py` is a precondition for the workbench's verdict
+pane and not for the run itself. It proves the second turn on an existing ADK
+session works, which is the turn that breaks: ADK answers 400 or 409 for a
+session that already exists, and a client that reads that as an error works once
+and then stops.
+
+While a run waits for the human, `110_run_loop.py` writes the finding to
+`out/finding-live.json` and the analyst workbench reads it from there:
+
+```bash
+python3 -m caseharden.workbench \
+  --policy-url "$(gcloud run services describe caseharden-policy \
+    --region=europe-west3 --format='value(status.url)')"
+```
+
+Point it at the **deployed** Policy Server, not a local one. The console never
+calls `verify` itself: that re-scores the sealed exam and needs `examiner-sa`,
+the only principal allowed to read it, and a second holder of that identity is
+the widening chain link 1 exists to expose. Running `python3 -m
+caseharden.policy_server` on the workstation would put that identity on the
+analyst's machine and give back with one hand what the console gives up with the
+other. On Cloud Run the attached service account is the examiner and no
+impersonation is involved.
+
+The console binds `127.0.0.1` and there is no flag to change it. It holds a
+`notary-sa` token and can drive the Copilot, and it authenticates nobody.
+
+With `--fixture fixtures/v5` it renders a sealed record and makes no cloud call
+at all, which is also the path to fall back to if the project is unreachable.
 
 The Copilot is deployed private and is opened through an authenticated proxy:
 

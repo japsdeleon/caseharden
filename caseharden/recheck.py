@@ -50,14 +50,21 @@ REQUIRED_KINDS = ("EXAM", "APPROVAL")
 
 
 class Result:
-    """Every check, with the reason it passed or failed. Nothing is silent."""
+    """Every check, with the reason it passed or failed. Nothing is silent.
 
-    def __init__(self) -> None:
+    `quiet` suppresses only the printing. A caller that renders the checks
+    somewhere other than a terminal still gets every one of them in `checks`,
+    because a check that is not reported is the same as a check that did not run.
+    """
+
+    def __init__(self, quiet: bool = False) -> None:
         self.checks: List[tuple] = []
+        self.quiet = quiet
 
     def add(self, ok: bool, title: str, detail: str = "") -> bool:
         self.checks.append((ok, title, detail))
-        print(f"  {'ok  ' if ok else 'FAIL'}  {title}" + (f"  {detail}" if detail else ""))
+        if not self.quiet:
+            print(f"  {'ok  ' if ok else 'FAIL'}  {title}" + (f"  {detail}" if detail else ""))
         return ok
 
     @property
@@ -221,24 +228,37 @@ def check_exam(links, result: Result) -> None:
                "the recorded gate verdict is a pass", str(exam.get("verdict", ""))[:60])
 
 
-def recheck(directory: Path, skip_replay: bool = False) -> int:
-    result = Result()
+def run_checks(directory: Path, skip_replay: bool = False,
+               quiet: bool = False) -> Result:
+    """Every offline check over one fixture directory, as data.
+
+    Separate from `recheck` so a caller that is not a terminal gets the checks
+    themselves rather than an exit code and some stdout.
+    """
+    result = Result(quiet=quiet)
     links = load_links(directory / "chain.jsonl")
     certificate = json.loads((directory / "certificate.json").read_text())
+
+    check_hashes(links, result)
+    check_certificate(links, certificate, result)
+    check_shape(links, result)
+    check_evidence(links, result)
+    if not skip_replay:
+        check_exam(links, result)
+    return result
+
+
+def recheck(directory: Path, skip_replay: bool = False) -> int:
+    links = load_links(directory / "chain.jsonl")
 
     print(f"caseharden recheck {directory}")
     print(f"  {len(links)} links, version {links[0].version if links else '?'}, "
           f"no cloud access used")
     print()
 
-    check_hashes(links, result)
-    check_certificate(links, certificate, result)
-    check_shape(links, result)
-    check_evidence(links, result)
+    result = run_checks(directory, skip_replay)
     if skip_replay:
         print("  ....  the Examiner replay was skipped by request")
-    else:
-        check_exam(links, result)
 
     print()
     if result.failed:

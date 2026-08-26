@@ -7,7 +7,7 @@ is not covered at all. Nothing here is hypothetical unless it says so. Where a c
 Google Cloud behaviour rather than this project's code, that is stated, because those are the
 two guarantees the whole entry rests on.
 
-The five entries under **Not covered** are the ones a reviewer should read first.
+The six entries under **Not covered** are the ones a reviewer should read first.
 
 ---
 
@@ -84,20 +84,39 @@ will later cite. It cannot alter one after the Notary has read it, because the p
 match, and it cannot approve a version without a row. But a compromised Copilot is a
 compromised human review step.
 
-**3. Trace ids are correlation keys, not handles.** Spans do not reach Cloud Trace from
-Cloud Run. The id in a conduct row and in a chain link is a real span id, and Cloud Trace
-answers 404 for it. The fleet proof asserts resolution and fails on it rather than claiming
-otherwise. Also, the tracing middleware trusts an inbound `traceparent`: a caller that can
-reach a private service can attach its spans to a trace of its choosing.
+**3. The tracing middleware trusts an inbound `traceparent`.** A caller that can reach a
+private service can attach its spans to a trace of its choosing. Nothing downstream treats a
+trace id as evidence, so this costs correlation rather than integrity, but a trace id in a
+conduct row is a pointer supplied by the caller and is not a claim the chain re-derives.
 
-**4. The reach check depends on being able to expand a role.** It needs `iam.roles.get` and
+Until Day 7 spans did not reach Cloud Trace at all and this section said so. The cause was the
+sampler, not the transport: Cloud Run marks every inbound request unsampled and OpenTelemetry's
+parent-based default honoured it, so spans were created with a valid context and never
+recorded. `ALWAYS_ON` on the provider fixed it, the fleet proof's resolution assertion now
+holds, and the conduct row's trace id opens a 60-span DAG. The `traceparent` trust above is
+what remains.
+
+**4. The analyst workbench is an unauthenticated local process holding a `notary-sa` token.**
+`caseharden/workbench.py` runs on the analyst's workstation, mints a `notary-sa` access token
+to read the chain and the review table, and can send a message to the Analyst Copilot. It
+authenticates nobody. Anyone who can execute code as that user can already mint the same
+token from the same gcloud configuration, so this widens no grant, but it does put a live
+credential in a long-running process. It binds `127.0.0.1` with no flag to change it, refuses
+a request whose `Host` is not loopback, so a rebound hostname cannot reach it, and requires
+`application/json` on its one write path, so a cross-origin form post cannot. It never calls
+`verify` and never obtains `examiner-sa`; attestation is read from the Policy Server. It is
+not a control: everything it reads is readable with a terminal, and its write is a message the
+Copilot screens and stores under its own identity. What it is is a process worth closing when
+a run is over.
+
+**5. The reach check depends on being able to expand a role.** It needs `iam.roles.get` and
 `iam.serviceAccounts.getIamPolicy`. A principal that cannot expand a role sees every custom
 role as a possible reader: noisy and safe, in that order. Predefined roles are cached for the
 life of the process, so a predefined role's permissions changing under Google would not be
 seen until restart. Custom roles are re-expanded every time, because their permission set is
 editable at any moment.
 
-**5. `CASEHARDEN_PROJECT` is the comparison target, not a fixed allowlist.** Setting it
+**6. `CASEHARDEN_PROJECT` is the comparison target, not a fixed allowlist.** Setting it
 redirects what `creds.py` considers correct. On a workstation a mismatch is still caught
 against the pinned gcloud configuration's own project. An operator who changes both is not
 making a mistake.

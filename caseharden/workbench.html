@@ -1,0 +1,544 @@
+<!doctype html>
+<!--
+  The analyst workbench. One file, no framework, no build step, no request that
+  leaves this page: everything it draws comes from the server that served it.
+
+  It is an operator console. It reads records other components wrote and it
+  submits one verdict, through the deployed Analyst Copilot, which screens the
+  text and writes the row itself. Nothing here is a control the rest of the
+  system trusts.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>caseharden — analyst workbench</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #131a23; --edge: #222c38; --ink: #c9d4e0;
+    --dim: #7b8896; --accent: #4f9ffb; --good: #3fb950; --bad: #f85149;
+    --warn: #d29922; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.45 var(--mono);
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 8px 14px; background: var(--panel);
+    border-bottom: 1px solid var(--edge); position: sticky; top: 0; z-index: 2;
+  }
+  header .name { font-weight: 700; letter-spacing: .06em; }
+  header .sep { color: var(--dim); }
+  .badge {
+    padding: 2px 8px; border-radius: 3px; border: 1px solid var(--edge);
+    text-transform: uppercase; letter-spacing: .05em; font-size: 11px;
+  }
+  .badge.good { color: var(--good); border-color: #1c3f26; background: #10241608; }
+  .badge.bad  { color: var(--bad);  border-color: #4a1d1d; }
+  .badge.warn { color: var(--warn); border-color: #453413; }
+  .badge.flat { color: var(--dim); }
+  /* minmax(0, …) rather than 1fr: a cited-row table is as wide as its widest
+     account id, and a plain 1fr column takes that as its minimum and steals the
+     width from the two panes beside it. */
+  main {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px; padding: 10px; align-items: start;
+  }
+  @media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section {
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 4px;
+    display: flex; flex-direction: column; max-height: calc(100vh - 90px);
+  }
+  h2 {
+    margin: 0; padding: 7px 10px; font-size: 11px; font-weight: 700;
+    letter-spacing: .09em; text-transform: uppercase; color: var(--dim);
+    border-bottom: 1px solid var(--edge); display: flex; gap: 8px;
+    justify-content: space-between; align-items: center;
+  }
+  .body { overflow: auto; padding: 8px 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #1a222c; }
+  th { color: var(--dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  td.num { text-align: right; color: var(--dim); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .hash { color: var(--accent); }
+  .muted { color: var(--dim); }
+  .fail { color: var(--bad); }
+  .ok { color: var(--good); }
+  details > summary { cursor: pointer; color: var(--dim); outline: none; }
+  pre {
+    margin: 4px 0 0; padding: 6px; background: #0a0e14; border: 1px solid var(--edge);
+    border-radius: 3px; overflow: auto; max-height: 280px; font-size: 11px;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .link-row td:first-child { color: var(--dim); }
+  .kind {
+    display: inline-block; min-width: 132px; padding: 1px 5px; border-radius: 3px;
+    border: 1px solid var(--edge); font-size: 11px; letter-spacing: .04em;
+  }
+  .k-EVIDENCE, .k-EVIDENCE-CHANGED { color: #58a6ff; border-color: #1e3a5f; }
+  .k-FINDING { color: #a371f7; border-color: #35244f; }
+  .k-VERDICT, .k-APPROVAL { color: var(--good); border-color: #1c3f26; }
+  .k-DRAFT { color: var(--ink); }
+  .k-DRAFT-REJECTED, .k-HOLDOUT-DENIED { color: var(--bad); border-color: #4a1d1d; }
+  .k-EXAM { color: var(--warn); border-color: #453413; }
+  .turn { margin-bottom: 8px; }
+  .turn .who { color: var(--dim); font-size: 11px; letter-spacing: .06em; }
+  .turn.analyst .what { color: var(--ink); }
+  .turn.copilot .what { color: #9fd0a2; }
+  .turn.refused .what { color: var(--bad); }
+  textarea {
+    width: 100%; min-height: 76px; background: #0a0e14; color: var(--ink);
+    border: 1px solid var(--edge); border-radius: 3px; padding: 6px;
+    font: 12px/1.45 var(--mono); resize: vertical;
+  }
+  button {
+    background: #1b2431; color: var(--ink); border: 1px solid var(--edge);
+    border-radius: 3px; padding: 5px 12px; font: 12px var(--mono); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  .compose { padding: 8px 10px; border-top: 1px solid var(--edge); }
+  .compose .row {
+    display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap;
+  }
+  .compose .row button { flex: 0 0 auto; }
+  footer {
+    padding: 6px 14px 14px; color: var(--dim); font-size: 11px;
+    border-top: 1px solid var(--edge); margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="name">CASEHARDEN</span>
+  <span class="sep">analyst workbench</span>
+  <span id="mode" class="badge flat">…</span>
+  <span id="version" class="badge flat">version …</span>
+  <span id="state" class="badge flat">state …</span>
+  <span id="promotions" class="badge flat">promotions …</span>
+  <span id="freshness" class="muted"></span>
+  <span id="banner" class="fail"></span>
+</header>
+
+<main>
+
+  <section>
+    <h2>Finding under review <span id="finding-src" class="muted"></span></h2>
+    <div class="body" id="evidence">waiting for the loop driver…</div>
+  </section>
+
+  <section>
+    <h2>Verdict <span class="muted">through the Analyst Copilot</span></h2>
+    <div class="body" id="chat"></div>
+    <div class="compose">
+      <textarea id="say" placeholder="Your verdict, in your own words."></textarea>
+      <div class="row">
+        <button id="send">Send to Copilot</button>
+        <span id="chat-note" class="muted"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Chain <span id="chain-count" class="muted"></span></h2>
+    <div class="body" id="chain">…</div>
+  </section>
+
+  <section style="grid-column: 1 / -1; max-height: 340px;">
+    <h2>Attestation, and the version registry</h2>
+    <div class="body">
+      <div id="attestation"></div>
+      <div id="registry" style="margin-top: 10px;"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  Read-only over records other components wrote. Its one write is a message to
+  the deployed Analyst Copilot, which screens the text through Model Armor and
+  writes the review row itself under <code>analyst-sa</code>. This console
+  offers a verdict and stores nothing; what gets stored is decided by the
+  Copilot service, which is also where the approval belongs. It never runs
+  <code>verify</code> and holds no credential for the sealed exam, so the
+  attestation above is the Policy Server's answer, not its own.
+</footer>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const text = (s) => (s === null || s === undefined) ? "" : String(s);
+
+function el(tag, cls, content) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (content !== undefined) node.textContent = text(content);
+  return node;
+}
+
+function kv(pairs) {
+  const dl = el("dl", "kv");
+  for (const [k, v] of pairs) {
+    if (v === undefined || v === null || v === "") continue;
+    dl.appendChild(el("dt", null, k));
+    dl.appendChild(el("dd", null, v));
+  }
+  return dl;
+}
+
+function table(headers, rows, rowClass) {
+  const t = el("table");
+  const head = el("tr");
+  headers.forEach((h) => head.appendChild(el("th", null, h)));
+  t.appendChild(head);
+  rows.forEach((cells) => {
+    const tr = el("tr", rowClass || null);
+    cells.forEach((c) => {
+      if (c instanceof Node) {
+        const td = el("td");
+        td.appendChild(c);
+        tr.appendChild(td);
+      } else {
+        tr.appendChild(el("td", null, c));
+      }
+    });
+    t.appendChild(tr);
+  });
+  return t;
+}
+
+function badge(node, label, kind) {
+  node.textContent = label;
+  node.className = "badge " + (kind || "flat");
+}
+
+function detail(summary, payload) {
+  const d = el("details");
+  d.appendChild(el("summary", null, summary));
+  const pre = el("pre", null, JSON.stringify(payload, null, 2));
+  d.appendChild(pre);
+  return d;
+}
+
+// ---------------------------------------------------------------- state
+
+const SESSION = "wb-" + Math.random().toString(36).slice(2, 10);
+let jobId = null;
+let prefilled = false;
+// null means "whatever the registry says is active", which is what the fleet is
+// enforcing. Clicking a registry row pins the page to one version instead.
+let selected = null;
+
+async function get(path) {
+  const response = await fetch(path, { headers: { "Accept": "application/json" } });
+  return await response.json();
+}
+
+function renderHeader(s) {
+  const a = s.attestation || {};
+  badge($("mode"), s.mode || "?", s.mode === "live" ? "warn" : "flat");
+  badge($("version"), "version " + text(s.version || "—"), "flat");
+
+  const state = text(a.state || "UNKNOWN");
+  const good = a.attested === true;
+  badge($("state"), state, good ? "good" : (state === "QUARANTINED" ? "bad" : "warn"));
+  badge($("promotions"), "promotions " + text(a.promotions || "?"),
+        a.promotions === "OPEN" ? "good" : "flat");
+
+  // The Policy Server caches for 60s and says so on every response. Rendered as
+  // the numbers it sent, never as a ticking clock: an animated timer here would
+  // be this page inventing freshness the server did not report.
+  if (a.offline) {
+    $("freshness").textContent = a.checks_run + " offline checks, no cloud access";
+  } else if (a.checked_s_ago !== undefined) {
+    $("freshness").textContent = "checked " + a.checked_s_ago + "s ago" +
+      (a.cached ? " (cached)" : " (fresh)");
+  } else {
+    $("freshness").textContent = "";
+  }
+
+  const errors = Object.entries(s.errors || {}).map(([k, v]) => k + ": " + v);
+  if (a.error) errors.push(text(a.error));
+  $("banner").textContent = errors.join("   |   ");
+}
+
+function renderChain(links) {
+  const target = $("chain");
+  target.textContent = "";
+  $("chain-count").textContent = links.length ? links.length + " links" : "";
+  if (!links.length) {
+    target.appendChild(el("div", "muted", "no chain for this version yet"));
+    return;
+  }
+  links.forEach((l) => {
+    const row = el("div", "turn");
+    const head = el("div");
+    const kind = el("span", "kind k-" + l.kind, l.kind);
+    head.appendChild(el("span", "muted", String(l.seq).padStart(2, "0") + "  "));
+    head.appendChild(kind);
+    head.appendChild(el("span", "hash", "  " + text(l.hash).slice(0, 12)));
+    if (!l.intact) head.appendChild(el("span", "fail", "  HASH DOES NOT RECOMPUTE"));
+    row.appendChild(head);
+    if (l.written_at) row.appendChild(el("div", "muted", l.written_at));
+    row.appendChild(detail("payload", l.payload));
+    target.appendChild(row);
+  });
+}
+
+function renderAttestation(a) {
+  const target = $("attestation");
+  target.textContent = "";
+  if (!a) return;
+  const pairs = [
+    ["state", a.state],
+    ["attested", String(a.attested)],
+    ["promotions", a.promotions],
+    ["root", a.root],
+    ["verify seconds", a.verify_seconds],
+    ["checked", a.checked_s_ago === undefined ? "" :
+       a.checked_s_ago + "s ago, " + (a.cached ? "cached" : "fresh")],
+    ["break", a.break],
+    ["break detail", a.break_detail],
+    ["registry mismatch", a.registry_mismatch],
+    ["last known", a.last_known ? JSON.stringify(a.last_known) : ""],
+    ["note", a.note],
+    ["error", a.error],
+  ];
+  target.appendChild(kv(pairs));
+  if (Array.isArray(a.links) && a.links.length) {
+    target.appendChild(table(
+      ["seq", "kind", "status", "mode", "detail"],
+      a.links.map((r) => [r.seq, r.kind, r.status, r.mode, r.detail])));
+  }
+  if (Array.isArray(a.checks_failed) && a.checks_failed.length) {
+    const list = el("div", "fail", a.checks_failed.length + " offline check(s) failed");
+    target.appendChild(list);
+    a.checks_failed.forEach((c) =>
+      target.appendChild(el("div", "fail", "  " + c.title + " " + text(c.detail))));
+  }
+}
+
+function renderRegistry(versions, shown, attestation) {
+  const target = $("registry");
+  target.textContent = "";
+  if (!versions || !versions.length) {
+    target.appendChild(el("div", "muted", "no registered versions"));
+    return;
+  }
+  const t = table(
+    ["version", "parent", "active", "state", "root", "promoted", "certificate"],
+    versions.map((v) => [
+      v.version, v.parent || "—",
+      String(v.active).toLowerCase() === "true" ? "ACTIVE" : "",
+      // Only the version being inspected carries a state. Badging every row
+      // would mean one Policy Server verification per registered version on
+      // every poll, and each of those re-scans BigQuery. Click a row to move
+      // the whole page, including this badge, onto that version.
+      v.version === shown ? text((attestation || {}).state || "?") : "",
+      text(v.root).slice(0, 12),
+      v.promoted_at || "",
+      text(v.certificate_uri).split("/").pop() || "",
+    ]));
+  // Row 0 is the header.
+  Array.from(t.rows).slice(1).forEach((row, i) => {
+    const version = versions[i].version;
+    row.style.cursor = "pointer";
+    if (version === shown) row.style.background = "#182230";
+    row.title = "inspect " + version;
+    row.addEventListener("click", () => {
+      selected = version;
+      refreshState();
+    });
+  });
+  target.appendChild(t);
+  target.appendChild(el("div", "muted",
+    "Click a version to inspect its chain and its attestation state. "
+    + (selected ? "Showing " + selected + "; " : "")
+    + "the state column is filled for the inspected version only."));
+}
+
+function renderEvidence(payload) {
+  const target = $("evidence");
+  target.textContent = "";
+  $("finding-src").textContent = payload.path ? payload.path.split("/").slice(-2).join("/") : "";
+
+  if (!payload.present) {
+    target.appendChild(el("div", "muted",
+      "No finding on disk yet. The loop driver writes it after the fan-out " +
+      "answers, and waits there for this verdict."));
+    if (payload.error) target.appendChild(el("div", "fail", payload.error));
+    jobId = null;
+    return;
+  }
+
+  const f = payload.finding || {};
+  jobId = f.job_id || null;
+
+  // Nothing deletes this file between runs, so a stale one renders exactly like
+  // the finding under review. Say how old it is, and say so loudly past a few
+  // minutes: prefilling a verdict against yesterday's job is the quiet version
+  // of the subject-mismatch failure.
+  if (payload.age_s !== undefined && payload.age_s > 600) {
+    target.appendChild(el("div", "fail",
+      "This file was written " + Math.floor(payload.age_s / 60) + " minutes ago. " +
+      "If a run is not in progress, this is a previous run's finding."));
+  } else if (payload.age_s !== undefined) {
+    target.appendChild(el("div", "muted", "written " + payload.age_s + "s ago"));
+  }
+
+  target.appendChild(kv([
+    ["family", f.family],
+    ["detector", f.detector],
+    ["job id", f.job_id],
+    ["table", f.table],
+    ["window", text(f.window_start) + "  to  " + text(f.window_end)],
+    ["sessions", f.sessions_total],
+    ["cites this incident", String(f.cites_incident_session)],
+  ]));
+
+  const rows = Array.isArray(f.rows) ? f.rows : [];
+  if (rows.length) {
+    const columns = Object.keys(rows[0]).filter((c) => typeof rows[0][c] !== "object");
+    target.appendChild(el("div", "muted", rows.length + " cited row(s)"));
+    target.appendChild(table(columns, rows.map((r) => columns.map((c) => text(r[c])))));
+  }
+  target.appendChild(detail("the detector's whole finding", f));
+
+  const d = payload.decision;
+  const note = el("div", null);
+  note.style.marginTop = "10px";
+  if (d) {
+    note.appendChild(el("div", "ok", "verdict recorded: " + text(d.decision_id)));
+    note.appendChild(kv([
+      ["analyst", d.analyst],
+      ["disposition", d.disposition],
+      ["recorded at", d.ts],
+      ["rationale", d.rationale],
+    ]));
+    // Screening is load-bearing here: the Proposer reads this rationale. A row
+    // stored with SCREENING_FAILED looks exactly like a clean one in a flat
+    // field, and the loop driver refuses to continue on it.
+    const armor = String(d.ma_verdict || "").toUpperCase();
+    const bad = ["BLOCK", "SCREENING_FAILED", "NOT_SCREENED", ""].includes(armor);
+    note.appendChild(el("div", bad ? "fail" : "ok",
+      "Model Armor: " + text(d.ma_verdict || "(none)") + " / " + text(d.ma_band) +
+      (bad ? "  — the loop driver refuses to pass this text on" : "")));
+  } else if (payload.near_miss) {
+    // The failure this console exists to prevent, caught while it is still
+    // fixable. Before this, a diverged subject rendered as "no row yet", which
+    // is the same string shown before the analyst has typed anything.
+    const n = payload.near_miss;
+    note.appendChild(el("div", "fail",
+      "A VERDICT row exists for this job under a DIFFERENT subject: " +
+      text(n.subject)));
+    note.appendChild(el("div", "fail",
+      "The driver is waiting for exactly " + text(jobId) + " and will not find " +
+      "that row. Re-file the verdict with the full id, prefix included."));
+    note.appendChild(kv([
+      ["stored as", n.decision_id],
+      ["recorded at", n.ts],
+      ["disposition", n.disposition],
+    ]));
+  } else {
+    note.appendChild(el("div", "muted",
+      "No VERDICT row yet for this finding. The Copilot writes it; nothing else may."));
+  }
+  if (payload.decision_error) note.appendChild(el("div", "fail", payload.decision_error));
+  target.appendChild(note);
+
+  if (jobId && !prefilled && !$("say").value) {
+    // The subject is spelled out as an instruction, not just mentioned. The
+    // Copilot's model chooses what it passes to record_verdict, and its tool
+    // docstring offers "the investigation id, or the BigQuery job id", so a
+    // sentence that merely contains the id can still store a normalised one.
+    $("say").value =
+      "Record my verdict on this finding. Use exactly this string as the " +
+      "finding argument, including the location prefix, and do not shorten " +
+      "it: " + jobId + "\nDisposition: confirmed abuse. Rationale: ";
+    prefilled = true;
+  }
+  $("chat-note").textContent = jobId
+    ? "subject must be exactly " + jobId
+    : "";
+}
+
+// ---------------------------------------------------------------- chat
+
+function turn(who, what, cls) {
+  const node = el("div", "turn " + cls);
+  node.appendChild(el("div", "who", who));
+  node.appendChild(el("div", "what", what));
+  $("chat").appendChild(node);
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
+
+async function send() {
+  const value = $("say").value.trim();
+  if (!value) return;
+  $("send").disabled = true;
+  turn("analyst", value, "analyst");
+  $("say").value = "";
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: value, session: SESSION }),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      turn("refused", body.error || ("HTTP " + response.status), "refused");
+      $("say").value = value;
+    } else {
+      turn("copilot", body.reply || "(no text in the reply)", "copilot");
+    }
+  } catch (exc) {
+    turn("refused", String(exc), "refused");
+    $("say").value = value;
+  }
+  $("send").disabled = false;
+  refreshFinding();
+}
+
+$("send").addEventListener("click", send);
+$("say").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
+});
+
+// ---------------------------------------------------------------- polling
+
+async function refreshState() {
+  try {
+    const s = await get("/api/state" +
+      (selected ? "?version=" + encodeURIComponent(selected) : ""));
+    renderHeader(s);
+    renderChain(s.links || []);
+    renderAttestation(s.attestation);
+    renderRegistry(s.versions, s.version, s.attestation);
+  } catch (exc) {
+    $("banner").textContent = String(exc);
+  }
+}
+
+async function refreshFinding() {
+  try {
+    renderEvidence(await get("/api/finding"));
+  } catch (exc) {
+    $("banner").textContent = String(exc);
+  }
+}
+
+refreshState();
+refreshFinding();
+// The finding file changes mid-run; the chain and the registry change once, at
+// the promotion. Polled at the rate each actually moves.
+setInterval(refreshFinding, 3000);
+setInterval(refreshState, 10000);
+</script>
+</body>
+</html>

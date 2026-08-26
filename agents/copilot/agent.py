@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """The Analyst Copilot: the human surface, and the two things a human decides.
 
-No custom UI is built for this entry. This agent is served by `adk deploy
-cloud_run --with_ui`, which is ADK's own chat window, unmodified. What is built
-is the pair of tools behind it, because a verdict typed into a chat box that
-goes nowhere is not a review.
+This agent is served by `adk deploy cloud_run --with_ui`, which is ADK's own
+chat window, unmodified. What is built is the pair of tools below, because a
+verdict typed into a chat box that goes nowhere is not a review.
+
+`caseharden/workbench.py` is a local operator console that can also send a
+message here, and it changes nothing about this file. It has no credential of
+its own for the review table: it says a sentence, and the tools below run under
+`analyst-sa` and decide what is stored, exactly as they do for a person typing
+into the chat window. That is the reason the console can be trusted as little as
+any other caller.
 
 `record_verdict` writes the analyst's disposition on a finding. `approve` writes
 their decision on a candidate version. Both land as rows in `review.decisions`,
