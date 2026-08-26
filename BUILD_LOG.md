@@ -1846,5 +1846,40 @@ the wire as written: the CSP with `frame-ancestors 'none'`, `X-Frame-Options: DE
 `Referrer-Policy: no-referrer`. A request carrying `Host: evil.example` was refused 403, and a
 `text/plain` POST was refused 415.
 
-Still not proved: a verdict actually written through the console. Proving it means storing a
-real `review.decisions` row, so it belongs to the recorded demo run and not to a probe.
+### The console's one write, proved
+
+A verdict has now been written through the console. Not on a fresh incident: the full v6 loop
+promotes as its last stage, and decision 7 budgets exactly one promotion for the take, so the
+verdict was filed against the finding v5 already cites. Two turns, both through
+`POST /api/chat`:
+
+1. the verdict, naming the job id, disposition and rationale
+2. the confirmation, after the Copilot echoed the arguments back and asked
+
+`review.decisions` went from 4 rows to 5. The new row is `vd_015df25fb87b`, written
+2026-08-26T12:46:23Z as `analyst@caseharden.example`, subject
+`europe-west3:job_1IpPlMAwmLLVhMAvUVqCpk_hxbF8`, Model Armor ALLOW / NO_MATCH_FOUND on the
+analyst's words. It was read back from BigQuery, not taken from the chat reply, which is the
+distinction `copilot_client.say` documents and the reason the loop driver reads the table too.
+
+The second verdict on a sealed finding is inert, and that was measured rather than reasoned.
+`seed` corroborates a verdict by `decision_id`, not by subject, and `verify` renders a VERDICT
+link from its payload without re-querying the table. `verify --version v5` after the write is
+still ATTESTED on root `e2a55935…`, unchanged. The console's own decision pane now shows
+`vd_015df25fb87b`, because `decision()` takes the newest row for the subject.
+
+### The guard refuses the confirmation turn
+
+The console requires every outgoing message to name the job id under review. The confirmation
+turn does not name it. `"Yes. Store it exactly as you listed, with those arguments."`, which is
+the exact string `record_through_copilot` sends, is refused 409 by the console.
+
+This is over-broad. Only a turn that files a verdict can file one against the wrong subject, and
+the confirmation says yes to arguments the Copilot has already displayed. The workaround costs
+nothing, repeat the id in the confirmation, and that is what was done here. It does not affect
+`infra/110_run_loop.py`, which reaches `copilot_client.say` directly and never passes through
+the console.
+
+The narrow fix is a per-session latch: check the guard on a session's first turn, allow later
+turns in the same session. Not applied. It changes the single write path days before
+submission, and the workaround holds.
