@@ -1723,8 +1723,8 @@ there is no other source for the one part of a run a person is inside.
 
 | | |
 |---|---|
-| Tests | **257** (185 at the end of Day 7; 72 in `tests/test_workbench.py`) |
-| Mutations broken and caught | **55 of 55** (48 at the end of Day 7) |
+| Tests | **268** (185 at the end of Day 7; 83 in `tests/test_workbench.py`) |
+| Mutations broken and caught | **59 of 59** (48 at the end of Day 7) |
 | Offline re-check | 17 checks, `fixtures/v5`, root `e2a559358933`, no cloud access |
 | Fixture-mode poll | 0.52s cold, 0.02s warm; `local_corpora()` caches the replay |
 
@@ -1897,5 +1897,51 @@ accepted before the latch too.
 
 Three tests, and the mutation list gains a case that latches per session only, which is the way
 this fails quietly: the confirmation keeps working, so the console looks correct right up to the
-run where it confirms the wrong finding. 257 tests pass on 3.9 and on 3.12. 55 mutations, 55
-caught, on 3.12.
+run where it confirms the wrong finding.
+
+Proved live as well as in the tests. On a fresh session the canned confirmation is still refused
+409; after a turn naming the job it is accepted; and when the finding file changes under a
+latched session it is refused again, naming the new id. `review.decisions` was unchanged
+throughout.
+
+### What the adversarial pass on the latch found
+
+Two engines. The in-house reviewer reported no issues and its verdict was discarded: it ran
+`tests/mutate_check.py` twice concurrently in the background while reviewing. Two harnesses
+snapshot each other's mutations as the original text and restore them as source, so the
+checkout it measured had live mutations in `bq.py` and `notary.py`. Both files were restored
+from HEAD, which cost nothing because the change under review touched neither. The lesson is
+about this repo's harness, not about that agent: **the mutation harness is not safe to run
+concurrently with anything, including itself.**
+
+Codex found four real defects, every one reproduced here before it was touched. Three are the
+latch's own, one predates it.
+
+**A longer job id containing this one passed the guard.** `job_id in text` accepted
+`…job_5UcJoBBEaZWU0X` while the finding under review was `…job_5UcJoBBEaZWU0`. The driver
+compares `subject` for equality, so the longer id is exactly the subject it will never find:
+the check was passing the one case it exists to catch. `names_the_job` now requires a
+non-identifier character on both sides. This hole predates the latch; `job_id not in text` had
+it too. A trailing colon or full stop still matches, because that is how the sentence is
+written.
+
+**A finding whose `job_id` is not a string crashed the console.** A list, a dict or an integer
+reached `job_id in text` and raised `TypeError`, which the handler returned as a 502.
+`read_finding` validated the top level was an object and stopped there. `job_id_of` now treats
+anything but a non-empty string as no subject, which is the same state as no finding.
+
+**The session was latched before the Copilot took the turn.** A first turn the Copilot rejected
+still opened the session, so the bare "yes" after it was let through on the strength of a turn
+that never arrived. `_latch` is now called after the reply comes back.
+
+**The latch map was unbounded on a key the caller chooses.** `session` arrives in the request
+body, so the number of distinct ones is not the number of findings reviewed: 5,000 sessions gave
+5,000 entries. It is an `OrderedDict` capped at `MAX_LATCHED_SESSIONS`, oldest evicted first.
+The comment claiming nothing needed evicting is gone, because it was wrong.
+
+Codex could not run the suite: its sandbox has no writable temporary directory and no Python
+3.12. It said so rather than reporting a pass, and its reading of the mutation list is reasoning
+rather than evidence. The harness is the evidence.
+
+268 tests pass on 3.9 and on 3.12. 59 mutations, 59 caught, on 3.12, including one per defect
+above.

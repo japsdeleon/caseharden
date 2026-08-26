@@ -50,11 +50,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -387,6 +389,41 @@ def read_finding(path: Path = LIVE_FINDING) -> dict:
                 "error": f"{type(exc).__name__}: {exc}"[:200]}
 
 
+def job_id_of(finding: dict) -> Optional[str]:
+    """The job id under review, or None when the file carries no usable one.
+
+    Only a non-empty string is a subject. The driver writes one, but this is a
+    file on disk: a hand-edited or half-written one can hold anything JSON
+    allows, and a list reaching `job_id in text` is a TypeError two frames from
+    the file that caused it, which the handler then reports as a 502. That is
+    the same shape as the non-object body that reached `.get` before it, found
+    by an adversarial pass rather than by a test.
+    """
+    job_id = (finding.get("finding") or {}).get("job_id")
+    return job_id if isinstance(job_id, str) and job_id else None
+
+
+def names_the_job(text: str, job_id: str) -> bool:
+    """True when the text names this job id, and not a longer one containing it.
+
+    A plain substring test passed `…job_5UcJoBBEaZWU0X` while the finding under
+    review was `…job_5UcJoBBEaZWU0`. The driver compares `subject` for equality,
+    so the longer id is exactly the subject it will never find, which is the one
+    thing this check exists to catch. Requiring a non-identifier character on
+    both sides closes it. A trailing colon or full stop still matches, because
+    "verdict on <id>: confirmed abuse" is how the sentence is written.
+    """
+    edge = r"[A-Za-z0-9_-]"
+    return bool(re.search(f"(?<!{edge}){re.escape(job_id)}(?!{edge})", text))
+
+
+# The session name arrives in the request body, so the number of distinct ones
+# is chosen by the caller, not by the number of findings reviewed. Bounded, and
+# oldest first, so a long-running console cannot be made to hold an unbounded
+# map by an endless stream of new session names.
+MAX_LATCHED_SESSIONS = 256
+
+
 class Workbench:
     """Everything the handler needs, so the handler stays a router."""
 
@@ -397,9 +434,8 @@ class Workbench:
         # Injected so the tests can drive every route without a deployed fleet.
         self._chat = chat
         # Which job id each chat session has already named, for the guard in
-        # chat(). One small entry per session, in a console one analyst runs on
-        # their own machine, so nothing here needs evicting.
-        self._named: Dict[str, str] = {}
+        # chat(). Ordered and capped, see MAX_LATCHED_SESSIONS.
+        self._named: "OrderedDict[str, str]" = OrderedDict()
         self._named_lock = threading.Lock()
 
     def state(self, version: Optional[str]) -> dict:
@@ -407,7 +443,7 @@ class Workbench:
 
     def finding(self) -> dict:
         out = read_finding(self.finding_path)
-        job_id = (out.get("finding") or {}).get("job_id")
+        job_id = job_id_of(out)
         if job_id:
             try:
                 out["decision"] = self.source.decision("VERDICT", job_id)
@@ -426,11 +462,24 @@ class Workbench:
         session left open across that boundary is looking at a different job, so
         a bare "yes" in it would confirm a verdict on the wrong one.
         """
+        if names_the_job(text, job_id):
+            return True
         with self._named_lock:
-            if job_id in text:
-                self._named[session] = job_id
-                return True
             return self._named.get(session) == job_id
+
+    def _latch(self, session: str, job_id: str) -> None:
+        """Remember that this session may go on talking about this job.
+
+        Called after the Copilot has taken the turn, not before it. Latching
+        first meant a first turn the Copilot never accepted still opened the
+        session: the analyst's message failed, and the bare "yes" that followed
+        was let through on the strength of a turn that never arrived.
+        """
+        with self._named_lock:
+            self._named[session] = job_id
+            self._named.move_to_end(session)
+            while len(self._named) > MAX_LATCHED_SESSIONS:
+                self._named.popitem(last=False)
 
     def chat(self, text: str, session: str) -> dict:
         """Say one thing to the Copilot, after checking the one thing that stalls a run.
@@ -458,13 +507,16 @@ class Workbench:
             raise Refused(
                 "this workbench is running against a fixture. There is no fleet "
                 "to talk to and no review row to write.")
-        job_id = ((read_finding(self.finding_path).get("finding")) or {}).get("job_id")
+        job_id = job_id_of(read_finding(self.finding_path))
         if job_id and not self._named_the_job(session, job_id, text):
             raise Refused(
                 f"the message does not name the finding under review. The Notary "
                 f"reads the row whose subject is exactly {job_id!r}; a verdict "
                 f"filed against anything else is stored and never found.")
-        return {"reply": self._chat(text, session)}
+        reply = self._chat(text, session)
+        if job_id:
+            self._latch(session, job_id)
+        return {"reply": reply}
 
 
 class Refused(Exception):

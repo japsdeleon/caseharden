@@ -105,8 +105,8 @@ The gate refused the real Proposer's real candidate. It caught one more sealed a
 the active version and blocked two legitimate turns, and that was enough. No fixture was
 involved.
 
-Every number published is measured. `verify` p95 is 3.66s against a 5s target. 257 tests. 55
-mutations broken on purpose and all 55 caught, including one that survived its first run and
+Every number published is measured. `verify` p95 is 3.66s against a 5s target. 268 tests. 59
+mutations broken on purpose and all 59 caught, including one that survived its first run and
 now has two tests.
 
 ## What I learned

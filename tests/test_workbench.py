@@ -433,6 +433,81 @@ def test_a_new_finding_makes_the_session_name_it_again(tmp_path):
     assert bench.chat(CONFIRM, "s1") == {"reply": "ok"}
 
 
+def test_a_longer_job_id_containing_this_one_is_refused(tmp_path):
+    """The driver compares `subject` for equality, so a longer id is the miss.
+
+    A plain substring test passed `<job>X` while the finding under review was
+    `<job>`, which is precisely the subject `wait_for` will never find.
+    """
+    bench = _bench(tmp_path, chat=lambda t, s: "ok", finding={"job_id": JOB})
+    with pytest.raises(workbench.Refused):
+        bench.chat(f"Record a verdict on {JOB}X: confirmed abuse.", "s1")
+    with pytest.raises(workbench.Refused):
+        bench.chat(f"Record a verdict on X{JOB}: confirmed abuse.", "s1")
+
+
+@pytest.mark.parametrize("sentence", [
+    "Record a verdict on {job}: confirmed abuse.",
+    "Confirmed abuse on {job}.",
+    "The finding is {job}, and I am calling it a false positive.",
+    "{job}",
+])
+def test_the_sentence_an_analyst_actually_writes_is_accepted(tmp_path, sentence):
+    """Punctuation around the id is normal. Only identifier characters are not."""
+    bench = _bench(tmp_path, chat=lambda t, s: "ok", finding={"job_id": JOB})
+    assert bench.chat(sentence.format(job=JOB), "s1") == {"reply": "ok"}
+
+
+@pytest.mark.parametrize("bad", [["a"], {"a": 1}, 12345, True])
+def test_a_finding_whose_job_id_is_not_a_string_has_no_subject(tmp_path, bad):
+    """It reached `job_id in text` and raised TypeError, which the handler sent as 502.
+
+    The file is on disk and the driver is not the only thing that can write it.
+    No usable subject means no check, the same as no finding at all.
+    """
+    bench = _bench(tmp_path, chat=lambda t, s: "ok", finding={"job_id": bad})
+    assert bench.chat("anything at all", "s1") == {"reply": "ok"}
+    assert bench.finding().get("decision") is None
+
+
+def test_a_first_turn_the_copilot_refused_does_not_latch_the_session(tmp_path):
+    """The latch used to be taken before the Copilot had the turn.
+
+    So a message that never arrived still opened the session, and the bare "yes"
+    after it was let through on the strength of a turn that did not happen.
+    """
+    def boom(text, session):
+        raise RuntimeError("the Copilot did not take it")
+
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB}))
+    bench = workbench.Workbench(workbench.FixtureSource(FIXTURE),
+                                finding_path=path, chat=boom)
+    with pytest.raises(RuntimeError):
+        bench.chat(f"Record a verdict on {JOB}: confirmed abuse.", "s1")
+
+    bench._chat = lambda text, session: "ok"
+    with pytest.raises(workbench.Refused):
+        bench.chat(CONFIRM, "s1")
+
+
+def test_the_latch_map_is_bounded_by_caller_chosen_session_names(tmp_path):
+    """`session` comes out of the request body, so the caller picks how many.
+
+    The comment here used to say one small entry per session and nothing needing
+    eviction. The number of sessions is not the number of findings.
+    """
+    bench = _bench(tmp_path, chat=lambda t, s: "ok", finding={"job_id": JOB})
+    for i in range(workbench.MAX_LATCHED_SESSIONS * 3):
+        bench.chat(f"Record a verdict on {JOB}.", f"session-{i}")
+    assert len(bench._named) == workbench.MAX_LATCHED_SESSIONS
+
+    newest = f"session-{workbench.MAX_LATCHED_SESSIONS * 3 - 1}"
+    assert bench.chat(CONFIRM, newest) == {"reply": "ok"}
+    with pytest.raises(workbench.Refused):
+        bench.chat(CONFIRM, "session-0")
+
+
 # --------------------------------------------------------------------------
 # The live source, when the project answers badly
 # --------------------------------------------------------------------------
