@@ -3,35 +3,191 @@
 **An agent's authority to act is derived from evidence, not granted by configuration.**
 
 A governance plane for an enterprise agent fleet. A guardrail keeps its authority only while
-its provenance chain re-derives from raw evidence. The two guarantees that chain rests on —
-proposer isolation and record immutability — are enforced by BigQuery IAM and a Cloud Storage
+its provenance chain re-derives from raw evidence. The two guarantees that chain rests on,
+proposer isolation and record immutability, are enforced by BigQuery IAM and a Cloud Storage
 retention lock rather than by this project's code.
 
 All Things Agentic Hackathon · Fortified Enterprise Fleet · solo entry · europe-west3.
 
 https://github.com/japsdeleon/caseharden
 
-Build in progress. See [`docs/PLAN.md`](docs/PLAN.md) for the specification and
-[`BUILD_LOG.md`](BUILD_LOG.md) for daily progress with measured numbers.
+Specification: [`docs/PLAN.md`](docs/PLAN.md). Daily progress with measured numbers:
+[`BUILD_LOG.md`](BUILD_LOG.md). Terminal captures of every claim below: [`captures/`](captures).
 
-## The fleet
+---
 
-Seven Cloud Run services from one image, six of them registered in Agent Registry.
+## The claim
+
+In Caseharden the provenance record is load-bearing rather than descriptive. A guardrail
+version is authoritative in production only while its chain re-derives from the raw conduct
+events that justified it. Changing the evidence withdraws the version's authority instead of
+filing a discrepancy report.
+
+Two guarantees are discharged outside this project's code:
+
+- **The proposing agent never read its own evaluation data.** That is BigQuery access control
+  producing a real 403, and the access list that produces it is hashed into the chain, so a
+  later grant to the Proposer breaks the chain rather than going unnoticed.
+- **The record cannot be edited after the fact.** That is a Cloud Storage retention lock that
+  refuses a delete from the project owner.
+
+Refusals are stored as links in the same chain as approvals, so the record attests to what
+was prevented and not only to what occurred.
+
+## What already exists, named before a judge has to find it
+
+| Prior work | What it already does |
+|---|---|
+| Unit21 AI Rule Recommendation Agent (Oct 2025) | Analyzes analyst dispositions, drafts optimized rules, shadow-tests against historical data, deploys on approval |
+| Sublime Security ADE (Sept 2025) | LLM drafts detection rules in a constrained DSL, PR-style human review |
+| Stripe Radar Assistant, DataVisor Co-Pilot | LLM-drafted rules, backtested, human-approved |
+| MLflow-era MLOps | Holdout-then-promote, versioned artifacts, champion/challenger, rollback |
+| **sigstore / cosign, in-toto, SLSA** | **Signed attestations binding an artifact to its build inputs, verified before use** |
+| **OPA Gatekeeper, Kyverno admission control** | **Refuse to admit an artifact whose attestation does not verify** |
+
+Caseharden claims none of it as new. The verdict-to-policy loop is shipped product. Signed
+artifact verification gating admission is shipped infrastructure, and it is the closest
+analogue to this entry's actual claim, which is why it is named here.
+
+**The delta.** Those systems attest an *artifact* against its *build inputs*, verify a
+*signature over a digest*, and gate at *admission time*. Caseharden attests a *decision*
+against its *evidence*, and verification does not stop at a hash. It re-executes the
+deterministic Examiner over the sealed holdout to reproduce the metric that justified the
+promotion, and it re-scans the conduct events the finding cited. A signature proves nobody
+edited the claim. Caseharden proves the claim is still true. That is why a late-arriving
+event can quarantine a version no attacker ever touched, which no signature scheme detects
+and no admission controller re-checks after admission.
+
+**Not claimed:** first AI-proposed policy under human review, first constrained-DSL drafting,
+first holdout gate, first signed provenance, first monotone policy versioning. Each is prior
+art and each is cited above.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph fleet["The governed fleet, Cloud Run, private"]
+    W["support agent<br/>workload-sa"]
+    F["Foreman<br/>foreman-sa"]
+    D["4 detectors<br/>detector-sa"]
+    P["Proposer<br/>proposer-sa"]
+  end
+  subgraph plane["The governance plane"]
+    PS["Policy Server<br/>examiner-sa"]
+    EX["Examiner<br/>deterministic, no model"]
+    NO["Notary<br/>notary-sa"]
+  end
+  AC["Analyst Copilot<br/>ADK web UI, analyst-sa"]
+  CL[("conduct_live")]
+  CT[("conduct_train")]
+  HO[("holdout_sealed<br/>one reader")]
+  CH[("chain.links")]
+  RV[("review.decisions")]
+  GCS[["retention-locked bucket"]]
+  AR{{"Agent Registry"}}
+
+  W -->|"every tool call"| PS
+  W -->|"conduct event"| CL
+  F -->|"list_agents()"| AR
+  F -->|"A2A fan-out"| D
+  D -->|"governed SQL"| CL
+  AC --> RV
+  P -->|"SELECT"| CT
+  P -.->|"403, recorded as a link"| HO
+  EX -->|"only reader"| HO
+  NO --> CH
+  NO --> GCS
+  NO -->|"reads the human's rows"| RV
+  PS -->|"re-derives at serve time"| CH
+  PS --> EX
+```
+
+Nine private Cloud Run services: four detectors from one template, the workload agent, the
+Foreman, the Proposer, the Policy Server, and the Analyst Copilot. Seven are published into
+Agent Registry, each entry carrying the chain root of the policy version it was registered
+against, so the roster states what each worker's authority rests on and not only where it
+lives. The Foreman's source names no detector; the fleet proof greps it to keep that true.
+
+The Analyst Copilot is `adk deploy cloud_run --with_ui`, unmodified. No UI was written for
+this entry. It serves no agent card, so it is not in the roster: it is a human's window, not
+a worker the Foreman discovers.
+
+## Measured
+
+Every number here is measured on the live project, not estimated. Sources in
+[`BUILD_LOG.md`](BUILD_LOG.md) and [`captures/`](captures).
 
 | | |
 |---|---|
-| 4 detectors | one ADK template, one check family each, `detector-sa` |
-| support agent | two mock tools behind the shared enforcement callback, `workload-sa` |
-| Foreman | binds whatever `list_agents()` returns, fans out over A2A, `foreman-sa` |
-| Policy Server | serves the active policy with its live attestation state, `examiner-sa` |
+| `verify` p95, cold IAM cache | **3.66s** against a 5s target (p50 3.16s, 12 runs) |
+| Active version | v5, 7 chain links, root `e2a559358933`, attested |
+| Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
+| Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
+| Tests | 156 |
+| Mutations broken and caught | 40 of 40 |
+| Fleet proof | 8 of 9 assertions hold; see *Known limitations* |
 
-Every registry entry carries the chain root of the policy version it was registered
-against, so the roster states what each worker's authority rests on and not only where
-it lives. The Foreman's source names no detector; the fleet proof greps it to keep that
-true.
+## The gate, and an honest note about the demo
 
-Every service is private. Callers sign each hop with an identity token for the exact
-service they are addressing.
+The promotion gate has three legs and all three are required. Attacks blocked must rise.
+Benign pass rate must not fall. The candidate must deny everything the active version denies,
+decided from the rule structure rather than by replaying a corpus.
+
+On the day, the deployed Proposer produced a candidate that caught **31 of 40** sealed attack
+sessions, one more than the active version, and blocked two legitimate turns. The gate refused
+it for benign regression. Three further candidates were refused for no improvement. Nothing
+was written to the chain. That transcript is
+[`captures/day5-gate-refuses-the-proposer.txt`](captures/day5-gate-refuses-the-proposer.txt).
+
+A second, louder refusal is also kept:
+[`policies/v5-candidate-a-overblocking.json`](policies/v5-candidate-a-overblocking.json)
+denies every refund, catches 40 of 40 attacks, and drops benign traffic to 94.5%.
+**That candidate is hand-written, not model-drafted, and its capture says so in the first
+paragraph.** The Examiner's run against it is real.
+
+## Degraded modes
+
+| Condition | Enforcement | Attestation | Promotion |
+|---|---|---|---|
+| Chain re-derives | in force | `attested` | open |
+| A link fails to re-derive | **in force**, block reasons marked unattested | `quarantined`, the failing link and offending id named | frozen |
+| Verification cannot run | in force, last known state retained | `unknown` | frozen, alert raised |
+| Policy Server unreachable | last fetched policy stays in force, marked unattested | `unknown` | frozen |
+| Policy older than the staleness bound | **call refused**, `POLICY-EXPIRED` | `unknown` | frozen |
+| Model Armor unavailable and the policy keys on it | **call refused**, `SCREENING-UNAVAILABLE` | never justified | frozen |
+
+Attestation gates authority, not availability. An audit layer that switches off guardrails
+when its own paperwork lapses is a worse failure than the one it detects.
+
+## Known limitations
+
+- **Spans do not reach Cloud Trace from Cloud Run.** The export is wired and works from a
+  workstation under two identities. From the deployed services the provider is installed, the
+  flush runs, no export is refused, and the trace ids the fleet records still answer 404. The
+  cause is not established. `100_prove_fleet.py` asserts resolution and fails on it rather
+  than claiming otherwise. Trace ids in the chain are correlation keys today.
+- **No agent runs on Agent Runtime.** An Agent Engine is deployed and backs Memory Bank.
+  Every agent is on Cloud Run, which the build plan pre-approved.
+- **Verification re-derives two links.** EVIDENCE and EXAM. The others are corroborated when
+  they are written and hash-protected afterwards.
+- **Append-only is a convention on the chain table, not a platform guarantee.** What makes an
+  edit detectable is the sealed root in the retention-locked bucket.
+- Full threat model: [`THREATS.md`](THREATS.md).
+
+## Reproduce it
+
+```bash
+bash infra/70_prove_seal.sh          # proposer-sa takes a real 403 on the sealed holdout
+bash infra/71_prove_immutability.sh  # the owner is refused delete, overwrite and unlock
+bash infra/80_prove_gate.sh          # the gate refuses three ways and passes one
+bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
+python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
+python3 -m pytest tests -q           # 156 tests, no cloud project needed
+python3 tests/mutate_check.py        # 40 mutations; every one must be caught
+```
+
+Each script exits non-zero if the guarantee it tests does not hold.
+[`infra/README.md`](infra/README.md) has the full numbered sequence from an empty project.
 
 ## Clean-room disclosure
 

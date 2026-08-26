@@ -1438,3 +1438,54 @@ Everything Day 4 listed, plus:
 - `roles/bigquery.resourceViewer` on `notary-sa` lets it see every job in the
   project. It carries no `bigquery.tables.getData`, checked with the same role
   expansion `verify` uses, so it does not widen the exam's reach.
+
+## 2026-08-30 — Day 6
+
+**Documents, and the six decisions the entrant settled.** No code changed today. The
+deployed fleet, the chain and the active version are as Day 5 left them.
+
+### The decisions, and what each one changed
+
+| Decision | Settled | What it touched |
+|---|---|---|
+| Agent Runtime | **Dropped.** Every agent runs on Cloud Run. | Section 3's component table and its Agent Runtime bullet now say so. The bullet states that an Agent Engine exists, backs Memory Bank, and hosts no agent, and that the registry pattern is therefore shown on one host. |
+| Beat 0:38 count | **Nine rows, seven ours.** | Section 3's registry bullet and the beat itself. The two that are not ours are Google's `Workspace Agent` and the `caseharden-memory` entry Vertex created with the Agent Engine. |
+| Beat 2:10 numbers | **The Proposer's own.** 30/40 → 31/40, benign 100% → 99.7%, refused for benign regression. | The beat. The hand-written over-blocking candidate stays in the repo as the louder alternative, with its disclosure. |
+| Beat 2:10 spoken line | **"four hundred lines".** `examiner.py` is 408. | The beat. |
+| Beat 0:56 trace DAG | **Cut.** | The beat now shows the four detector answers with their BigQuery job ids. It says in the script why the trace shot is gone. |
+| Push | **Sent.** `6e5d230` is on GitHub. | Nothing in the tree. |
+
+Version numbers in the demo script are the walk-through's, not the fleet's. The script says
+v3 and v4 because it was written before anything ran. A note under the beat table says to
+rehearse against whatever is active on the day, which is v5.
+
+### Written
+
+**README.md**, rewritten. The claim, the prior-art table including the supply-chain row, the
+delta stated against sigstore and Kyverno, a Mermaid architecture diagram, the measured
+numbers, the degraded-mode table, the known limitations, and the commands a reviewer runs to
+reproduce every proof. The hand-written candidate is disclosed in the section that uses its
+numbers, which is where a reader meets them.
+
+**THREATS.md**, new. Five sections of attempt-and-control, then five holes stated plainly
+under *Not covered*: a bundle is corroborated rather than re-derived; `analyst-sa` can write
+the review table; trace ids are correlation keys and the tracing middleware trusts an inbound
+`traceparent`; the reach check depends on being able to expand a role; and
+`CASEHARDEN_PROJECT` is a comparison target rather than an allowlist. Everything Days 1 to 5
+recorded for this file is in it.
+
+**docs/DEVPOST.md**, new. Paste-ready, one section per Devpost field.
+
+### Not done, and why
+
+**The billing number.** The project is linked to billing account `016DDB-615148-5041E6` and
+the Day 1 budget of EUR 45 with alerts is in place. Actual spend to date needs the Cloud
+Console or a BigQuery billing export, and no export is configured. The final frame's
+screenshot is the entrant's to take, from Billing, Reports, filtered to this project.
+
+**The rehearsal and the recording.** Two dress runs and the 4:00 video are the entrant's.
+The transcripts to cut from are `captures/day5-*`.
+
+**The CI fixture badge.** Section 4 lists it as the first thing to drop, and it is dropped
+unless the entrant asks for it: a committed JSONL export of the chain and the evidence
+snapshot, plus a GitHub Action running the pure-Python hash re-check on a clean checkout.
