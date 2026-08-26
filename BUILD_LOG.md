@@ -1486,6 +1486,40 @@ screenshot is the entrant's to take, from Billing, Reports, filtered to this pro
 **The rehearsal and the recording.** Two dress runs and the 4:00 video are the entrant's.
 The transcripts to cut from are `captures/day5-*`.
 
-**The CI fixture badge.** Section 4 lists it as the first thing to drop, and it is dropped
-unless the entrant asks for it: a committed JSONL export of the chain and the evidence
-snapshot, plus a GitHub Action running the pure-Python hash re-check on a clean checkout.
+**The CI fixture badge.** Asked for after this entry was first written, and built. See below.
+
+### The fixture badge, and the one check that is not a hash
+
+`caseharden verify` needs this project's BigQuery, its sealed holdout and two impersonated
+service accounts. Only one person can run it. For an entry whose subject is records a
+reviewer can check, that is a weak position, so the record is now exported and re-checked by
+a machine that is not the entrant's.
+
+`infra/120_export_fixture.py` writes `fixtures/v5/`: the seven links as JSONL with the hashes
+exactly as stored, the sealed certificate read back from the retention-locked bucket, and a
+`source.json` naming where each came from. The sealed holdout is not exported and never will
+be.
+
+`python3 -m caseharden.recheck fixtures/v5` runs 17 checks with no credentials and no
+network. Sixteen are consistency: link hashes, the walk, the root against the sealed
+certificate, the certificate's own list, the chain's shape, the approval bound to the exam it
+approved, and the EVIDENCE link's three digests against the material inside it. Those prove
+the record was not edited after it was sealed. They cannot prove it was true when written.
+
+The seventeenth replays the Examiner. The generator is seeded and committed, so it reproduces
+the corpora BigQuery was loaded from, and the Examiner makes no model calls. Offline replay
+of the promoted candidate returns the same numbers the chain recorded, family by family:
+10/10, 10/10, 0/10, 10/10, and 640 of 640 benign turns passing.
+
+Four tampers were tried against it and each was refused. An edited payload breaks its link
+hash. A chain rewritten with every hash rebuilt no longer matches the sealed root. A dropped
+link fails the shape check. And a chain with an invented catch rate, every hash rebuilt AND
+the certificate forged to match, is still refused, because the replay disagrees:
+`privilege-sequencing: recorded 10/10, replay 0/10`. `tests/test_recheck.py` pins all four.
+
+`.github/workflows/recheck.yml` runs the re-check, the corpus self-check, the test suite and
+the mutation harness on GitHub's runners on every push. `requirements-verify.txt` is what the
+offline path needs, which is pydantic, typing_extensions and pytest. Everything that talks to
+Google Cloud in this repo is a urllib call, so no cloud SDK is involved.
+
+Tests are 161 now. The five new ones are the tampers.

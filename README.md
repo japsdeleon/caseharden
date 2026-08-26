@@ -9,6 +9,8 @@ retention lock rather than by this project's code.
 
 All Things Agentic Hackathon · Fortified Enterprise Fleet · solo entry · europe-west3.
 
+[![recheck](https://github.com/japsdeleon/caseharden/actions/workflows/recheck.yml/badge.svg)](https://github.com/japsdeleon/caseharden/actions/workflows/recheck.yml)
+
 https://github.com/japsdeleon/caseharden
 
 Specification: [`docs/PLAN.md`](docs/PLAN.md). Daily progress with measured numbers:
@@ -123,7 +125,7 @@ Every number here is measured on the live project, not estimated. Sources in
 | Active version | v5, 7 chain links, root `e2a559358933`, attested |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
-| Tests | 156 |
+| Tests | 161 |
 | Mutations broken and caught | 40 of 40 |
 | Fleet proof | 8 of 9 assertions hold; see *Known limitations* |
 
@@ -174,6 +176,33 @@ when its own paperwork lapses is a worse failure than the one it detects.
   edit detectable is the sealed root in the retention-locked bucket.
 - Full threat model: [`THREATS.md`](THREATS.md).
 
+## Check the record yourself, with no access to my project
+
+`caseharden verify` needs this project's BigQuery, its sealed holdout and two impersonated
+service accounts. Only one person can run it. That is a weak position for an entry whose
+subject is records you can check for yourself, so the record is also exported and re-checked
+by a machine that is not mine.
+
+```bash
+python3 -m caseharden.recheck fixtures/v5
+```
+
+Seventeen checks, no credentials, no network. Link hashes, the walk, the root against the
+hash sealed in the retention-locked bucket, the certificate's own list, the chain's shape,
+the approval bound to the exam it approved, and the EVIDENCE link's digests against the
+material inside it.
+
+The seventeenth is the one that matters. It **replays the Examiner** over corpora regenerated
+from the committed seeded generator and compares them to the numbers the chain recorded. The
+generator is deterministic and the Examiner makes no model calls, so an invented catch rate
+does not survive, even when every hash has been rebuilt and the certificate forged to match.
+`tests/test_recheck.py` does exactly that and asserts the refusal.
+
+What a fixture cannot answer is whether the record was true when it was written. That is what
+the live `verify` re-derives against the warehouse, and it is the product.
+
+The badge above is that job, run on GitHub's runners on every push.
+
 ## Reproduce it
 
 ```bash
@@ -182,7 +211,8 @@ bash infra/71_prove_immutability.sh  # the owner is refused delete, overwrite an
 bash infra/80_prove_gate.sh          # the gate refuses three ways and passes one
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
-python3 -m pytest tests -q           # 156 tests, no cloud project needed
+python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
+python3 -m pytest tests -q           # 161 tests, no cloud project needed
 python3 tests/mutate_check.py        # 40 mutations; every one must be caught
 ```
 

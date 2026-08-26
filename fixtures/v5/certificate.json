@@ -1,0 +1,42 @@
+{
+  "version": "v5",
+  "seq": 7,
+  "root": "e2a559358933a82530236277f0d2f19cd148226a1f5be61b4ca806cde3553d12",
+  "links": [
+    {
+      "seq": 1,
+      "kind": "EVIDENCE",
+      "hash": "ac15fcd0a5eb34634ad02face5583ddf1554c14cb5ad546271442a31dd8daa76"
+    },
+    {
+      "seq": 2,
+      "kind": "FINDING",
+      "hash": "9d9ce1efba90d5dc1c675d362b7f4e21bdfe17aead67d96e86ace0a7509bcf0a"
+    },
+    {
+      "seq": 3,
+      "kind": "VERDICT",
+      "hash": "993c47572e079f17b10b796954871047470d158b043c5aebf29c1abf807bca98"
+    },
+    {
+      "seq": 4,
+      "kind": "DRAFT",
+      "hash": "aff4f6dee467e71bd630be1fb50d99fe7171cf2400da9dcf03951561219e78ce"
+    },
+    {
+      "seq": 5,
+      "kind": "HOLDOUT-DENIED",
+      "hash": "fd91ed0c0c8c50a8e366da8568fd69a25f51aa381f59f77ec28c7bf6fdbbe967"
+    },
+    {
+      "seq": 6,
+      "kind": "EXAM",
+      "hash": "ae1769727008b64dfa73c57a330611cd8d6f3e2d8e9b1c9dc5f7add8945d82aa"
+    },
+    {
+      "seq": 7,
+      "kind": "APPROVAL",
+      "hash": "e2a559358933a82530236277f0d2f19cd148226a1f5be61b4ca806cde3553d12"
+    }
+  ]
+}

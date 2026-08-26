@@ -1,0 +1,13 @@
+# What the offline path needs, and nothing else.
+#
+# The re-check, the corpus self-check, the test suite and the mutation harness
+# all run on these two plus the standard library. Everything that talks to Google
+# Cloud is a urllib call in caseharden/bq.py, so none of the cloud SDKs are here;
+# agents/requirements.txt is the container's list and is a different thing.
+#
+# Deliberately unpinned above the major version: a reviewer running this next
+# year should not be blocked by a yanked patch release. The properties under
+# test do not depend on a pydantic patch level.
+pydantic>=2.7,<3
+typing_extensions>=4.10
+pytest>=8

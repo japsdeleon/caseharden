@@ -1,0 +1,46 @@
+# Re-check the sealed record on a machine that is not the entrant's.
+#
+# `caseharden verify` needs this project's BigQuery, its sealed holdout and two
+# impersonated service accounts, so only one person can run it. That is a weak
+# position for an entry whose subject is records you can check for yourself.
+#
+# This job has no credentials and no network access to the project. It re-checks
+# the exported chain in fixtures/, replays the Examiner over corpora it
+# regenerates from the committed seeded generator, and runs the whole test suite
+# and the mutation harness on a clean checkout.
+
+name: recheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the two dependencies the offline path needs
+        run: pip install --disable-pip-version-check -r requirements-verify.txt
+
+      - name: Re-check the sealed chain, with no cloud access
+        run: python -m caseharden.recheck fixtures/v5
+
+      - name: The corpus self-check
+        run: python generator/generate_conduct.py --check
+
+      - name: Tests
+        run: python -m pytest tests -q
+
+      - name: Break each property on purpose and confirm the suite notices
+        run: python tests/mutate_check.py
