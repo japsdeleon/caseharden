@@ -1723,8 +1723,8 @@ there is no other source for the one part of a run a person is inside.
 
 | | |
 |---|---|
-| Tests | **254** (185 at the end of Day 7; 69 in `tests/test_workbench.py`) |
-| Mutations broken and caught | **54 of 54** (48 at the end of Day 7) |
+| Tests | **257** (185 at the end of Day 7; 72 in `tests/test_workbench.py`) |
+| Mutations broken and caught | **55 of 55** (48 at the end of Day 7) |
 | Offline re-check | 17 checks, `fixtures/v5`, root `e2a559358933`, no cloud access |
 | Fixture-mode poll | 0.52s cold, 0.02s warm; `local_corpora()` caches the replay |
 
@@ -1880,6 +1880,22 @@ nothing, repeat the id in the confirmation, and that is what was done here. It d
 `infra/110_run_loop.py`, which reaches `copilot_client.say` directly and never passes through
 the console.
 
-The narrow fix is a per-session latch: check the guard on a session's first turn, allow later
-turns in the same session. Not applied. It changes the single write path days before
-submission, and the workaround holds.
+### The latch, applied
+
+`Workbench._named_the_job` now records which job id each chat session has named, and the guard
+accepts a turn that either names the job id or belongs to a session that already did.
+
+Latched per session **and** per job id, not per session alone. The driver overwrites the finding
+file when the next run answers, so a session left open across that boundary is looking at a
+different job, and a bare "yes" in it would confirm a verdict on the wrong one. Changing the
+finding forces that session to name the new id before it can say yes again. The dict is guarded
+by a lock because the server is a `ThreadingHTTPServer`.
+
+Nothing the guard was holding is given up. Only a turn that files a verdict can file one against
+the wrong subject, and a turn naming this job id while asking for a different subject was
+accepted before the latch too.
+
+Three tests, and the mutation list gains a case that latches per session only, which is the way
+this fails quietly: the confirmation keeps working, so the console looks correct right up to the
+run where it confirms the wrong finding. 257 tests pass on 3.9 and on 3.12. 55 mutations, 55
+caught, on 3.12.

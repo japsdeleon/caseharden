@@ -163,9 +163,12 @@ CASES = [
  # visibly after it has stopped working: a verdict filed against the wrong
  # subject still stores and still screens, and a console that answers any Host
  # still serves the analyst correctly.
- ("workbench.py", "        if job_id and job_id not in text:",
+ ("workbench.py", "        if job_id and not self._named_the_job(session, job_id, text):",
   "        if False:",
   "a verdict may be filed against a subject the Notary will never look for"),
+ ("workbench.py", "            return self._named.get(session) == job_id",
+  "            return session in self._named",
+  "a session latched to one finding confirms a verdict on the next one"),
  ("workbench.py", "            if host not in allowed_hosts:",
   "            if False:",
   "a rebound hostname reaches the console, and through it the Copilot"),

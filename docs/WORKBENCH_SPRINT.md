@@ -19,10 +19,10 @@ per-route results. What remains on those days is chasing the approval status.
 | `caseharden/copilot_client.py` | the ADK session flow, extracted so nothing imports the loop driver to reach it |
 | `infra/115_prove_copilot_session.py` | the standalone gate: two turns on one session, and nothing written to `review.decisions` |
 | `infra/110_run_loop.py` | writes `out/finding-live.json` after the fan-out answers, atomically |
-| `tests/test_workbench.py` | 69 tests; the identity rule and the subject guard are asserted, not documented |
+| `tests/test_workbench.py` | 72 tests; the identity rule and the subject guard are asserted, not documented |
 | README, DEVPOST, PLAN, THREATS, `agents/copilot/agent.py` | the reconciliation below |
 
-Test count is **254**, not 179 and not 161. The 179 in this document was stale
+Test count is **257**, not 179 and not 161. The 179 in this document was stale
 when it was written; the repo was already at 185 before this sprint.
 
 ## Decisions locked

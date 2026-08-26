@@ -386,6 +386,53 @@ def test_without_a_finding_any_message_is_passed_on(tmp_path):
     assert bench.chat("Where do I file this?", "s1") == {"reply": "ok"}
 
 
+CONFIRM = "Yes. Store it exactly as you listed, with those arguments."
+
+
+def test_the_confirmation_turn_is_allowed_once_the_session_named_the_job(tmp_path):
+    """The Copilot echoes the arguments back and asks. The answer is "yes".
+
+    That answer names no job id, so the guard refused it and the console could
+    not complete the write it exists to make. Checking the session's first turn
+    is what the guard is for; every turn after it is talking about the same
+    finding in the same session.
+    """
+    bench = _bench(tmp_path, chat=lambda t, s: "ok", finding={"job_id": JOB})
+    assert bench.chat(f"Record a verdict on {JOB}: confirmed abuse.", "s1")
+    assert bench.chat(CONFIRM, "s1") == {"reply": "ok"}
+
+
+def test_a_session_that_never_named_the_job_is_still_refused(tmp_path):
+    """One session naming it does not speak for another."""
+    bench = _bench(tmp_path, chat=lambda t, s: "ok", finding={"job_id": JOB})
+    bench.chat(f"Record a verdict on {JOB}: confirmed abuse.", "s1")
+    with pytest.raises(workbench.Refused) as exc:
+        bench.chat(CONFIRM, "s2")
+    assert JOB in str(exc.value)
+
+
+def test_a_new_finding_makes_the_session_name_it_again(tmp_path):
+    """The latch is to one job id, not to the session.
+
+    The driver overwrites the finding file when the next run answers. A session
+    left open across that boundary is now looking at a different job, and a
+    bare "yes" in it would confirm a verdict on the wrong one.
+    """
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB}))
+    bench = workbench.Workbench(workbench.FixtureSource(FIXTURE),
+                                finding_path=path, chat=lambda t, s: "ok")
+    bench.chat(f"Record a verdict on {JOB}: confirmed abuse.", "s1")
+
+    later = "europe-west3:job_LATERRUN00001"
+    path.write_text(json.dumps({"job_id": later}))
+    with pytest.raises(workbench.Refused) as exc:
+        bench.chat(CONFIRM, "s1")
+    assert later in str(exc.value)
+    assert bench.chat(f"Record a verdict on {later}: false positive.", "s1")
+    assert bench.chat(CONFIRM, "s1") == {"reply": "ok"}
+
+
 # --------------------------------------------------------------------------
 # The live source, when the project answers badly
 # --------------------------------------------------------------------------

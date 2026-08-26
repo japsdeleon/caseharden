@@ -396,6 +396,11 @@ class Workbench:
         self.finding_path = finding_path
         # Injected so the tests can drive every route without a deployed fleet.
         self._chat = chat
+        # Which job id each chat session has already named, for the guard in
+        # chat(). One small entry per session, in a console one analyst runs on
+        # their own machine, so nothing here needs evicting.
+        self._named: Dict[str, str] = {}
+        self._named_lock = threading.Lock()
 
     def state(self, version: Optional[str]) -> dict:
         return self.source.state(version)
@@ -413,6 +418,20 @@ class Workbench:
                 out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
         return out
 
+    def _named_the_job(self, session: str, job_id: str, text: str) -> bool:
+        """True when this session names the job now, or named it on an earlier turn.
+
+        Latched per session AND per job id. Per session alone would be wrong: the
+        driver overwrites the finding file when the next run answers, and a
+        session left open across that boundary is looking at a different job, so
+        a bare "yes" in it would confirm a verdict on the wrong one.
+        """
+        with self._named_lock:
+            if job_id in text:
+                self._named[session] = job_id
+                return True
+            return self._named.get(session) == job_id
+
     def chat(self, text: str, session: str) -> dict:
         """Say one thing to the Copilot, after checking the one thing that stalls a run.
 
@@ -421,6 +440,17 @@ class Workbench:
         else stores fine, screens fine, and leaves the driver polling for fifteen
         minutes with nothing to say why. So a message that does not carry the job
         id under review is refused here, where the analyst can still fix it.
+
+        The check is on a session's first turn, not on every turn. Requiring it
+        every time refused the turn the write actually needs: the Copilot echoes
+        the arguments back and asks, and the answer is "yes", which names no job
+        id. That refusal was measured, not predicted, against the deployed
+        Copilot on 2026-08-26.
+
+        Latching costs nothing the guard was holding. Only a turn that files a
+        verdict can file one against the wrong subject, and a turn that names
+        this job id while asking for a different subject was already accepted
+        before the latch existed.
         """
         if not text.strip():
             raise Refused("nothing to say")
@@ -429,7 +459,7 @@ class Workbench:
                 "this workbench is running against a fixture. There is no fleet "
                 "to talk to and no review row to write.")
         job_id = ((read_finding(self.finding_path).get("finding")) or {}).get("job_id")
-        if job_id and job_id not in text:
+        if job_id and not self._named_the_job(session, job_id, text):
             raise Refused(
                 f"the message does not name the finding under review. The Notary "
                 f"reads the row whose subject is exactly {job_id!r}; a verdict "
