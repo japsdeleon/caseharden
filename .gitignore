@@ -15,6 +15,7 @@ venv/
 .pytest_cache/
 
 # local artifacts
+.mutate_check.lock
 out/
 *.local
 .DS_Store

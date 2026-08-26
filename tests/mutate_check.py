@@ -9,7 +9,62 @@ The counterpart to generator/mutate_check.py, which does the same for the corpus
 
 run:  python3 tests/mutate_check.py     (exits non-zero if any mutation survives)
 """
-import pathlib, subprocess, sys
+import os, pathlib, signal, subprocess, sys
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+LOCK = REPO / ".mutate_check.lock"
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Someone else's process, so it exists.
+        return True
+    return True
+
+
+def take_lock() -> None:
+    """Refuse to start unless this run is the only writer of the sources.
+
+    This harness rewrites files in place and restores each one from a snapshot
+    it took a moment earlier. That is correct only while nothing else writes
+    them. Two overlapping runs mean the second snapshots a file the first has
+    already mutated, treats that mutation as the original text, and restores it
+    AS the source. Both processes then exit 0 and the tree keeps the mutation.
+
+    That happened on 2026-08-26: a review subagent launched this twice in the
+    background, `bq.py` and `notary.py` were left holding four live mutations,
+    and the clean review measured against that tree meant nothing. Neither run
+    reported anything wrong, which is why this is a lock and not a warning.
+    """
+    try:
+        fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        held = LOCK.read_text().strip() or "?"
+        running = held.isdigit() and alive(int(held))
+        print(f"REFUSED. {LOCK.name} is held by pid {held}, "
+              + ("which is still running." if running else "which is gone."))
+        if running:
+            print("  Another mutation run is in progress. Wait for it to finish.")
+            print("  Two runs restore each other's mutations as source, and both")
+            print("  exit 0 while the tree keeps them.")
+        else:
+            print("  That run was killed before it restored anything. It may have")
+            print("  left a mutation in the tree, so check before running again:")
+            print(f"    git -C {REPO} status --short")
+            print(f"  Then delete {LOCK} and re-run.")
+        raise SystemExit(2)
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+
+
+# Without this, a plain `kill` skips every `finally` below: the lock survives and
+# the case in flight stays mutated. SIGINT already raises KeyboardInterrupt.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+
 
 CASES = [
  ("notary.py", "    if sealed is None:\n        return done(QUARANTINED, results, NO_CERTIFICATE, links[-1].seq,",
@@ -204,20 +259,30 @@ def suite():
                        capture_output=True, text=True, cwd=".")
     return r.returncode == 0
 
+take_lock()
 survived = []
-for f, old, new, name in CASES:
-    p = pathlib.Path(f) if "/" in f else pathlib.Path("caseharden") / f
-    s = p.read_text()
-    if old not in s:
-        print(f"  !! {name}: target text not found in {f}")
-        survived.append(name)
-        continue
-    p.write_text(s.replace(old, new, 1))
-    ok = suite()
-    p.write_text(s)
-    print(f"  {'SURVIVED <-- untested' if ok else 'caught':22s} {name}")
-    if ok:
-        survived.append(name)
+try:
+    for f, old, new, name in CASES:
+        p = pathlib.Path(f) if "/" in f else pathlib.Path("caseharden") / f
+        s = p.read_text()
+        if old not in s:
+            print(f"  !! {name}: target text not found in {f}")
+            survived.append(name)
+            continue
+        p.write_text(s.replace(old, new, 1))
+        try:
+            ok = suite()
+        finally:
+            # Restoring in `finally` and not after the call. An interrupt during
+            # the suite used to leave that one file mutated, which is the state
+            # the lock then refuses to start from on the next run.
+            p.write_text(s)
+        print(f"  {'SURVIVED <-- untested' if ok else 'caught':22s} {name}")
+        if ok:
+            survived.append(name)
 
-print(f"\n{len(CASES)} mutations, {len(CASES) - len(survived)} caught, {len(survived)} survived")
+    print(f"\n{len(CASES)} mutations, {len(CASES) - len(survived)} caught, "
+          f"{len(survived)} survived")
+finally:
+    LOCK.unlink()
 sys.exit(1 if survived else 0)

@@ -22,7 +22,7 @@ per-route results. What remains on those days is chasing the approval status.
 | `tests/test_workbench.py` | 83 tests; the identity rule and the subject guard are asserted, not documented |
 | README, DEVPOST, PLAN, THREATS, `agents/copilot/agent.py` | the reconciliation below |
 
-Test count is **268**, not 179 and not 161. The 179 in this document was stale
+Test count is **272**, not 179 and not 161. The 179 in this document was stale
 when it was written; the repo was already at 185 before this sprint.
 
 ## Decisions locked

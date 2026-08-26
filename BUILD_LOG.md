@@ -1723,7 +1723,7 @@ there is no other source for the one part of a run a person is inside.
 
 | | |
 |---|---|
-| Tests | **268** (185 at the end of Day 7; 83 in `tests/test_workbench.py`) |
+| Tests | **272** (185 at the end of Day 7; 83 in `tests/test_workbench.py`) |
 | Mutations broken and caught | **59 of 59** (48 at the end of Day 7) |
 | Offline re-check | 17 checks, `fixtures/v5`, root `e2a559358933`, no cloud access |
 | Fixture-mode poll | 0.52s cold, 0.02s warm; `local_corpora()` caches the replay |
@@ -1943,5 +1943,30 @@ Codex could not run the suite: its sandbox has no writable temporary directory a
 3.12. It said so rather than reporting a pass, and its reading of the mutation list is reasoning
 rather than evidence. The harness is the evidence.
 
-268 tests pass on 3.9 and on 3.12. 59 mutations, 59 caught, on 3.12, including one per defect
+272 tests pass on 3.9 and on 3.12. 59 mutations, 59 caught, on 3.12, including one per defect
 above.
+
+### The harness now refuses to run beside itself
+
+A lesson recorded in a build log is not a guard. `tests/mutate_check.py` takes an exclusive
+`.mutate_check.lock` before it mutates anything, and refuses with exit 2 when one is held.
+
+A **live** lock names the pid holding it and says why waiting matters. A **stale** lock, whose
+holder is gone, is refused and left in place: that run was killed before it restored anything,
+so it may have left a mutation, and taking the lock over would begin mutating a tree that
+already holds one. The message prints the `git status` to run. A human clears the file.
+
+Two smaller things made the stale case common rather than rare, and both are fixed. The per-case
+restore moved into a `finally`, so an interrupt during the suite no longer leaves that one file
+mutated. And a `SIGTERM` handler now raises `SystemExit`, because a plain `kill` skipped every
+`finally` in the file, which is how the tree was lost in the first place.
+
+Four tests, in `tests/test_mutate_lock.py`, each asserting a refusal. They carry subprocess
+timeouts on purpose: if the guard stops working, the failure is 59 mutations each running this
+suite, from inside this suite. Their fixture skips when a lock is held rather than deleting it,
+so they stand down during a real run instead of clobbering it. One asserts the lock file is
+gitignored, since a committed lock would refuse every run after it.
+
+Proved by running it: a second run against a live one refused with exit 2, a `SIGTERM` to the
+first released the lock and left every source file restored, and a full 59-case run through the
+guard caught 59 of 59.
