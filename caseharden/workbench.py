@@ -368,8 +368,14 @@ def read_finding(path: Path = LIVE_FINDING) -> dict:
         # one under review, and the pane would prefill a verdict against a job
         # nobody is waiting on.
         age = max(0, int(time.time() - path.stat().st_mtime))
+        finding = json.loads(path.read_text())
+        if not isinstance(finding, dict):
+            # The driver writes an object. Anything else is not a finding, and
+            # every reader here calls .get on it, which would be an
+            # AttributeError two frames away from the file that caused it.
+            raise ValueError(f"expected a JSON object, got {type(finding).__name__}")
         return {"present": True, "path": str(path), "age_s": age,
-                "finding": _trim(json.loads(path.read_text()))}
+                "finding": _trim(finding)}
     except (ValueError, OSError, RecursionError) as exc:
         # The driver writes this file while the console reads it, so a
         # half-written file is an ordinary race rather than broken evidence.
@@ -552,8 +558,17 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
             except (ValueError, RecursionError):
                 # RecursionError, not only JSONDecodeError: json.loads raises it
                 # on deeply nested input, and a body small enough to pass the
-                # length cap can still be 1,100 arrays deep.
+                # length cap can still be thousands of arrays deep. How deep is
+                # version-dependent, which is why the shape check below is the
+                # one that actually holds: on 3.12 a body that 3.9 refused parses
+                # into a list instead.
                 return self._json(400, {"error": "not usable JSON"})
+            if not isinstance(body, dict):
+                # `[]` and `"x"` are valid JSON and have no .get, so without this
+                # they reached the generic handler as an AttributeError and came
+                # back 502. A malformed request is the client's fault, and the
+                # status has to say so.
+                return self._json(400, {"error": "expected a JSON object"})
             try:
                 return self._json(200, workbench.chat(str(body.get("text", "")),
                                                       str(body.get("session", ""))))

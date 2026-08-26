@@ -1723,7 +1723,7 @@ there is no other source for the one part of a run a person is inside.
 
 | | |
 |---|---|
-| Tests | **244** (185 at the end of Day 7; 52 in `tests/test_workbench.py`) |
+| Tests | **254** (185 at the end of Day 7; 69 in `tests/test_workbench.py`) |
 | Mutations broken and caught | **54 of 54** (48 at the end of Day 7) |
 | Offline re-check | 17 checks, `fixtures/v5`, root `e2a559358933`, no cloud access |
 | Fixture-mode poll | 0.52s cold, 0.02s warm; `local_corpora()` caches the replay |

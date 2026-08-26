@@ -280,13 +280,55 @@ def test_a_deeply_nested_finding_does_not_crash_the_pane(tmp_path):
     assert "error" in out
 
 
+# How deep json.loads tolerates before RecursionError is version-dependent:
+# 3.9 refuses 1,200 levels and 3.12 parses 10,000. Deep enough to refuse on
+# both, and still inside the handler's 64KB length cap at two bytes per level.
+DEEP = 20_000
+
+
 def test_a_deeply_nested_chat_body_is_a_400(served):
-    body = "[" * 1200 + "]" * 1200
+    body = "[" * DEEP + "]" * DEEP
+    assert len(body) < 64_000, "the length cap would answer 413 before the parse"
     connection = http.client.HTTPConnection(*served, timeout=30)
     connection.request("POST", "/api/chat", body=body.encode(),
                        headers={"Content-Type": "application/json"})
     assert connection.getresponse().status == 400
     connection.close()
+
+
+@pytest.mark.parametrize("body", ["[]", '"a string"', "42", "null", "[1,2,3]"])
+def test_valid_json_that_is_not_an_object_is_a_400(served, body):
+    """`[]` is valid JSON with no .get.
+
+    It used to reach the generic handler as an AttributeError and come back 502,
+    which blames the server for a malformed request. Found by running the suite
+    on 3.12, where a body 3.9 had refused outright parses cleanly instead.
+    """
+    connection = http.client.HTTPConnection(*served, timeout=30)
+    connection.request("POST", "/api/chat", body=body.encode(),
+                       headers={"Content-Type": "application/json"})
+    response = connection.getresponse()
+    raw = response.read()
+    assert response.status == 400, f"{body!r} returned {response.status}"
+    assert b"object" in raw
+    connection.close()
+
+
+@pytest.mark.parametrize("content", ["[]", '"a string"', "42", "[{\"job_id\": \"x\"}]"])
+def test_a_finding_file_that_is_not_an_object_reads_as_absent(tmp_path, content):
+    path = tmp_path / "finding-live.json"
+    path.write_text(content)
+    out = workbench.read_finding(path)
+    assert out["present"] is False
+    assert "error" in out
+
+
+def test_a_finding_file_that_is_not_an_object_does_not_break_the_pane(tmp_path):
+    path = tmp_path / "finding-live.json"
+    path.write_text("[]")
+    bench = workbench.Workbench(workbench.FixtureSource(FIXTURE), finding_path=path)
+    out = bench.finding()
+    assert out["present"] is False
 
 
 # --------------------------------------------------------------------------
