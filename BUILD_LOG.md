@@ -1723,7 +1723,7 @@ there is no other source for the one part of a run a person is inside.
 
 | | |
 |---|---|
-| Tests | **272** (185 at the end of Day 7; 83 in `tests/test_workbench.py`) |
+| Tests | **280** (185 at the end of Day 7; 83 in `tests/test_workbench.py`) |
 | Mutations broken and caught | **59 of 59** (48 at the end of Day 7) |
 | Offline re-check | 17 checks, `fixtures/v5`, root `e2a559358933`, no cloud access |
 | Fixture-mode poll | 0.52s cold, 0.02s warm; `local_corpora()` caches the replay |
@@ -1961,12 +1961,38 @@ restore moved into a `finally`, so an interrupt during the suite no longer leave
 mutated. And a `SIGTERM` handler now raises `SystemExit`, because a plain `kill` skipped every
 `finally` in the file, which is how the tree was lost in the first place.
 
-Four tests, in `tests/test_mutate_lock.py`, each asserting a refusal. They carry subprocess
-timeouts on purpose: if the guard stops working, the failure is 59 mutations each running this
-suite, from inside this suite. Their fixture skips when a lock is held rather than deleting it,
-so they stand down during a real run instead of clobbering it. One asserts the lock file is
-gitignored, since a committed lock would refuse every run after it.
+Twelve tests, in `tests/test_mutate_lock.py`. They import the harness and call `take_lock()`
+against a lock in a temporary directory. Two earlier designs were worse, and an adversarial pass
+killed both.
 
-Proved by running it: a second run against a live one refused with exit 2, a `SIGTERM` to the
-first released the lock and left every source file restored, and a full 59-case run through the
-guard caught 59 of 59.
+The first ran the harness as a subprocess with a timeout. A guard that stopped working would
+therefore start a real 59-case run from inside this suite, and the timeout meant to contain it
+would kill that run mid-case, leaving the file mutated. The test built to catch the corruption
+would have caused it. The case loop now sits under `if __name__ == "__main__"`, so the lock
+logic is testable with no subprocess at all.
+
+The second skipped when the real lock file existed. Checking a path and then unlinking it is a
+race: a harness that takes the lock after the check has its lock overwritten and then deleted by
+the teardown, which is the concurrency this exists to prevent. Nothing in the tests touches the
+real lock now. One test still asserts that lock is gitignored, since a committed one would
+refuse every run after it.
+
+Proved by running it: launched from `/tmp`, the lock still lands at the repo root; a second run
+against a live one refused with exit 2; a `SIGTERM` released the lock and left no mutated source
+and no scratch file; and a full 59-case run through the guard caught 59 of 59.
+
+Five more defects came out of the adversarial pass on the guard itself, all of them in how it
+ends rather than how it starts. The mutating write sat outside its `try`, so a signal there
+skipped the restore while the cleanup still dropped the lock. The lock leaked if a signal landed
+between `take_lock` returning and that block being entered, so the release is an `atexit`
+registered the moment the pid is written. `write_text` truncates before it writes, so a full
+disk left an empty source; sources are now replaced through a scratch file and `os.replace`. An
+unreadable lock, another user's or a directory, raised instead of refusing. And every path was
+relative to the working directory, so running this file from elsewhere mutated whatever
+`./caseharden/` was there; everything is anchored to `REPO`, pytest's own `cwd` included.
+
+Left alone: pid reuse can report a stale lock as live. It costs a human one manual check and
+never permits an unsafe takeover, and the fix is an authenticated lock record, which is more
+machinery than a developer tool earns. Also unchanged, and older than this guard: the suite runs
+with whatever `__pycache__` holds, so a same-length mutation applied inside one second can be
+masked by a stale `.pyc`. Every case is currently caught, so nothing is masked today.

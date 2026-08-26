@@ -9,7 +9,7 @@ The counterpart to generator/mutate_check.py, which does the same for the corpus
 
 run:  python3 tests/mutate_check.py     (exits non-zero if any mutation survives)
 """
-import os, pathlib, signal, subprocess, sys
+import atexit, os, pathlib, signal, subprocess, sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 LOCK = REPO / ".mutate_check.lock"
@@ -43,7 +43,14 @@ def take_lock() -> None:
     try:
         fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
-        held = LOCK.read_text().strip() or "?"
+        try:
+            held = LOCK.read_text().strip() or "?"
+        except OSError as exc:
+            # Owned by another user, or a directory where a file should be.
+            # Unreadable is not permission to start.
+            print(f"REFUSED. {LOCK.name} exists and cannot be read: "
+                  f"{type(exc).__name__}: {exc}")
+            raise SystemExit(2)
         running = held.isdigit() and alive(int(held))
         print(f"REFUSED. {LOCK.name} is held by pid {held}, "
               + ("which is still running." if running else "which is gone."))
@@ -59,11 +66,33 @@ def take_lock() -> None:
         raise SystemExit(2)
     os.write(fd, str(os.getpid()).encode())
     os.close(fd)
+    # Registered here rather than in a `finally` around the loop below. There is
+    # a window between this function returning and that `try` being entered, and
+    # a signal landing in it would leave the lock behind with nothing mutated.
+    atexit.register(lambda: LOCK.unlink(missing_ok=True))
 
 
-# Without this, a plain `kill` skips every `finally` below: the lock survives and
-# the case in flight stays mutated. SIGINT already raises KeyboardInterrupt.
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+# Without these, a plain `kill` skips every `finally` below: the lock survives
+# and the case in flight stays mutated. SIGINT already raises KeyboardInterrupt.
+# SIGKILL cannot be caught, which is the case the stale-lock refusal exists for.
+for _signal in (signal.SIGTERM, signal.SIGHUP):
+    signal.signal(_signal, lambda *_: sys.exit(1))
+
+
+def write_atomically(path: pathlib.Path, text: str) -> None:
+    """Replace a file's contents with no window in which it holds neither version.
+
+    `write_text` truncates and then writes. A signal or a full disk in between
+    leaves the source empty or half written, and the cleanup would then drop the
+    lock that is the only thing telling the next run to look.
+    """
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.mutating")
+    try:
+        scratch.write_text(text)
+        os.replace(str(scratch), str(path))
+    finally:
+        if scratch.exists():
+            scratch.unlink()
 
 
 CASES = [
@@ -255,34 +284,44 @@ CASES = [
 ]
 
 def suite():
+    # Anchored to REPO, like the paths below. Run from another directory, `cwd="."`
+    # pointed pytest at whatever was there, and a relative case path mutated a
+    # different checkout of this repo entirely.
     r = subprocess.run([sys.executable, "-m", "pytest", "tests", "-q", "--no-header"],
-                       capture_output=True, text=True, cwd=".")
+                       capture_output=True, text=True, cwd=str(REPO))
     return r.returncode == 0
 
-take_lock()
-survived = []
-try:
+
+def main() -> int:
+    take_lock()
+    survived = []
     for f, old, new, name in CASES:
-        p = pathlib.Path(f) if "/" in f else pathlib.Path("caseharden") / f
-        s = p.read_text()
-        if old not in s:
+        p = REPO / f if "/" in f else REPO / "caseharden" / f
+        original = p.read_text()
+        if old not in original:
             print(f"  !! {name}: target text not found in {f}")
             survived.append(name)
             continue
-        p.write_text(s.replace(old, new, 1))
         try:
+            # The mutating write is inside the `try`, not before it. Outside, a
+            # signal between the write and entering the block skipped the
+            # restore, and the file stayed mutated.
+            write_atomically(p, original.replace(old, new, 1))
             ok = suite()
         finally:
-            # Restoring in `finally` and not after the call. An interrupt during
-            # the suite used to leave that one file mutated, which is the state
-            # the lock then refuses to start from on the next run.
-            p.write_text(s)
+            write_atomically(p, original)
         print(f"  {'SURVIVED <-- untested' if ok else 'caught':22s} {name}")
         if ok:
             survived.append(name)
 
     print(f"\n{len(CASES)} mutations, {len(CASES) - len(survived)} caught, "
           f"{len(survived)} survived")
-finally:
-    LOCK.unlink()
-sys.exit(1 if survived else 0)
+    return 1 if survived else 0
+
+
+if __name__ == "__main__":
+    # Guarded so the lock logic can be tested by importing this module and
+    # calling take_lock() directly. The previous tests ran this file as a
+    # subprocess, which meant a broken guard started a real mutation run from
+    # inside the test suite.
+    sys.exit(main())
