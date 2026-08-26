@@ -13,7 +13,8 @@ All Things Agentic Hackathon · Fortified Enterprise Fleet · solo entry · euro
 
 https://github.com/japsdeleon/caseharden
 
-Specification: [`docs/PLAN.md`](docs/PLAN.md). Daily progress with measured numbers:
+Specification: [`docs/PLAN.md`](docs/PLAN.md). The vocabulary, one name per idea:
+[`CONTEXT.md`](CONTEXT.md). Daily progress with measured numbers:
 [`BUILD_LOG.md`](BUILD_LOG.md). Terminal captures of every claim below: [`captures/`](captures).
 
 ---
@@ -30,8 +31,10 @@ Two guarantees are discharged outside this project's code:
 - **The proposing agent never read its own evaluation data.** That is BigQuery access control
   producing a real 403, and the access list that produces it is hashed into the chain, so a
   later grant to the Proposer breaks the chain rather than going unnoticed.
-- **The record cannot be edited after the fact.** That is a Cloud Storage retention lock that
-  refuses a delete from the project owner.
+- **An edit to the record cannot be hidden.** The chain's root is sealed into a Cloud Storage
+  object under a locked retention policy, which refuses a delete from the project owner. The
+  chain table itself is append-only by convention; what the lock guarantees is that a rewritten
+  chain no longer matches the root that was sealed when it was written.
 
 Refusals are stored as links in the same chain as approvals, so the record attests to what
 was prevented and not only to what occurred.
@@ -125,9 +128,10 @@ Every number here is measured on the live project, not estimated. Sources in
 | Active version | v5, 7 chain links, root `e2a559358933`, attested |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
-| Tests | 161 |
-| Mutations broken and caught | 40 of 40 |
-| Fleet proof | 8 of 9 assertions hold; see *Known limitations* |
+| Tests | 179 |
+| Mutations broken and caught | 45 of 45 |
+| Fleet proof | 9 of 9 assertions hold ([capture](captures/day7-fleet-proof-all-held.txt)) |
+| Cloud Trace | a conduct row's trace id opens a 60-span DAG; one fan-out is one trace across four detector services |
 
 ## The gate, and an honest note about the demo
 
@@ -163,11 +167,6 @@ when its own paperwork lapses is a worse failure than the one it detects.
 
 ## Known limitations
 
-- **Spans do not reach Cloud Trace from Cloud Run.** The export is wired and works from a
-  workstation under two identities. From the deployed services the provider is installed, the
-  flush runs, no export is refused, and the trace ids the fleet records still answer 404. The
-  cause is not established. `100_prove_fleet.py` asserts resolution and fails on it rather
-  than claiming otherwise. Trace ids in the chain are correlation keys today.
 - **No agent runs on Agent Runtime.** An Agent Engine is deployed and backs Memory Bank.
   Every agent is on Cloud Run, which the build plan pre-approved.
 - **Verification re-derives two links.** EVIDENCE and EXAM. The others are corroborated when
@@ -188,14 +187,15 @@ python3 -m caseharden.recheck fixtures/v5
 ```
 
 Seventeen checks, no credentials, no network. Link hashes, the walk, the root against the
-hash sealed in the retention-locked bucket, the certificate's own list, the chain's shape,
-the approval bound to the exam it approved, and the EVIDENCE link's digests against the
-material inside it.
+certificate that was exported from the retention-locked bucket, the certificate's own list,
+the chain's shape, the approval bound to the exam it approved, and the EVIDENCE link's
+digests against the material inside it.
 
-The seventeenth is the one that matters. It **replays the Examiner** over corpora regenerated
-from the committed seeded generator and compares them to the numbers the chain recorded. The
-generator is deterministic and the Examiner makes no model calls, so an invented catch rate
-does not survive, even when every hash has been rebuilt and the certificate forged to match.
+The last four are the ones that matter. They **replay the Examiner** over corpora regenerated
+from the committed seeded generator and compare the sealed-attack numbers, the benign numbers,
+the monotonicity check and the recorded gate verdict to what the chain says. The generator is
+deterministic and the Examiner makes no model calls, so an invented catch rate does not
+survive, even when every hash has been rebuilt and the certificate forged to match.
 `tests/test_recheck.py` does exactly that and asserts the refusal.
 
 What a fixture cannot answer is whether the record was true when it was written. That is what
@@ -212,8 +212,8 @@ bash infra/80_prove_gate.sh          # the gate refuses three ways and passes on
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
 python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
-python3 -m pytest tests -q           # 161 tests, no cloud project needed
-python3 tests/mutate_check.py        # 40 mutations; every one must be caught
+python3 -m pytest tests -q           # 179 tests, no cloud project needed
+python3 tests/mutate_check.py        # 45 mutations; every one must be caught
 ```
 
 Each script exits non-zero if the guarantee it tests does not hold.

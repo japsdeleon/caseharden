@@ -100,7 +100,7 @@ one written by hand. Re-run `29_register_fleet.py` after any promotion: each ent
 carries the chain root of the active version, so a new root makes the roster stale.
 
 `100_prove_fleet.py` asserts: the registry lists one detector per check family and every
-entry names the sealed root; the Foreman's source names no check family; all seven
+entry names the sealed root; the Foreman's source names no check family; all nine
 services refuse an unauthenticated request; the deployed workload blocks a tool call on
 a screened injection; the refusal claims a justified reason only when the version is
 attested; the conduct row carries the trace id, version, state and whether the reason

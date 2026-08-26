@@ -101,7 +101,7 @@ def check_certificate(links, certificate: dict, result: Result) -> None:
     root = chain.root_of(links)
     sealed = certificate.get("root")
     result.add(root == sealed,
-               "the chain root matches the root sealed in the retention-locked bucket",
+               "the chain root matches the root in the exported sealed certificate",
                f"chain {(root or '')[:16]} vs sealed {(sealed or '')[:16]}"
                if root != sealed else (root or "")[:16])
 

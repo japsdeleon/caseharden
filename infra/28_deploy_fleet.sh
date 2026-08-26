@@ -101,6 +101,23 @@ echo "support-agent  $SUPPORT_URL"
 # use; main.py refuses to substitute an in-process store, because one on a
 # scale-to-zero service forgets everything on each cold start and that looks
 # exactly like a fleet that has never seen the pattern before.
+# If the operator did not export it, take it back off the Foreman that is
+# already running. `gcloud run deploy --set-env-vars` replaces the whole
+# environment, so a redeploy from a shell without this variable strips Memory
+# Bank from the fleet while every other assertion still passes. That happened
+# once: the warning below was printed, scrolled past, and the fan-out filed no
+# precedent for the rest of the session.
+if [ -z "${CASEHARDEN_MEMORY_ENGINE:-}" ]; then
+  RECOVERED="$(gcloud run services describe caseharden-foreman --region="$REGION" \
+    --format='value(spec.template.spec.containers[0].env)' 2>/dev/null \
+    | tr ',' '\n' | grep -A1 CASEHARDEN_MEMORY_ENGINE | grep -o '[0-9]\{6,\}' \
+    | head -1 || true)"
+  if [ -n "$RECOVERED" ]; then
+    CASEHARDEN_MEMORY_ENGINE="$RECOVERED"
+    echo "memory engine recovered from the deployed Foreman: $CASEHARDEN_MEMORY_ENGINE"
+  fi
+fi
+
 FOREMAN_ENV="${COMMON},${VERTEX},CASEHARDEN_AGENT=foreman"
 if [ -n "${CASEHARDEN_MEMORY_ENGINE:-}" ]; then
   FOREMAN_ENV="${FOREMAN_ENV},CASEHARDEN_MEMORY_ENGINE=${CASEHARDEN_MEMORY_ENGINE}"

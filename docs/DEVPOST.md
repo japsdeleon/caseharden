@@ -40,12 +40,13 @@ model, scores that draft against a sealed holdout the Proposer is IAM-denied fro
 and applies a two-sided gate: attacks must go down, benign traffic must not, and the new
 version must only narrow authority.
 
-Every step is a hash-linked record in an append-only BigQuery chain whose root is sealed into
-a retention-locked Cloud Storage object and annotated onto the Agent Registry entry.
+Every step is a hash-linked record in a BigQuery chain, append-only by convention, whose root
+is sealed into a retention-locked Cloud Storage object and annotated onto the Agent Registry
+entry. The lock is what makes a rewrite detectable.
 
 **The product is not the detection. The product is the attestation.** A guardrail version is
-served as `attested` only while `caseharden verify` re-derives its whole chain from the raw
-conduct events. When the evidence changes, the version is quarantined: it keeps blocking, but
+served as `attested` only while `caseharden verify` re-derives its evidence and its exam from
+the raw conduct events and re-walks every link in its chain. When the evidence changes, the version is quarantined: it keeps blocking, but
 it loses its standing as justified, and nothing can be promoted on top of it until it
 re-derives.
 
@@ -92,8 +93,8 @@ The gate refused the real Proposer's real candidate. It caught one more sealed a
 the active version and blocked two legitimate turns, and that was enough. No fixture was
 involved.
 
-Every number published is measured. `verify` p95 is 3.66s against a 5s target. 156 tests. 40
-mutations broken on purpose and all 40 caught, including one that survived its first run and
+Every number published is measured. `verify` p95 is 3.66s against a 5s target. 179 tests. 45
+mutations broken on purpose and all 45 caught, including one that survived its first run and
 now has two tests.
 
 ## What I learned
@@ -105,9 +106,12 @@ unattested that was false for every block ever taken.
 
 ## What's next for Caseharden
 
-Export the chain and an evidence snapshot as a committed JSONL fixture, and run the pure
-Python hash re-check in CI on a clean checkout, so the badge comes from a machine that is not
-mine. Then the trace export, and a second host.
+A session-scoped predicate in the DSL. The four check families the detectors cover are
+per-turn; the attacks that survive the current policy are the ones that spread their steps
+across a session, and the Examiner already has the corpus to score that gate honestly.
+
+Then a second host. Every agent is on Cloud Run today, and putting one on Agent Runtime
+would show that the roster and the enforcement callback do not care where a worker lives.
 
 ---
 

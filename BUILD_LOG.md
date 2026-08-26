@@ -1523,3 +1523,111 @@ offline path needs, which is pydantic, typing_extensions and pytest. Everything 
 Google Cloud in this repo is a urllib call, so no cloud SDK is involved.
 
 Tests are 161 now. The five new ones are the tampers.
+
+## 2026-08-31 — Day 7
+
+Two things: an independent audit of the documents against the code, and the trace export,
+which had been failing since Day 4 for a reason nobody had found.
+
+### The trace export, and the reason it was never the transport
+
+Since Day 4 the deployed services recorded trace ids that Cloud Trace answered 404 for. Every
+observable said the export was working. The provider was installed and global, the batch
+processor was attached, the per-request flush returned `True`, and no export was ever refused.
+Day 5 documented it as unexplained and left one fleet-proof assertion failing on purpose.
+
+The cause was the **sampler**, not the transport. Cloud Run's front end puts a W3C
+`traceparent` on every inbound request with the sampled flag off. OpenTelemetry's default
+sampler is parent-based and honours that decision. So each request's spans were created with a
+valid span context and never recorded. `current_trace_id()` read that context and wrote a real
+trace id onto the conduct row and into the chain link, for a trace that was never written.
+Nothing failed anywhere. `ALWAYS_ON` on the provider is the whole fix.
+
+Two changes made it findable rather than guessable, and both are worth keeping:
+
+`start()` now emits one span of its own at container boot and flushes it immediately. That
+span has no parent, so it inherits no sampling decision. It landed while every request span
+vanished, and that asymmetry is what separated "the transport is broken" from "the spans are
+never recorded". A startup probe that exercises the whole export path before a request arrives
+is cheap and it turned a two-day unknown into a ten-minute diagnosis.
+
+`Middleware` now opens a SERVER span this module owns on every request, rather than relying on
+whatever ADK records. The DAG no longer depends on which tracer provider a library chose.
+
+The transport also changed, though it turned out not to be the problem. Spans go to
+`cloudtrace.googleapis.com/v2/projects/{project}/traces:batchWrite` through about forty lines
+of `urllib`, the same way `caseharden/bq.py` talks to BigQuery, instead of OTLP to
+`telemetry.googleapis.com`. The OTLP path is not known to be broken. It was removed because
+while the real bug was unsolved it was one more layer that could have been losing the batch,
+and the direct call returns a status code this module reads and prints as an ALERT. No new
+dependency either way.
+
+Measured after the fix: `100_prove_fleet.py` **ALL HELD**, 9 of 9, in
+`captures/day7-fleet-proof-all-held.txt`. The workload's conduct row carries trace
+`1b1c7d008e48db19`, which opens a 60-span DAG including ADK's own `invoke_agent support_agent`
+and `invocation` spans. A Foreman fan-out is one trace carrying spans from all four detector
+services, so the W3C propagation across the A2A hop works.
+
+`span_payload` is a pure function and `tests/test_tracing.py` holds every rule about the wire
+format that returns a 400: the trace id travels in the resource name and nowhere else, a root
+span omits `parentSpanId` rather than sending an empty one, truncation counts bytes and not
+characters, a bool is not written as an int, and the attribute cap is enforced with the drop
+counted. Eighteen tests, five new mutations, all caught. The offline runner has no
+OpenTelemetry SDK, which is exactly why the payload builder is pure.
+
+### A redeploy stripped Memory Bank, and the script now prevents it
+
+The first redeploy of the day dropped `CASEHARDEN_MEMORY_ENGINE` from the Foreman, because
+`gcloud run deploy --set-env-vars` replaces the whole environment and the deploy ran from a
+shell that had not exported it. The script printed a warning; it scrolled past. Two fleet-proof
+assertions went red and the fan-out filed no precedent.
+
+`28_deploy_fleet.sh` now reads the engine id back off the running Foreman when the operator has
+not exported one. A redeploy no longer silently removes a capability that nothing else asserts
+on.
+
+### The document audit
+
+An independent pass over the prose against the code, run under a different model with no access
+to this session. Thirteen findings; the four material ones were all overclaims, and all are
+fixed:
+
+**"The record cannot be edited after the fact."** The chain table is an ordinary BigQuery table
+and `THREATS.md` had already said so. What the locked bucket guarantees is that a rewritten
+chain no longer matches the root sealed when it was written. The README and the plan now say
+that an edit cannot be *hidden*, which is the claim the infrastructure actually supports.
+
+**"re-derives its whole chain from the raw conduct events."** It re-derives EVIDENCE and EXAM
+and re-walks the rest. The README already said this correctly in *Known limitations* and
+incorrectly in the pitch.
+
+**"The seventeenth check replays the Examiner."** Four checks come from the replay: the
+sealed-attack numbers, the benign numbers, the monotonicity check and the recorded gate verdict.
+
+**The offline re-check compares the root against the certificate exported from the bucket**, not
+against the live locked object. The check's own printed label said otherwise and now does not.
+
+Smaller ones, all corrected: the plan carried the pre-rename detector names, called the Examiner
+200 lines when it is 408, said the Proposer reads the training window only when it is also a
+reader of the benign corpus, and pointed at `infra/30_seal_holdout.sh`, which does not exist.
+`infra/README.md` said the proof asserts seven services when the list is nine. The Devpost draft
+said 156 tests and described the offline fixture and CI as future work, both of which shipped on
+Day 6. `THREATS.md` claimed the Proposer takes its 403 on every run as a tool call; what is
+actually enforced is that the promotion loop refuses a draft without a 403 payload and the
+Notary re-takes the denial live before sealing the link, which is what it now says.
+
+The audit could not run the suite: its sandbox had no writable temporary directory and no
+network. It collected 161 tests and counted 40 mutation cases statically. Both numbers are now
+179 and 45 from runs here, and nothing in its report was accepted without checking it against
+the repository first.
+
+### CONTEXT.md
+
+One name per idea, and the same name in the code, the commits, the documents and the demo
+script. The fleet, the evidence, the policy, the gate, the record with all nine link kinds, the
+three attestation states, and a table saying which file defines each term. Written because the
+vocabulary had drifted in exactly the places the audit found overclaims: "the record",
+"append-only", "re-derives" and "attested" were each doing two jobs.
+
+Tests are 179 and mutations 45. The chain is unchanged: no promotion happened today, v5 is still
+active with 7 links and root `e2a559358933`, so `fixtures/v5` needs no re-export.

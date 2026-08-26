@@ -121,6 +121,29 @@ CASES = [
   """        reaching = [b for b in bindings if answers.get(b.get("role") or "")]""",
   "        reaching = list(bindings)",
   "exam_reach keeps every binding regardless of permission"),
+
+ # Day 7. The wire format of a Cloud Trace span. Each of these is a reason
+ # traces:batchWrite answers 400, and one refused batch loses every span in it.
+ # The export path this replaced reported success and delivered nothing, so a
+ # silent break here is the exact failure the module was rewritten to end.
+ ("agents/common/tracing.py",
+  """        "name": f"projects/{project}/traces/{trace_id}/spans/{span_id}",""",
+  """        "name": f"projects/{project}/spans/{span_id}",""",
+  "a span is written with no trace to belong to"),
+ ("agents/common/tracing.py",
+  """    if isinstance(value, bool):\n        return {"boolValue": value}""",
+  """    if False:\n        return {"boolValue": value}""",
+  "a boolean span attribute is written as an integer"),
+ ("agents/common/tracing.py",
+  """    if len(raw) <= limit:\n        return {"value": str(text), "truncatedByteCount": 0}""",
+  """    if True:\n        return {"value": str(text), "truncatedByteCount": 0}""",
+  "a value over the API's byte limit is sent unchanged"),
+ ("agents/common/tracing.py", "        kept = items[:MAX_ATTRIBUTES]", "        kept = items",
+  "more attributes than the API accepts are sent"),
+ ("agents/common/tracing.py",
+  """    if parent_id:\n        payload["parentSpanId"] = parent_id""",
+  """    payload["parentSpanId"] = str(parent_id or "")""",
+  "a root span claims an empty parent"),
 ]
 
 def suite():

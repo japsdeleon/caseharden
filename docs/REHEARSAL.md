@@ -20,6 +20,7 @@ State to confirm, and what each should say:
 ```bash
 python3 -m caseharden.notary verify --version v5      # ATTESTED, 7 links, root e2a5593589...
 python3 infra/29_register_fleet.py                    # registers 7; run after ANY promotion
+python3 infra/100_prove_fleet.py                      # ALL HELD, 9 assertions
 ```
 
 The active version is **v5**. Its chain cites `conduct_live` over
@@ -120,9 +121,10 @@ python3 infra/drive_agent.py --service caseharden-foreman \
   --text "Investigate the last 72 hours of conduct across the fleet. Report every detector's job id."
 ```
 
-Four detectors answer in parallel, each with a BigQuery job id a reviewer can re-run. **The
-trace-DAG shot is cut**; spans do not reach Cloud Trace from Cloud Run and the video does not
-claim they do.
+Four detectors answer in parallel, each with a BigQuery job id a reviewer can re-run. The
+trace id on the conduct row opens a real DAG in Cloud Trace, and a fan-out is one trace with
+all four detectors under it. Open the trace by the id the conduct row carries; do not search
+the trace list, which is slower on camera.
 
 ### 1:20 Precedent and verdict
 
