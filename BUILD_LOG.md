@@ -1807,9 +1807,44 @@ Rewritten in the past tense, keeping the `traceparent`-trust residual, which is 
 workstation would put `examiner-sa` on the analyst's machine and give back exactly what the
 console is designed to give up.
 
-### Not proved
+### Proved live, same day
 
-`infra/115_prove_copilot_session.py` has not been run. It needs the deployed Copilot, and it is
-the gate for the thin-chat verdict pane. The live BigQuery path is also unexercised: every
-live-mode test substitutes the token and the chain store, so the chain read, the registry read
-and the `review.decisions` query have not run against the project.
+Both items the section above listed as unproved have now been run against the deployed project.
+Nothing was written. `review.decisions` held 4 rows before the session probe and 4 rows after
+the console's chat turn, read back each time as `notary-sa`.
+
+**The Copilot session gate holds.** `infra/115_prove_copilot_session.py` exits 0. The first turn
+on a new session answered in 14.5s. The second turn on the same session answered in 1.3s and
+named back what the first turn had asked, which is the turn that breaks when a client reads
+ADK's 400 or 409 for an existing session as an error. The write check ran rather than being
+skipped, so the exit 0 is the full claim and not the partial one.
+
+**The live BigQuery path runs.** The console was started in live mode against the deployed
+Policy Server, not a local one, and every pane filled with no error recorded:
+
+| route | what actually ran | result |
+|---|---|---|
+| `/api/state` | `ChainStore.read`, `ChainStore.versions`, attestation over HTTP | 7 links, 3 versions, `errors: {}`, 8s cold |
+| `/api/state?version=v4` | the same against a non-active version | 13 links, ATTESTED |
+| `/api/state?version=v3` | the registered genesis version | 0 links, QUARANTINED, promotions FROZEN |
+| `/api/finding` | `decision()` against `review.decisions` | the real row `vd_bdae6d344808` |
+| `/api/finding`, prefix changed | `near_miss()` | found the row filed under `europe-west3:` when the finding said `us-central1:` |
+| `/api/finding`, unknown job | `near_miss()` with nothing to find | both `null`, no error |
+| `/api/chat`, no job id in the text | the outgoing subject guard | 409 with the subject it requires |
+| `/api/chat`, job id present | the Copilot through the console | replied in 7s, wrote nothing |
+
+The Policy Server answered `attested: true`, `state: ATTESTED`, `registry_agrees: true`, root
+`e2a55935…`, having re-derived the chain in 2.1s. The console displayed that answer and did not
+compute one, which is the property the module exists to keep.
+
+The page itself was loaded in a browser for the first time. The chain timeline rendered all
+seven link kinds with their hashes, the registry rendered three versions with the ACTIVE and
+ATTESTED badges on v5, the verdict pane prefilled the exact job id, and the recorded verdict
+rendered with its Model Armor verdict. The footer read "the Policy Server's answer, not this
+console's", which is the live-mode text. No console errors. The three response headers are on
+the wire as written: the CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`. A request carrying `Host: evil.example` was refused 403, and a
+`text/plain` POST was refused 415.
+
+Still not proved: a verdict actually written through the console. Proving it means storing a
+real `review.decisions` row, so it belongs to the recorded demo run and not to a probe.

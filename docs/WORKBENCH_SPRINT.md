@@ -7,10 +7,11 @@ review. Submission: Devpost, 2026-08-31 17:00 PT.
 
 ## Built on Day 8 (2026-08-26), against this plan
 
-The code half of Day 1 and Day 2 is written and its tests pass. What remains on
-those days is the live work: running `115_prove_copilot_session.py` against the
-deployed Copilot, which is the gate for decision 5, and chasing the approval
-status.
+Day 1 and Day 2 are done, code and live. `115_prove_copilot_session.py` exits 0
+against the deployed Copilot, which clears the gate on decision 5, and the
+console has been run in live mode against the deployed Policy Server with every
+pane filling from BigQuery and no error recorded. `BUILD_LOG.md` carries the
+per-route results. What remains on those days is chasing the approval status.
 
 | | |
 |---|---|
