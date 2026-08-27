@@ -138,7 +138,7 @@ Python · OpenTelemetry
 - Repository: https://github.com/japsdeleon/caseharden
 - Specification: `docs/PLAN.md` · Daily build log with measured numbers: `BUILD_LOG.md`
 - Terminal captures for every claim: `captures/`
-- Threat model, including six holes stated plainly: `THREATS.md`
+- Threat model, including seven holes stated plainly: `THREATS.md`
 
 ## Clean-room disclosure
 

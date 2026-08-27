@@ -7,7 +7,7 @@ is not covered at all. Nothing here is hypothetical unless it says so. Where a c
 Google Cloud behaviour rather than this project's code, that is stated, because those are the
 two guarantees the whole entry rests on.
 
-The six entries under **Not covered** are the ones a reviewer should read first.
+The seven entries under **Not covered** are the ones a reviewer should read first.
 
 ---
 
@@ -120,6 +120,24 @@ editable at any moment.
 redirects what `creds.py` considers correct. On a workstation a mismatch is still caught
 against the pinned gcloud configuration's own project. An operator who changes both is not
 making a mistake.
+
+**7. One detector family has no enforcement path.** The detectors cover four check families.
+The policy DSL can express three of them. `privilege-sequencing`, a session that acts on
+something it never read, cannot be written as a rule at all: the predicate fields are
+`tool_name`, `tenant_id`, `target_tenant_id`, `ma_verdict`, `amount_cents`,
+`ma_prompt_injection_score`, `ma_jailbreak_score`, `turn_index` and `declared_scope`, and the
+operators are `equals`, `in_set`, `at_least`, `present`, `outside_declared_scope` and
+`tenant_mismatch`. There is no `account_id` field, and nothing in the language represents what
+a session has already done. A predicate over session history needs state the interpreter does
+not carry, and adding one would make the monotonicity check something other than a comparison
+of rule shapes.
+
+This is not hypothetical. The v6 run on 2026-08-26 produced exactly that incident: a session
+read one account and then tried to refund 6200 cents to another it had never read. Only the
+Model Armor injection score stopped the refund. The same sequence carrying a lower score would
+have completed, and the verdict asking for the obvious tightening could not be drafted. The
+detector reports the pattern, the chain records the finding, and no version of the policy can
+deny it. `BUILD_LOG.md` carries the run.
 
 ---
 
