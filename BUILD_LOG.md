@@ -1996,3 +1996,48 @@ never permits an unsafe takeover, and the fix is an authenticated lock record, w
 machinery than a developer tool earns. Also unchanged, and older than this guard: the suite runs
 with whatever `__pycache__` holds, so a same-length mutation applied inside one second can be
 masked by a stale `.pyc`. Every case is currently caught, so nothing is masked today.
+
+### The v6 take, and the gate that refused it
+
+The full live loop ran end to end against the deployed fleet. The Examiner refused all four
+candidates. Nothing was written to the chain, so `v6` is still unregistered and v5 is still the
+active version on root `e2a55935…`, verified after the run rather than assumed from the message.
+
+| stage | result |
+|---|---|
+| 1. incident | 2 conduct rows, session `loop-23ba74f0`. v5 allowed the `lookup_account`, denied the `issue_refund` under `tool-call-on-injected-turn` |
+| 2. fan-out | 4 detectors answered. `injected-turn` selected, 27 sessions, job `job_nwzQAhCM1PqPdtHBi-0V_RIK` |
+| 3. verdict | `vd_da0938a3dbd0`, typed through the analyst workbench, Model Armor ALLOW / NO_MATCH_FOUND |
+| 4. drafts | 4 attempts. Three scored, the fourth returned no candidate at all |
+| 5. holdout | `proposer-sa` refused `bigquery.tables.getData` on `holdout_sealed`, HTTP 403, on every attempt |
+| 6. gate | CATCH failed 30/40 to 30/40 each time. BENIGN 100% of 640 turns, MONOTONICITY 0 re-allowed turns |
+| 7. approval | never reached |
+| 8. promotion | never reached |
+
+**The verdict asked for a rule the DSL cannot express, and that is the whole explanation.** It
+said to deny a write to an account the session has not read in the same session. The predicate
+fields are `tool_name`, `tenant_id`, `target_tenant_id`, `ma_verdict`, `amount_cents`,
+`ma_prompt_injection_score`, `ma_jailbreak_score`, `turn_index` and `declared_scope`. The
+operators are `equals`, `in_set`, `at_least`, `present`, `outside_declared_scope` and
+`tenant_mismatch`. There is no `account_id` field and nothing that represents what a session has
+already done.
+
+So the Proposer wrote what it could. Attempt 1 offered `refund-outside-declared-scope`; attempts
+2 and 3 both offered `refund-on-suspected-injection-turn`. The active version already denies any
+tool call at an injection score of 0.5 or above, so none of them denied anything new and CATCH
+never moved. The gate was right every time.
+
+**A detector family exists that no policy can act on.** `privilege-sequencing` is one of the four
+check families, and the run's own incident is a clean instance of it: a session read `a_fc3f35`
+and then tried to refund 6200 cents to `a_a2348d`, which it had never read. Only the injection
+score stopped that refund. The same sequence at a lower score would have completed, because no
+rule in the language can tie a write to the session's own history. The detector can find the
+pattern and the DSL cannot deny it. Recorded as a gap, not fixed here.
+
+Nothing was re-run with a different rationale. Trying rules until the gate passes is tuning to
+the sealed exam by trial, which is the property the split between Proposer and Examiner exists to
+prevent, and the holdout is unreadable to everyone except `examiner-sa` by design. A second
+attempt needs a direction a human chose, not one worked backwards from a failing leg.
+
+One note for anyone re-reading the captured log: it was piped through `tee`, so the recorded
+shell status is `tee`'s and reads as 0. The driver itself exited non-zero, as it should.

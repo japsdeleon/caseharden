@@ -13,6 +13,14 @@ console has been run in live mode against the deployed Policy Server with every
 pane filling from BigQuery and no error recorded. `BUILD_LOG.md` carries the
 per-route results. What remains on those days is chasing the approval status.
 
+Day 3's take was attempted early, late on 2026-08-26, and the Examiner refused
+all four candidates. Nothing reached the chain, so the one-promotion budget in
+decision 7 is unspent and `v6` is still free. The cause is recorded in
+`BUILD_LOG.md`: the verdict asked for a rule the DSL has no way to express, so
+the Proposer restated rules the active version already carries and CATCH never
+moved. A second attempt needs a direction chosen from the finding, not one
+worked backwards from the failing leg.
+
 | | |
 |---|---|
 | `caseharden/workbench.py`, `caseharden/workbench.html` | the console: evidence, verdict chat, chain timeline, registry, attestation pane, offline fixture mode, 50-minute token cache |
