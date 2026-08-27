@@ -71,9 +71,24 @@ when it was written; the repo was already at 185 before this sprint.
    pre-take state without promoting. Fallback if the v6 gate refuses all 4
    attempts on camera: the day-5 v5 promotion captures stand in for the
    promotion beat.
+
+   **RESOLVED 2026-08-27: the fallback is taken.** The take ran on 2026-08-26 and
+   the gate refused all four candidates, so the promotion beat is cut from
+   `captures/day5-loop-promotes-v5.txt` and the live v5 artifacts beside it. The
+   budget is unspent and `v6` is still free, deliberately: no second attempt was
+   made, because drafting against a failing gate leg until it passes is tuning to
+   the sealed exam by trial. The refusal is kept at
+   `captures/day8-gate-refuses-v6-no-improvement.txt` and becomes demo material
+   rather than a gap, since it shows the gate declining a candidate that had not
+   earned promotion.
 8. **Post-take tail is scheduled work, not cleanup**: re-export fixtures (v6),
    update README root/metric numbers, re-register the fleet, run the offline
    recheck, commit.
+
+   **MOOT 2026-08-27.** Nothing was promoted, so there is no v6 to export, the
+   active root is unchanged at `e2a559358933`, and the registry entries already
+   carry it. `fixtures/v5` and every published number stay correct as they are.
+   The offline re-check and the commit still apply and are done.
 9. **Offline fixture mode is a required deliverable**, not a stretch: the
    workbench renders `fixtures/<v>` with no credentials. It is the recovery
    asset and the judge-runnable path; it does not substitute for the live flip.
@@ -128,8 +143,10 @@ cache, offline fixture mode. Then record raw proof clips, one beat per clip:
 tamper→quarantine transition (once), retention lock refusing the owner,
 Proposer 403, offline recheck, trace DAG, Copilot approval/Model Armor beat.
 
-**Day 3 — Aug 29.** The take: full live v6 loop through the workbench (the one
-promotion). Post-take tail (decision 8). Remaining clips, begin assembly.
+**Day 3 — Aug 29.** ~~The take: full live v6 loop through the workbench (the one
+promotion). Post-take tail (decision 8).~~ Done early and refused; see decisions 7
+and 8. Remaining clips, begin assembly. The promotion beat is now an edit against
+the Day 5 captures rather than a live shot.
 
 **Day 4 — Aug 30.** ≥4h edit reserve: assembly, captions, 1080p readability
 pass, claim audit against the repo. Devpost form from docs/DEVPOST.md. Billing

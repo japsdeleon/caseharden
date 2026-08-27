@@ -8,6 +8,8 @@
 >
 > **Decision log.** 2026-08-26, Day 8: an analyst **workbench** is built, partially reversing the section 7 rejection of "bespoke live console with attack feed". The rejection stands as written and is not edited: what it refused was a custom console *as the agent surface*, competing with `adk deploy cloud_run --with_ui` and costing days that six did not have. What is built instead is an operator console outside the trust boundary. It runs locally, reads the chain, the registry and the finding under review, takes attestation from the Policy Server rather than deciding it, and routes its one write through the unmodified Copilot. Its compose box offers a verdict and it writes no review row itself; what is stored is decided by the Copilot service. It has no approve affordance and no way to prevent an operator typing one, so the claim is about what the console offers, not about what the Copilot can be asked to do. It never calls `verify` and holds no credential for the sealed exam; `tests/test_workbench.py` asserts both against the parsed module. `--fixture` renders a sealed record with no credentials, which is the judge-runnable path section 7 wanted from entry C without the offline reroute it rejected. The claim "no custom UI exists" is therefore withdrawn from the README, DEVPOST draft and the Copilot's docstring, and replaced with the narrower one the code supports.
 >
+> **Decision log.** 2026-08-27, Day 9: the v6 take was run live on 2026-08-26 and the Examiner refused all four candidates, so **the refusal stands and the promotion beat is cut from the Day 5 v5 captures**. This is the fallback written into decision 7 of `docs/WORKBENCH_SPRINT.md`, taken as written. Nothing reached the chain: v6 is unregistered and v5 is still active and attested on root `e2a559358933`, which is what the fleet enforces and what the beat now shows. The cause was that the verdict asked for a rule the DSL cannot express, recorded as `THREATS.md` **Not covered 7**. The run is kept at `captures/day8-gate-refuses-v6-no-improvement.txt`. No second attempt was made: drafting against a failing gate leg until it passes is tuning to the sealed exam by trial, which is the property the Proposer and Examiner split exists to prevent.
+>
 > **Decision log.** 2026-08-25: the domain shift from promo and referral abuse to agent-conduct governance is **accepted**, overriding the earlier locked decision to build in the promo-abuse domain. Two further decisions taken the same day: the thesis is stated at platform altitude (section 1), and the demo opens on the break rather than on the build (section 5).
 
 Date: 2026-08-25. Method: five independent Opus 5 designers, each given the same verified brief but a different angle, produced complete entry concepts. Three blind judges (Devpost veteran, Google platform engineer, adversarial skeptic) ranked anonymized entries by win probability with a hard 6-day solo feasibility gate. A synthesizer grafted runner-up strengths onto the winner and addressed every judge-listed weakness.
@@ -214,6 +216,21 @@ say v3 and v4 because they were written before anything ran. The live project pr
 on Day 3 and **v5** on Day 5, and v5 is what the fleet enforces today. Rehearse against the
 version that is active on the day, and keep the beat structure; the four untouchable beats
 are untouched by this note.
+
+**The 2:34 promotion beat is cut from captures, not shot live.** The v6 take on 2026-08-26
+was refused by the gate, so no promotion happens on camera. The source is
+`captures/day5-loop-promotes-v5.txt`, which carries the whole beat: parent accepted, seven
+links written, root `e2a559358933`, and the certificate sealed to
+`gs://caseharden-certificates-506416/certificates/v5/007-e2a559358933.json`. Everything after
+the moment of promotion is still live and can be shot today, because v5 is the active version:
+`verify --version v5` returns seven green links, `out/certificate-v5.html` renders them, and the
+GCS object shows its retention expiry.
+
+Two consequences worth keeping straight. The 2:10 gate beat gains a second, different refusal
+in `captures/day8-gate-refuses-v6-no-improvement.txt`, where the reason is no improvement on
+sealed attacks rather than a benign regression. And the 2:52 break beat still works exactly as
+`docs/REHEARSAL.md` scripts it, because `v6` was never registered and is still the free version
+name that beat attempts and is refused.
 
 **Written cut list, in order.** 1) The retention-expiry cut at 2:34. 2) The rejected-draft half of the 1:34 beat. 3) The registry console page at 0:38, keeping the terminal only. 4) The rewind beat at 0:14, folding the green chain into the 2:52 payoff.
 **Untouchable, in priority order.** The cold open at 0:00. The 403 at 1:52. The gate rejection at 2:10. The break at 2:52.
