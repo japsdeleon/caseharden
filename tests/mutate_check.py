@@ -281,6 +281,18 @@ CASES = [
  ("recheck.py", "        except Exception as exc:  # noqa: BLE001 - a crash is a failed check",
   "        except NotImplementedError as exc:",
   "a tampered payload crashes the re-check instead of failing a check"),
+ # Day 9. Re-attestation may re-derive over evidence that moved. It may never
+ # re-derive over evidence that was edited, and a schema change is not licence
+ # to stop checking which of the two happened.
+ ("notary.py", "    refusal = _content_edit_refusal(prior, events, evidence)",
+  "    refusal = None", "re-attestation launders an edited conduct row"),
+ ("notary.py", "        missing = [c for c in sealed_columns if c not in current]",
+  "        return None", "a new column is licence to re-attest over an edited row"),
+ ("notary.py", '    for key in ("event_digest", "access_digest", "exam_reach_digest"):',
+  '    for key in ("event_digest",):',
+  "a grant landing during refresh is restated as the justified baseline"),
+ ("chain.py", "    if not COLUMN_RE.match(name):", "    if False:",
+  "a column name out of a chain payload is concatenated into SQL unchecked"),
 ]
 
 def suite():

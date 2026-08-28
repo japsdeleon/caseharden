@@ -3,7 +3,7 @@
     "name": "event_id",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "Stable id. Hashed from session, turn and timestamp."
+    "description": "Stable id, unique within a session. The live fleet writes session_id-turn_index; the generator writes a hash of session, turn and timestamp. The two datasets do not share a format. See THREATS.md Not covered 8."
   },
   {
     "name": "ts",

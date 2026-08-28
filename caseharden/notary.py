@@ -523,6 +523,19 @@ def reattest(version: str, links: Sequence[Link], evidence: Evidence,
 
     evidence_links = [l for l in links if l.kind in ("EVIDENCE", "EVIDENCE-CHANGED")]
     prior = evidence_links[-1].payload
+
+    # Before anything is re-scored. An EVENT-WINDOW break has three causes and
+    # only two of them may be re-derived over: rows arrived or were pruned, or
+    # the table gained a column. The third is an edit to a cited row, and
+    # re-attesting over that is the undo button this whole design exists to
+    # deny. Verification already catches the edit; until this check, reattest
+    # then cleared it.
+    events = evidence.cited_events(
+        prior["dataset"], prior["window_start"], prior["window_end"])
+    refusal = _content_edit_refusal(prior, events, evidence)
+    if refusal:
+        return before, None, refusal
+
     exam = prior.get("exam") or next(
         l.payload for l in links if l.kind == "EXAM")
 
@@ -538,12 +551,11 @@ def reattest(version: str, links: Sequence[Link], evidence: Evidence,
             f"REFUSED. Re-scored against current evidence the gate no longer passes: "
             f"{verdict.reason}. {version} stays quarantined and keeps enforcing.")
 
-    events = evidence.cited_events(
-        prior["dataset"], prior["window_start"], prior["window_end"])
     entries = evidence.access_list(prior["exam_dataset"])
     payload = _evidence_payload(
         prior["dataset"], prior["window_start"], prior["window_end"], events,
-        prior["exam_dataset"], entries, evidence.exam_reach())
+        prior["exam_dataset"], entries, evidence.exam_reach(),
+        evidence.schema_columns(prior["dataset"]))
     payload["supersedes"] = evidence_links[-1].seq
     payload["reason"] = f"{before.break_code}: {before.break_detail}"
     payload["exam"] = _exam_payload(candidate, current, cand_score, curr_score, verdict)
@@ -583,15 +595,157 @@ def bind_approval(links: List[Link]) -> List[Link]:
     return out
 
 
+SCHEMA_RESTATED = "SCHEMA-FINGERPRINT"
+
+
+def refresh(version: str, links: Sequence[Link], evidence: Evidence,
+            sealed: Optional[dict] = None) -> Tuple[Attestation, Optional[Link], str]:
+    """Restate an attested version's evidence so it records the conduct schema.
+
+    A link is immutable, so a chain sealed before `schema_fingerprint` existed
+    cannot gain one. Until it does, `_content_edit_refusal` cannot prove a schema
+    change under it and refuses every content change, including the legitimate
+    one. This is the one-time migration that closes that.
+
+    Only an ATTESTED version qualifies. Restating evidence that does not
+    currently re-derive would be a repair, and repairs go through `reattest`
+    where the gate is re-run.
+
+    The new link carries no `exam` key, so `verify` keeps re-deriving the
+    original EXAM link rather than a stored copy of its result. The exam was not
+    re-scored here, because nothing about it moved.
+    """
+    before = verify(version, links, evidence, sealed)
+    if not before.attested:
+        return before, None, (
+            f"REFUSED. {version} is {before.state}. Restating evidence is not a repair. "
+            f"A version that does not currently re-derive is reattest's business, and "
+            f"reattest re-runs the gate before it writes anything.")
+
+    evidence_links = [l for l in links if l.kind in ("EVIDENCE", "EVIDENCE-CHANGED")]
+    prior = evidence_links[-1].payload
+    if "schema_columns" in prior:
+        return before, None, (
+            f"{version} already records its conduct schema at link "
+            f"{evidence_links[-1].seq}. Nothing to restate.")
+
+    events = evidence.cited_events(
+        prior["dataset"], prior["window_start"], prior["window_end"])
+    payload = _evidence_payload(
+        prior["dataset"], prior["window_start"], prior["window_end"], events,
+        prior["exam_dataset"], evidence.access_list(prior["exam_dataset"]),
+        evidence.exam_reach(), evidence.schema_columns(prior["dataset"]))
+
+    # Every digest, not just the events. `verify` reads the access list, the
+    # project IAM reach and the conduct window; this rebuilds all three, and
+    # `exam_reach` is not cached, so a grant landing in between would be written
+    # into a link whose stated reason is that nothing changed. An adversarial
+    # pass found exactly that: grant the Proposer bigquery.dataViewer between the
+    # two reads and the restatement records it as the justified baseline.
+    for key in ("event_digest", "access_digest", "exam_reach_digest"):
+        if payload[key] != prior[key]:
+            return before, None, (
+                f"REFUSED. {key} changed between verification and restatement, so what "
+                f"this link would record is not what was just verified. Restatement "
+                f"writes a link that says nothing moved, and something moved. "
+                f"Run verify again.")
+
+    payload["supersedes"] = evidence_links[-1].seq
+    payload["reason"] = (
+        f"{SCHEMA_RESTATED}: the evidence re-derives unchanged and is restated to record "
+        f"the conduct schema it was cited against. The event digest is identical to link "
+        f"{evidence_links[-1].seq}, which is what shows nothing moved.")
+
+    seq = links[-1].seq + 1
+    link = Link(version, seq, "EVIDENCE-CHANGED", payload, links[-1].hash)
+    return before, link, (
+        f"RESTATED. Link {seq} EVIDENCE-CHANGED records conduct schema fingerprint "
+        f"{payload['schema_fingerprint']} and supersedes link {payload['supersedes']}. "
+        f"The event digest is unchanged, so nothing about the evidence itself moved.")
+
+
+def _content_edit_refusal(prior: dict, actual: Dict[str, str],
+                          evidence: Evidence) -> Optional[str]:
+    """Refuse re-derivation over rows that were edited, schema change or not.
+
+    The three causes of an EVENT-WINDOW break are told apart like this:
+
+      rows added or removed   -> ids differ, contents of the shared ids agree
+      a column was added      -> re-derived over the SEALED column list, every
+                                 shared id still agrees
+      a cited row was edited  -> a shared id disagrees under the column list the
+                                 chain was sealed against
+
+    Only the third is refused, and the projection is what keeps the second from
+    being a hiding place for the third. The demo's late-event beat is the first
+    and is untouched.
+
+    A link sealed before fingerprints existed carries none, so drift cannot be
+    proved and any content change is refused. That is deliberate: absence of
+    evidence is not evidence of a schema change. It is also why every version in
+    the project is re-sealed once, rather than a legacy branch being kept here.
+    """
+    sealed_columns = prior.get("schema_columns")
+    current = evidence.schema_columns(prior["dataset"])
+    rows, note = actual, "the conduct schema is unchanged"
+
+    if sealed_columns is not None and sealed_columns != current:
+        # Every whole-row digest moved, so comparing them proves nothing. An
+        # earlier version of this check took a moved fingerprint as licence and
+        # returned here: an adversarial pass then added a column AND rewrote a
+        # cited refund to another tenant in the same edit, and re-attestation
+        # cleared both. The schema change has to be shown to be the WHOLE change.
+        missing = [c for c in sealed_columns if c not in current]
+        if missing:
+            return (
+                f"REFUSED. {len(missing)} column(s) the chain was sealed against are gone "
+                f"or retyped: {_some(missing)}. The rows cannot be re-derived as the chain "
+                f"saw them, so a schema change cannot be told apart from an edit.")
+        try:
+            rows = evidence.projected_events(
+                prior["dataset"], prior["window_start"], prior["window_end"],
+                sealed_columns)
+        except (ValueError, bq.BigQueryError) as exc:
+            return (f"REFUSED. The rows could not be re-derived over the sealed column "
+                    f"list, so the schema change cannot be shown to be the whole change: "
+                    f"{exc}")
+        note = ("the conduct schema gained a column, and re-derived over the columns this "
+                "chain was sealed against")
+
+    stored = prior.get("events")
+    if stored is None:
+        if chain.digest_rows(rows) == prior["event_digest"]:
+            return None
+        return (
+            f"REFUSED. The cited rows no longer digest to the sealed value and {note}. "
+            f"The link carries a digest only, so no id can be named. Re-attestation "
+            f"re-derives over evidence, it does not launder an edit.")
+
+    altered = sorted(k for k in set(rows) & set(stored) if rows[k] != stored[k])
+    if not altered:
+        return None
+    return (
+        f"REFUSED. {len(altered)} cited event(s) no longer match the row that was cited "
+        f"and {note}, so the rows themselves were edited: {_some(altered)}. "
+        f"Re-attestation re-derives over evidence, it does not launder an edit.")
+
+
 def _evidence_payload(dataset: str, start: str, end: str, events: Dict[str, str],
                       exam_dataset: str, access: Sequence[dict],
-                      reach: Sequence[dict]) -> dict:
+                      reach: Sequence[dict], schema_columns: Sequence[str]) -> dict:
     payload = {
         "dataset": dataset,
         "window_start": start,
         "window_end": end,
         "row_count": len(events),
         "event_digest": chain.digest_rows(events),
+        # Not checked by `verify`: a schema change already moves event_digest and
+        # quarantines. The list is here so `reattest` can re-derive the rows as
+        # this chain saw them and tell a new column apart from an edited row. The
+        # fingerprint is the short form used in messages, derived from the list
+        # rather than stored beside it, so the two cannot disagree.
+        "schema_columns": list(schema_columns),
+        "schema_fingerprint": chain.digest_schema(schema_columns),
         "exam_dataset": exam_dataset,
         "access_digest": chain.digest_access(access),
         "access": chain._access_pairs(access),
@@ -709,6 +863,37 @@ def cmd_reattest(args) -> int:
         # A chain with no registry row was never promoted, so there is nothing to
         # re-point at the new root. Say so rather than writing a half row that the
         # Policy Server would later fail to parse.
+        print(f"note: {args.version} has no row in policy.versions; "
+              f"the new root was sealed but not registered")
+    print(f"sealed {uri}")
+    print()
+    after = verify(args.version, links, evidence, chain.sealed_root(uri, args.notary_sa))
+    print_attestation(after)
+    return 0 if after.attested else 6
+
+
+def cmd_refresh(args) -> int:
+    _, evidence, store = _tokens(args.project, args)
+    links = store.read(args.version)
+    before, link, message = refresh(args.version, links, evidence,
+                                    _sealed_for(store, args.version, args.notary_sa))
+    print_attestation(before)
+    print()
+    print(message)
+    if link is None:
+        # Already carries a fingerprint, or is not attested. Neither is an error
+        # for a migration that has to be safe to run twice over every version.
+        return 0 if before.attested else 6
+    store.append(link)
+    links = store.read(args.version)
+    uri = chain.seal(args.bucket, args.version, link.seq, chain.root_of(links), links,
+                     args.notary_sa)
+    rows = [r for r in store.versions() if r["version"] == args.version]
+    if rows:
+        # repoint, never register: this walks every version, including inactive
+        # ones, and register would put the last one it touched into force.
+        store.repoint(args.version, chain.root_of(links), uri)
+    else:
         print(f"note: {args.version} has no row in policy.versions; "
               f"the new root was sealed but not registered")
     print(f"sealed {uri}")
@@ -840,7 +1025,8 @@ def cmd_seed(args) -> int:
     access = evidence.access_list("holdout_sealed")
     evidence_payload = _evidence_payload(args.dataset, args.window_start, args.window_end,
                                          events, "holdout_sealed", access,
-                                         evidence.exam_reach())
+                                         evidence.exam_reach(),
+                                         evidence.schema_columns(args.dataset))
 
     if bundle.get("finding"):
         # The detector's own answer, with the job id it ran and the trace ids of
@@ -1103,6 +1289,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     r = sub.add_parser("reattest")
     r.add_argument("--version", required=True)
     r.set_defaults(func=cmd_reattest)
+
+    f = sub.add_parser("refresh", help="restate an attested version's evidence so it "
+                                       "records the conduct schema fingerprint")
+    f.add_argument("--version", required=True)
+    f.set_defaults(func=cmd_refresh)
 
     p = sub.add_parser("promote")
     p.add_argument("--version", required=True)

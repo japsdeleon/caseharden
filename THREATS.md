@@ -7,7 +7,7 @@ is not covered at all. Nothing here is hypothetical unless it says so. Where a c
 Google Cloud behaviour rather than this project's code, that is stated, because those are the
 two guarantees the whole entry rests on.
 
-The seven entries under **Not covered** are the ones a reviewer should read first.
+The ten entries under **Not covered** are the ones a reviewer should read first.
 
 ---
 
@@ -139,9 +139,144 @@ have completed, and the verdict asking for the obvious tightening could not be d
 detector reports the pattern, the chain records the finding, and no version of the policy can
 deny it. `BUILD_LOG.md` carries the run.
 
+This hole sits under the best-evidenced attack shape in the field, which makes it the first
+thing to fix rather than the last. AppOmni Labs' November 2025 ServiceNow demonstration is the
+same sequence: an injected turn drives a privileged read, and that read is followed by a write
+the requester was never entitled to. The detector families cover that shape. The policy
+language does not. `docs/DEVPOST.md` cites the demonstration and `BUILD_LOG.md` records where
+it came from.
+
+**8. The sealed exam and the live world are not the same shape.** The Examiner's score is a
+prediction about live behaviour, and it is measured on a corpus the live fleet does not produce.
+Three differences are known, and none of them bites the active version.
+
+*Conversational turns.* The generator writes a row for every turn, with `tool_name` null on the
+roughly sixty percent that call no tool. The live fleet writes through
+`before_tool_callback`, which fires only on a tool call, so `conduct_live` holds tool calls and
+nothing else. `turn_index` therefore counts turns in the corpora and tool calls in the live
+table. It is in `PREDICATE_FIELDS`, so a future candidate may key on it and be scored against a
+distribution the fleet does not generate. No rule in v5 uses it.
+
+*Event ids.* The generator hashes session, turn and timestamp. The live path concatenates session
+and turn index. Both are unique within a session and nothing joins across the two datasets, so
+this costs nothing today. It is recorded because the schema file claimed the hashed form for both
+and was wrong about the live one.
+
+*The `privilege-sequencing` family means two different things.* The detector's SQL finds a write
+to an account no read in that session touched. The generator's attack in the holdout reads an
+account and then writes to that same account. Those are complementary patterns, not one pattern,
+so the detector would not flag the holdout's own attack sessions. The gate is unaffected, because
+the Examiner replays policy rules against holdout rows and never runs a detector. The consequence
+is for anyone closing **Not covered 7**: a session-scoped predicate built to match the detector
+would score no improvement on the sealed exam, because the exam's ten attacks are the other
+shape. Which of the two patterns that family is meant to be is not decided anywhere in this
+repository.
+
+The general form of this hole is that a corpus written by one program is standing in for traffic
+produced by another. Only the second and third differences above were found by reading both
+programs side by side, which is not a check anything runs.
+
+Day 9 measured the difference rather than describing it. `conduct_train.turns` has 19 columns and
+`conduct_live.turns` has 21. Train carries `label` and `is_attack_event`, the generator's ground
+truth, which live must never hold. Live carries `attestation_state`, `decision`, `decision_rule`
+and `decision_attested`, the enforcement outcome, which the generator does not produce. Both
+directions are correct and neither is a defect. The consequence is that a rule or a detector
+validated against one table is not thereby validated against the other, and no check compares the
+two schemas.
+
+**9. Tools this design has not seen: MCP, delegation, and lists that change.** The enforcement
+point is ADK's `before_tool_callback`, which the flow runs through
+`agent.canonical_before_tool_callbacks` for every tool. `McpTool` derives from `BaseTool`, so an
+MCP tool would be screened, decided and recorded exactly as a local one is, with no change to
+this repository. That is the good half and it is verified against the installed ADK rather than
+assumed. The rest is not covered.
+
+*Half the check families go blind on a tool this project did not write.* `enforce` reads the
+domain fields straight out of the call arguments: `args.get("target_tenant_id")`,
+`args.get("account_id")`, `args.get("amount_cents")`. An arbitrary MCP tool does not use those
+parameter names, so all three arrive null. `scope-escape` and `injected-turn` still work, because
+they key on `tool_name`, `declared_scope` and the Model Armor fields. `cross-tenant` and
+`privilege-sequencing` stop working entirely. Governing a third-party tool is therefore an
+argument-mapping problem, not a plumbing one, and nothing in this repository maps arguments.
+
+*A tool can appear after the session declared its scope.* MCP servers may send
+`tools/list_changed`. `declared_scope` is seeded once, before the first turn. A tool that appears
+mid-session is outside the declared scope and `out-of-declared-scope` denies it, which is the
+right outcome by luck rather than by design. The DSL cannot express "refuse anything that was not
+on the list when the session started", because it has no representation of when the list was
+taken.
+
+*Tool names are not unique across servers.* Two MCP servers may both expose `search`. The conduct
+row records `tool_name` and not the server that provided it, so a rule keyed on a name gates
+both, and a finding cannot say which server was involved. Fixing this needs a new column, which
+is the subject of entry 10.
+
+*Delegation is out of scope entirely.* The four detectors assume one workload agent, two tools and
+no agent-to-agent calls. The best-evidenced attack in this field, cited in `docs/DEVPOST.md`,
+worked through exactly the delegation this design does not model.
+
+**10. A schema change and a tampered row look identical, and telling them apart took a
+projection.** Chain link 1 hashes each cited row as `SHA256(TO_JSON_STRING(t))`.
+`TO_JSON_STRING` emits a key for every column, including null ones, verified in this project:
+`SELECT TO_JSON_STRING(t) FROM (SELECT 1 AS a, CAST(NULL AS STRING) AS b) t` returns
+`{"a":1,"b":null}`. Adding a column to `conduct_live.turns` therefore changes the digest of every
+row already cited and quarantines every chain in the project at once.
+
+That quarantine is correct and stays. A schema change underneath a cited window genuinely is an
+evidence change. What was missing was a migration path, and finding it exposed something worse.
+
+`EVENT-WINDOW` has never been among the break codes that refuse re-attestation, because a
+late-arriving event raises it too. So `reattest` re-derived over it and cleared it. That is right
+for a late event and wrong for an edited row, and until this was found the two were the same code
+path: the repo's own adversarial fixture, a cited `issue_refund` rewritten to another tenant with
+its event id preserved, was caught by `verify` and then cleared by `reattest`, which returned the
+version to `attested`. The test that was supposed to cover this edited a chain *link*, which
+breaks `LINK-HASH`, and no test edited a cited conduct *row*.
+
+The fix is a projection, and the first attempt at it was itself broken. Each evidence link now
+records `schema_columns`, the conduct table's columns in schema order. When the digests move,
+`reattest` re-derives the rows over the columns the chain was sealed against:
+`TO_JSON_STRING(STRUCT(t.a, t.b, ...))` over the full list in order is byte-identical to
+`TO_JSON_STRING(t)`, checked against `conduct_live`, 43 rows, zero differing. An unedited row
+still digests to its sealed value under a new column; an edited one still does not. The first
+version instead treated any moved schema as licence and returned, so adding a column and
+rewriting a cited refund in the same edit cleared both. An adversarial pass found that, and
+`test_reattest_refuses_an_edit_hidden_behind_a_new_column` now holds it.
+
+A dropped or retyped column is refused outright. The rows cannot be re-derived as the chain saw
+them, so nothing about the change is provable either way.
+
+**What is still not covered.** A chain sealed before `schema_columns` existed cannot prove drift,
+so every content change under it is refused, including a legitimate schema change. That is
+deliberate, and it means the migration has an order: `caseharden refresh` must run on every
+version *before* any DDL touches the conduct table. Both live versions were migrated on Day 9.
+A project that drifts first has no recovery path in this code, and the operator would have to
+promote a new version.
+
+`refresh` writes one `EVIDENCE-CHANGED` link restating evidence that already re-derives, and
+refuses unless the event, access and exam-reach digests all match what it just verified. That
+last condition is not decoration: `exam_reach` is a live IAM read and is not cached, and an
+adversarial pass granted the Proposer `bigquery.dataViewer` between the two reads, so the
+restatement recorded the grant as its baseline under a reason claiming nothing had moved.
+
+The cheaper route remains to leave the cited table alone and put new fields in a side table
+joined on `event_id`, which does not touch the digest of any cited row. That is still the
+recommended shape for the MCP server identity in entry 9, and it costs the detectors a join.
+
 ---
 
-## Two smaller notes
+## Three smaller notes
+
+**A policy accumulates redundant rules, and that is the price of monotonicity.** The active
+version carries `tool-call-on-injected-turn`, which denies a tool call at
+`ma_prompt_injection_score >= 0.75`, and `tool-call-on-suspected-injection-turn`, which denies
+one at `>= 0.5`. The second strictly subsumes the first: every row the first denies, the second
+denies as well. Nothing is wrong. The MONOTONICITY leg requires that a candidate carry forward
+or narrow every rule the active version holds, so a rule cannot be dropped once a later rule
+swallows it. The consequence is that the rule list grows monotonically with the version number
+and older rules become dead weight rather than dead code. Nothing measures that growth today,
+and a reader who opens `policies/v5-active.json` will see two overlapping injection rules before
+they see this paragraph, which is why it is written down here.
 
 `roles/bigquery.resourceViewer` on `notary-sa` lets it see every job in the project. It
 carries no `bigquery.tables.getData`, checked with the same role expansion `verify` uses, so

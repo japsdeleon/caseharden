@@ -49,10 +49,20 @@ was prevented and not only to what occurred.
 | MLflow-era MLOps | Holdout-then-promote, versioned artifacts, champion/challenger, rollback |
 | **sigstore / cosign, in-toto, SLSA** | **Signed attestations binding an artifact to its build inputs, verified before use** |
 | **OPA Gatekeeper, Kyverno admission control** | **Refuse to admit an artifact whose attestation does not verify** |
+| **Binary Authorization Continuous Validation** | **Re-checks images on already-running Pods against the current policy at least every 24 hours, and logs the violations to Cloud Logging** |
+| **Agent Gateway (GA)** | **Network entry and exit point for agent traffic. Parses MCP and A2A, enforces IAM through Identity-Aware Proxy, and allows only explicitly authorized resources by default** |
+| **Semantic governance policies (Preview)** | **An intent gate at the Gateway. Rules are natural-language constraints evaluated by a model at runtime, returning ALLOW or DENY** |
+| **Agent Identity (GA on Agent Runtime)** | **Agents as first-class IAM principals on SPIFFE, with X.509 rotated every 24 hours, and IAM allow and deny policies against agent principals** |
+| **SCC Agent Platform Threat Detection (Preview)** | **Runtime and control-plane detectors over agent infrastructure and audit logs** |
+| **Microsoft Agent Governance Toolkit (Apr 2026, MIT)** | **Intercepts every tool call, message and delegation in deterministic code before execution. YAML rules, OPA Rego and Cedar. Deny-by-default strict mode. Evidence mapped to the EU AI Act, HIPAA, SOC 2 and the OWASP Agentic AI Top 10** |
+| **"Governing Actions, Not Agents", Salfeld-Nebgen, [arXiv 2606.26298](https://arxiv.org/abs/2606.26298) (Jun 2026)** | **The agent holds no execution authority. Execution is conditional on preconditions independently attested by a separate authoritative source, bound to a declared intent, evaluated by a deterministic policy, and recorded in a tamper-evident log** |
 
 Caseharden claims none of it as new. The verdict-to-policy loop is shipped product. Signed
-artifact verification gating admission is shipped infrastructure, and it is the closest
-analogue to this entry's actual claim, which is why it is named here.
+artifact verification gating admission is shipped infrastructure. Pre-execution interception of
+agent tool calls is a free MIT-licensed toolkit from Microsoft, and the thesis at the top of
+this file was published as a paper two months before this build. The last two rows are the
+closest analogues to this entry's actual claim, which is why they are named here rather than
+left for a judge to find.
 
 **The delta.** Those systems attest an *artifact* against its *build inputs*, verify a
 *signature over a digest*, and gate at *admission time*. Caseharden attests a *decision*
@@ -60,12 +70,45 @@ against its *evidence*, and verification does not stop at a hash. It re-executes
 deterministic Examiner over the sealed holdout to reproduce the metric that justified the
 promotion, and it re-scans the conduct events the finding cited. A signature proves nobody
 edited the claim. Caseharden proves the claim is still true. That is why a late-arriving
-event can quarantine a version no attacker ever touched, which no signature scheme detects
-and no admission controller re-checks after admission.
+event can quarantine a version no attacker ever touched, which no signature scheme detects.
+
+**Post-admission re-checking is not the delta, and saying so would be wrong.** Binary
+Authorization Continuous Validation already re-evaluates running workloads after admission, on
+a schedule, against the policy as it currently stands. Three things separate it from what
+happens here. Its subject is the artifact's conformance to the rule, never the rule's own
+justification. Its evidence side is an immutable digest, so "the evidence moved" is a case that
+cannot arise. And a failed check writes a log entry: nothing changes state on the artifact, and
+nothing is frozen. Caseharden re-derives the justification rather than the conformance, and a
+failure withdraws the version's standing and freezes promotion on top of it.
+
+**Where the delta is proven, and where it is not.** The staleness gap is demonstrated against
+supply-chain attestation, and there it is structural rather than an omission: in-toto requires
+`digest` on every subject and states that subjects are assumed immutable, and SLSA's
+Verification Summary Attestation carries `timeVerified` and no expiry, validity window or
+revocation field. It is **not** demonstrated against the agent-identity, non-human-identity,
+runtime-guardrail or continuous-control-monitoring vendors. That category has not been
+surveyed here, so nothing is claimed about it.
+
+**Where this sits beside the agent-governance work.** The Microsoft toolkit and this project
+act at different points and are not substitutes. AGT intercepts a tool call before it executes
+and answers "is this allowed". Caseharden acts after the turn is recorded and answers "is the
+rule that allowed or denied it still justified". A pre-execution interceptor is the stronger
+control for stopping a single action, and Cedar's permit/forbid is a more expressive language
+than this project's deny-only DSL, not a weaker one. Neither runtime interception nor
+deny-only enforcement is offered here as a differentiator.
+
+**The framing is prior art too.** Salfeld-Nebgen published the attested-preconditions model in
+June 2026, two months before this build, and states it more generally than this entry does.
+What that paper's abstract does not carry is what happens once an attestation's evidence
+changes underneath it: it describes a tamper-evident log "amenable to independent
+re-verification", not authority that is withdrawn when re-derivation fails. The narrow thing
+this entry adds is the quarantine state itself: enforcement retained, standing lost, promotion
+frozen.
 
 **Not claimed:** first AI-proposed policy under human review, first constrained-DSL drafting,
-first holdout gate, first signed provenance, first monotone policy versioning. Each is prior
-art and each is cited above.
+first holdout gate, first signed provenance, first monotone policy versioning, first runtime
+interception of agent tool calls, first deny-by-default agent policy engine, first
+authority-derived-from-attested-evidence framing. Each is prior art and each is cited above.
 
 ## Architecture
 
@@ -229,8 +272,8 @@ bash infra/80_prove_gate.sh          # the gate refuses three ways and passes on
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
 python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
-python3 -m pytest tests -q           # 280 tests, no cloud project needed
-python3 tests/mutate_check.py        # 59 mutations; every one must be caught
+python3 -m pytest tests -q           # 291 tests, no cloud project needed
+python3 tests/mutate_check.py        # 63 mutations; every one must be caught
 ```
 
 Each of those exits non-zero if the guarantee it tests does not hold. The

@@ -17,6 +17,15 @@ Every agent-governance product I have seen ends the same way: the AI drafts a ru
 approves it, and the system writes an audit log. The log describes the promotion. It has no
 authority over it. Nobody reads it again.
 
+The failure mode this defends against is documented, not invented. In November 2025 AppOmni
+Labs showed that text submitted inside an ordinary service ticket could make a ServiceNow Now
+Assist agent recruit a second, more privileged agent, read a record the submitter had no right
+to, and copy its contents into a record the submitter owned. The vendor's own prompt-injection
+protection was enabled while that worked. Screening the input was not the control. It is a
+vendor lab demonstration rather than an incident in the wild, and the boundary crossed was an
+ACL boundary inside one instance, so it is cited here for the shape of the attack and not for
+its scale.
+
 The supply-chain world already solved the neighbouring problem. sigstore, in-toto and SLSA
 bind an artifact to its build inputs and verify the signature before use. Kyverno and OPA
 Gatekeeper refuse to admit an artifact whose attestation does not verify.
@@ -24,21 +33,46 @@ Gatekeeper refuse to admit an artifact whose attestation does not verify.
 But a signature proves nobody edited the claim. It does not prove the claim is still true.
 That gap is what Caseharden is about.
 
+Two pieces of work got there first, and they are named in the README's prior-art table rather
+than left for a judge to find. Microsoft's Agent Governance Toolkit, MIT-licensed since April
+2026, already intercepts every tool call before it executes, with Cedar and Rego behind it.
+Salfeld-Nebgen's *Governing Actions, Not Agents* (arXiv 2606.26298, June 2026) already states
+the authority-from-attested-evidence model, and states it more generally than this entry does.
+Neither addresses what happens after the evidence moves. That is the part this entry builds.
+
 ## What it does
 
 Caseharden governs what an enterprise's AI agents may do, and how that answer is allowed to
 change.
 
-A support agent does ordinary work with two tools. Every turn it takes is screened by Model
-Armor and written as one structured conduct event to BigQuery. Four detector agents,
-discovered through Agent Registry rather than named in config, run governed SQL checks over
-that event stream. An orchestrator fans an investigation out to whatever the registry lists.
+The friction it removes is specific. A security team tightens a rule that governs an AI agent,
+and learns in production whether the tightening broke legitimate work. Caseharden makes that
+answer a precondition of the change rather than a consequence of it.
 
-A finding goes to a human analyst, who types a verdict into ADK's own chat window. A Proposer
-agent drafts a guardrail change in a small deny-only DSL. A deterministic Examiner, not a
-model, scores that draft against a sealed holdout the Proposer is IAM-denied from reading,
-and applies a two-sided gate: attacks must go down, benign traffic must not, and the new
-version must only narrow authority.
+**One human turn sits inside the loop. Everything around it runs unattended.**
+
+A support agent does ordinary work with two tools, a tenant-scoped read and a refund write.
+Every turn is screened by Model Armor and written as one structured conduct event to BigQuery.
+An orchestrator then reads Agent Registry at container start, names no detector anywhere in its
+source, and fans an investigation out over A2A to whatever the roster lists. Four detectors
+answer in parallel. Each returns a finding and the BigQuery job id that produced it, so a
+reviewer re-runs the query instead of trusting a summary.
+
+The finding reaches a human analyst, who records one verdict in ADK's own chat window. That is
+the human turn. From there a Proposer agent reads the fleet's own review history out of Memory
+Bank, drafts a guardrail change in a small deny-only DSL, and is refused by BigQuery with a real
+403 when it reaches for its own exam. A deterministic Examiner, not a model, scores the draft
+against that sealed holdout under a different service account, over 40 labelled attack sessions
+and 640 legitimate turns, and applies a three-leg gate: blocked attacks must go up, the benign
+pass rate must not fall, and the new version must only narrow authority. A refusal is written to
+the chain as its own link, so the record attests to what was prevented.
+
+**The gate holds at 30 of 40, and that is a property of the language rather than a shortfall.**
+The sealed holdout carries ten attack sessions for each of four check families. Three families
+are expressible as rules over a single conduct event. The fourth is a read and a write inside
+one session, which is a self-join and not a field, so no predicate in this DSL reaches it. The
+detector finds those sessions. The chain records them. No version of the policy can deny them.
+The system knows where its own ceiling is and can show the arithmetic.
 
 Every step is a hash-linked record in a BigQuery chain, append-only by convention, whose root
 is sealed into a retention-locked Cloud Storage object and annotated onto the Agent Registry
@@ -105,8 +139,8 @@ The gate refused the real Proposer's real candidate. It caught one more sealed a
 the active version and blocked two legitimate turns, and that was enough. No fixture was
 involved.
 
-Every number published is measured. `verify` p95 is 3.66s against a 5s target. 280 tests. 59
-mutations broken on purpose and all 59 caught, including one that survived its first run and
+Every number published is measured. `verify` p95 is 3.66s against a 5s target. 291 tests. 63
+mutations broken on purpose and all 63 caught, including one that survived its first run and
 now has two tests.
 
 ## What I learned
@@ -138,7 +172,7 @@ Python · OpenTelemetry
 - Repository: https://github.com/japsdeleon/caseharden
 - Specification: `docs/PLAN.md` · Daily build log with measured numbers: `BUILD_LOG.md`
 - Terminal captures for every claim: `captures/`
-- Threat model, including seven holes stated plainly: `THREATS.md`
+- Threat model, including ten holes stated plainly: `THREATS.md`
 
 ## Clean-room disclosure
 

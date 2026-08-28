@@ -55,9 +55,27 @@ OVER_BLOCKING = dsl.load(str(REPO / "policies" / "v4-candidate-a.json"))
 
 DATASET = "conduct_train"
 START, END = "2026-08-14T00:00:00Z", "2026-08-15T00:00:00Z"
-CITED = [
-    {"event_id": f"e_{i:05d}", "ts": "2026-08-14T09:00:00Z"} for i in range(5)
-]
+LIVE_COLUMNS = [f["name"] for f in json.loads(
+    (REPO / "infra" / "schema_turns_live.json").read_text())]
+
+
+def conduct_row(i: int, **overrides) -> dict:
+    """A cited row carrying the live table's columns, nulls included.
+
+    The fixture used to be `{event_id, ts}` and nothing else, so a test that
+    rewrote a cited call by passing `tool_name=...` was ADDING a key. Against
+    the real table those columns already exist and hold null, and overriding one
+    is an edit. The double said schema change where production says tamper,
+    which is the one distinction `_content_edit_refusal` turns on. Read from the
+    schema file so the two cannot drift apart again.
+    """
+    row = dict.fromkeys(LIVE_COLUMNS)
+    row.update(event_id=f"e_{i:05d}", ts="2026-08-14T09:00:00Z")
+    row.update(overrides)
+    return row
+
+
+CITED = [conduct_row(i) for i in range(5)]
 SEALED_ACCESS = [{"role": "OWNER", "userByEmail": "examiner-sa@p.iam.gserviceaccount.com"}]
 PROPOSER_GRANT = {"role": "READER", "userByEmail": "proposer-sa@p.iam.gserviceaccount.com"}
 SEALED_REACH = [{"role": "roles/bigquery.metadataViewer",
@@ -88,6 +106,21 @@ class FakeEvidence(chain.Evidence):
         if self._error:
             raise self._error
         return {e["event_id"]: chain.row_digest(e)
+                for e in self._events if start <= e["ts"] < end}
+
+    def schema_columns(self, dataset):
+        if self._error:
+            raise self._error
+        # Derived from the fixture rows, not declared, so a test that adds a
+        # field to an event moves the schema the same way a real column would. A
+        # declared constant would let the two drift apart silently.
+        return sorted({k for e in self._events for k in e})
+
+    def projected_events(self, dataset, start, end, columns):
+        if self._error:
+            raise self._error
+        keep = {chain.column_name(c) for c in columns}
+        return {e["event_id"]: chain.row_digest({k: v for k, v in e.items() if k in keep})
                 for e in self._events if start <= e["ts"] < end}
 
     def access_list(self, dataset):
@@ -131,7 +164,8 @@ def make_chain(version="v4", events=None, access=None, candidate=GOOD, current=A
     return notary.bind_approval(chain.build(version, [
         ("EVIDENCE", stored(notary._evidence_payload(
             DATASET, START, END, cited, "holdout_sealed", access or SEALED_ACCESS,
-            reach if reach is not None else SEALED_REACH))),
+            reach if reach is not None else SEALED_REACH,
+            evidence.schema_columns(DATASET)))),
         # The job id is not decoration in this fixture: a FINDING that names no
         # job is a finding nobody can re-run, and `_shape_of_payload` refuses it.
         ("FINDING", stored({"family": "scope-violation", "sessions": ["s_1", "s_2"],
@@ -341,6 +375,210 @@ def test_reattest_refuses_to_launder_an_edited_record():
     assert before.break_code == LINK_HASH
     assert message.startswith("REFUSED")
     assert "does not launder an edit" in message
+
+
+def test_reattest_refuses_a_rewritten_cited_event():
+    """The gap the launder test above did not cover.
+
+    That test edits a chain link, which breaks LINK-HASH. This one edits the
+    conduct row the chain cites, which breaks EVENT-WINDOW, and EVENT-WINDOW is
+    re-attestable because a late-arriving event breaks it too. `verify` caught
+    the rewrite from the day it was found; `reattest` then cleared it and the
+    version went green at 29/40 with a refund pointed at another tenant sitting
+    in the cited window.
+    """
+    links = make_chain()
+    rewritten = [dict(CITED[0], tool_name="issue_refund", tenant_id="t_999")] + CITED[1:]
+    before, link, message = reattest("v4", links, FakeEvidence(events=rewritten),
+                                     certificate(links))
+    assert before.break_code == EVENT_WINDOW
+    assert link is None
+    assert message.startswith("REFUSED")
+    assert "the conduct schema is unchanged" in message
+    assert CITED[0]["event_id"] in message
+    assert "does not launder an edit" in message
+
+
+def test_reattest_recovers_a_version_quarantined_by_a_new_column():
+    """Entry 10's migration path, which until now was possible but unbuilt.
+
+    Adding a column moves the digest of every cited row at once, because
+    TO_JSON_STRING emits a key for every column including null ones. The
+    fingerprint is what separates that from an edit: here every shared id
+    disagrees AND the schema moved, so re-derivation is allowed.
+    """
+    links = make_chain()
+    widened = [dict(e, mcp_server_id="srv_a") for e in CITED]
+    evidence = FakeEvidence(events=widened)
+    before, link, message = reattest("v4", links, evidence, certificate(links))
+    assert before.state == QUARANTINED and before.break_code == EVENT_WINDOW
+    assert link is not None and link.kind == "EVIDENCE-CHANGED"
+    assert message.startswith("RE-ATTESTED")
+
+    extended = links + [link]
+    after = verify("v4", extended, evidence, certificate(extended))
+    assert after.state == ATTESTED
+    assert after.promotions == "OPEN"
+    assert (link.payload["schema_fingerprint"]
+            != links[0].payload["schema_fingerprint"])
+
+
+def test_reattest_refuses_an_edit_under_a_link_that_predates_fingerprints():
+    """Absence of a fingerprint is not evidence of a schema change.
+
+    A chain sealed before this field existed cannot prove the table gained a
+    column, so a content change under it is refused rather than waved through.
+    Every version in the project is re-sealed once instead of keeping a branch
+    here that trusts old links more than new ones.
+    """
+    legacy = _legacy(make_chain())
+    rewritten = [dict(CITED[0], tool_name="issue_refund", tenant_id="t_999")] + CITED[1:]
+    _, link, message = reattest("v4", legacy, FakeEvidence(events=rewritten),
+                                certificate(legacy))
+    assert link is None
+    assert message.startswith("REFUSED")
+
+    # A late event under the same legacy link still recovers: nothing shared
+    # changed, so there is no edit to refuse.
+    later = CITED + [{"event_id": "e_88214", "ts": "2026-08-14T23:59:00Z"}]
+    _, link, message = reattest("v4", legacy, FakeEvidence(events=later),
+                                certificate(legacy))
+    assert link is not None and message.startswith("RE-ATTESTED")
+
+
+def test_reattest_refuses_an_edit_hidden_behind_a_new_column():
+    """The hole the first version of this check had.
+
+    It took a moved schema as licence and returned before comparing anything. An
+    adversarial pass added a column AND rewrote a cited refund to another tenant
+    in the same edit, and re-attestation cleared both, because under a schema
+    change every whole-row digest moves and comparing them says nothing. The
+    projection onto the sealed column list is what closes it.
+    """
+    links = make_chain()
+    widened = [dict(e, mcp_server_id="srv_a") for e in CITED]
+    widened[0] = dict(widened[0], tool_name="issue_refund", tenant_id="t_999")
+    _, link, message = reattest("v4", links, FakeEvidence(events=widened),
+                                certificate(links))
+    assert link is None
+    assert message.startswith("REFUSED")
+    assert CITED[0]["event_id"] in message
+    assert "re-derived over the columns this chain was sealed against" in message
+
+
+def test_reattest_refuses_when_a_sealed_column_is_gone():
+    """A dropped or retyped column cannot be projected, so nothing is provable."""
+    links = make_chain()
+    narrowed = [{k: v for k, v in e.items() if k != "amount_cents"} for e in CITED]
+    _, link, message = reattest("v4", links, FakeEvidence(events=narrowed),
+                                certificate(links))
+    assert link is None
+    assert message.startswith("REFUSED") and "amount_cents" in message
+
+
+def test_refresh_refuses_a_grant_that_lands_between_verify_and_restatement():
+    """Restatement writes a link that says nothing moved, so nothing may move.
+
+    `exam_reach` is a live IAM read and is not cached. An adversarial pass
+    granted the Proposer bigquery.dataViewer between the two reads: the
+    restatement recorded the grant as its baseline under a reason claiming the
+    evidence re-derived unchanged, and every later verification agreed.
+    """
+    class FlippingReach(FakeEvidence):
+        def __init__(self):
+            super().__init__()
+            self._seen = 0
+
+        def exam_reach(self):
+            self._seen += 1
+            return SEALED_REACH if self._seen == 1 else SEALED_REACH + [PROJECT_GRANT]
+
+    legacy = _legacy(make_chain())
+    before, link, message = notary.refresh("v4", legacy, FlippingReach(),
+                                           certificate(legacy))
+    assert before.state == ATTESTED
+    assert link is None
+    assert message.startswith("REFUSED") and "exam_reach_digest" in message
+
+
+def test_the_schema_digest_moves_on_column_order_and_on_type():
+    """`TO_JSON_STRING` renders a row in schema order, so a reorder changes every
+    row digest. A fingerprint that sorted its input would call that no change.
+
+    The offline doubles hash sorted, untyped dict keys, so neither property is
+    reachable through them. This pins the production function directly.
+    """
+    assert (chain.digest_schema(["event_id:STRING", "ts:TIMESTAMP"])
+            != chain.digest_schema(["ts:TIMESTAMP", "event_id:STRING"]))
+    assert chain.digest_schema(["a:STRING"]) != chain.digest_schema(["a:INT64"])
+
+
+def test_a_column_name_that_is_not_an_identifier_is_refused():
+    """The column list is interpolated into SQL, which parameters cannot carry."""
+    assert chain.column_name("amount_cents:INT64") == "amount_cents"
+    with pytest.raises(ValueError):
+        chain.column_name("x) FROM t; DROP TABLE turns--:STRING")
+
+
+def _legacy(links):
+    """The same chain with no schema fingerprint, rebuilt so the hashes hold."""
+    payloads = [(l.kind, dict(l.payload)) for l in links]
+    payloads[0][1].pop("schema_fingerprint")
+    payloads[0][1].pop("schema_columns")
+    return notary.bind_approval(chain.build("v4", payloads))
+
+
+def test_refresh_gives_a_pre_fingerprint_chain_a_fingerprint_and_stays_attested():
+    """The one-time migration. A link is immutable, so the field arrives by
+    supersession or not at all."""
+    legacy = _legacy(make_chain())
+    evidence = FakeEvidence()
+    before, link, message = notary.refresh("v4", legacy, evidence, certificate(legacy))
+    assert before.state == ATTESTED
+    assert link is not None and link.kind == "EVIDENCE-CHANGED"
+    assert message.startswith("RESTATED")
+    assert link.payload["schema_columns"] == evidence.schema_columns(DATASET)
+    # The whole claim of this link: the evidence did not move, only the record
+    # of which schema it was read under.
+    assert link.payload["event_digest"] == legacy[0].payload["event_digest"]
+    assert notary.SCHEMA_RESTATED in link.payload["reason"]
+
+    extended = legacy + [link]
+    assert verify("v4", extended, evidence, certificate(extended)).state == ATTESTED
+
+
+def test_a_refreshed_chain_can_then_recover_from_a_new_column():
+    """The migration is only worth running if it restores the recovery path.
+
+    Before it, a schema change on this chain is indistinguishable from an edit
+    and reattest refuses. After it, the fingerprint proves the drift.
+    """
+    legacy = _legacy(make_chain())
+    widened = [dict(e, mcp_server_id="srv_a") for e in CITED]
+
+    _, refused, _ = reattest("v4", legacy, FakeEvidence(events=widened), certificate(legacy))
+    assert refused is None, "a chain with no fingerprint cannot prove drift"
+
+    _, link, _ = notary.refresh("v4", legacy, FakeEvidence(), certificate(legacy))
+    migrated = legacy + [link]
+    _, recovered, message = reattest("v4", migrated, FakeEvidence(events=widened),
+                                     certificate(migrated))
+    assert recovered is not None and message.startswith("RE-ATTESTED")
+
+
+def test_refresh_is_safe_to_run_twice_and_refuses_a_version_that_is_not_attested():
+    """It walks every version in the project, so it has to be re-runnable."""
+    links = make_chain()
+    _, link, message = notary.refresh("v4", links, FakeEvidence(), certificate(links))
+    assert link is None and "Nothing to restate" in message
+
+    later = CITED + [{"event_id": "e_88214", "ts": "2026-08-14T23:59:00Z"}]
+    legacy = _legacy(links)
+    before, link, message = notary.refresh("v4", legacy, FakeEvidence(events=later),
+                                           certificate(legacy))
+    assert before.state == QUARANTINED
+    assert link is None and message.startswith("REFUSED")
+    assert "reattest" in message
 
 
 def test_reattest_refuses_a_widened_exam_access_list():

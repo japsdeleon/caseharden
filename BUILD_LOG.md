@@ -2041,3 +2041,264 @@ attempt needs a direction a human chose, not one worked backwards from a failing
 
 One note for anyone re-reading the captured log: it was piped through `tee`, so the recorded
 shell status is `tee`'s and reads as 0. The driver itself exited non-zero, as it should.
+
+## 2026-08-27 — Day 9
+
+An external evidence check, and the three citations it forced into judge-facing documents.
+
+A five-angle web research pass ran against the entry's own premises. It fetched 22 sources,
+extracted 103 claims, and put 25 of them through three-vote adversarial verification. Ten
+survived. Fifteen were refuted. Two of the survivors are counter-evidence against this entry
+rather than support for it. The findings below are the ones that changed a judge-facing
+document.
+
+**A proposed reframe was rejected on the evidence.** The candidate framing was an outsourced
+support operator running one agent fleet across many client brands, with the tenant boundary as
+the headline. Nothing supports it. Concentrix's FY2025 10-K, filed 2026-01-28, carries a
+dedicated agentic-AI risk factor naming flawed training data, cannibalization of low-complexity
+work, execution cost and regulatory uncertainty. A full-text search of the whole filing returns
+zero hits for prompt injection, jailbreak, commingling, cross-client, cross-brand, multi-tenant,
+tenant, segregation, subprocessor, guardrail and autonomous. Its only AI-security mention treats
+AI as an attacker against Concentrix, not as an actor inside its own systems. Every claim
+asserting BPO agentic-AI adoption scale or buyer sentiment failed verification, and no
+documented case exists of a support vendor's agent acting across a client-brand boundary. The
+reframe was dropped and no document was changed to adopt it.
+
+**The attack shape is documented, and it is cited now.** AppOmni Labs, 2025-11-19: text inside an
+ordinary ServiceNow service ticket caused a Now Assist agent to recruit a more privileged agent,
+read a record the submitter could not read, and copy it into a record the submitter owned, with
+the vendor's prompt-injection protection enabled. Carried with its limits stated: it is a vendor
+lab proof of concept, AppOmni launched a competing product the same day, and the boundary crossed
+is an ACL boundary inside one instance rather than a tenant boundary. Cited in `docs/DEVPOST.md`
+for the shape of the attack, not for its scale, and referenced from **Not covered 7** in
+`THREATS.md` because it is the same read-then-write sequence the DSL cannot express.
+
+**Two prior-art rows were missing and are now in the README table.** Microsoft's Agent
+Governance Toolkit, MIT-licensed, public preview, intercepts every tool call, message and
+delegation in deterministic code before execution, with YAML rules, OPA Rego and Cedar behind it
+and a deny-by-default strict mode. Verified directly against the repository, whose own framing
+is that denied actions are "structurally impossible". Cedar's permit/forbid is more expressive
+than this project's deny-only DSL, so neither runtime interception nor deny-only enforcement is
+offered as a differentiator any more; the README now states the two act at different points.
+Second, Salfeld-Nebgen, *Governing Actions, Not Agents*, arXiv 2606.26298, submitted 2026-06-24,
+two months before this build. Verified against the arXiv abstract page: the agent "holds no
+execution authority", execution is conditional on preconditions "independently attested by a
+separate authoritative source, cryptographically bound to a declared intent, and evaluated by a
+deterministic policy", recorded in a tamper-evident log. That is this entry's thesis, published
+first, and the README now says so.
+
+**What the paper's abstract does not carry is the part left standing.** It describes a log
+"amenable to independent re-verification". It does not describe staleness, revocation or
+quarantine. The narrow claim that survives is the quarantine state itself: enforcement retained,
+standing lost, promotion frozen, when re-derivation fails.
+
+**The supply-chain delta held, and it is structural rather than an omission.** in-toto v1
+requires `digest` on every subject, states that subjects are assumed immutable, and matches
+subjects purely by digest. SLSA's Verification Summary Attestation carries `timeVerified` and no
+expiry, validity window or revocation field. SLSA issue #1207 asks for exactly this and has been
+open since October 2024. The README now scopes the claim to that category explicitly and states
+that the agent-identity, non-human-identity, runtime-guardrail and continuous-control-monitoring
+vendors were never surveyed, so nothing is claimed against them.
+
+**What the research could not settle, recorded so it is not mistaken for a pass.** Whether any
+shipping vendor in those unsurveyed categories already does continuous re-verification against
+live evidence. Whether arXiv 2605.23935 on reconstructive authority already covers the
+mechanism; it was flagged as a possible direct hit and was not read. What re-derivation costs at
+production volume. Whether "quarantined but still blocking" is a distinction a buyer acts on.
+Both EU AI Act Article 12 claims were refuted, so no regulatory mandate is asserted anywhere.
+
+**A findable overstatement in the README, removed.** The delta paragraph said a late-arriving
+event quarantines a version in a way "no admission controller re-checks after admission". That
+is false. Binary Authorization Continuous Validation re-checks images on already-running Pods
+at least once every 24 hours, re-evaluates them against the policy as it currently stands, and
+logs violations to Cloud Logging. Verified against Google's own continuous-validation docs. CV
+is now a row in the prior-art table and the delta is restated against it: CV's subject is the
+artifact's conformance to a rule rather than the rule's justification, its evidence side is an
+immutable digest so a moved-evidence case cannot arise, and a failed check writes a log entry
+without changing state on the artifact or freezing anything. Found by an internal review pass
+before a judge found it, which is the only reason it is cheap.
+
+**Four Google products were missing from the prior-art table, on a Google hackathon.** The table
+named Microsoft's toolkit and named no adjacent Google product, while the entry runs on Google
+Cloud. Agent Gateway is GA and already enforces deny-by-default per call through
+Identity-Aware Proxy. Semantic governance policies are in Preview and put a natural-language
+intent gate in front of agent traffic. Agent Identity is GA on Agent Runtime, giving agents
+SPIFFE principals with 24-hour X.509 rotation and IAM deny policies. SCC Agent Platform Threat
+Detection is in Preview over agent infrastructure and control-plane audit logs. All four are now
+rows. An unlisted adjacent product from the host platform reads worse than an unlisted
+competitor, and three of the four sit close enough to this entry that a specialist judge would
+name them unprompted.
+
+The consequence for positioning is larger than the table. Google's agent-governance stack fills
+more layers than this entry assumed: interception, screening, identity and infrastructure
+threat detection are all covered, GA or Preview. The two cells that stay empty are the
+provenance of a policy version and the withdrawal of its standing when evidence moves. That is
+the whole of what this entry adds, and it is a smaller claim than "a governance plane".
+
+**A stale line in the spec, contradicting the README.** `docs/PLAN.md` section 5 still said the
+trace-DAG shot was cut because spans do not reach Cloud Trace from Cloud Run. The Day 7 sampler
+fix made that false and `THREATS.md` was rewritten to past tense at the time; the plan was not.
+The README's measured table meanwhile claims a 60-span DAG and a 361-span fan-out trace. Both
+documents are judge-facing and they disagreed. Corrected, with the `traceparent` residual left
+stated.
+
+**Two overlapping injection rules in the active version, explained rather than removed.** v5
+carries `tool-call-on-injected-turn` at `ma_prompt_injection_score >= 0.75` and
+`tool-call-on-suspected-injection-turn` at `>= 0.5`. The second subsumes the first completely.
+Removing the first is not available: the MONOTONICITY leg requires every rule in the active
+version to be carried forward or narrowed, so a superseded rule stays. The rule list therefore
+grows with the version number, and this is a property of deny-only plus monotonic promotion
+rather than a defect. Recorded in `THREATS.md` under the smaller notes, because a reader opening
+`policies/v5-active.json` meets the redundancy before any explanation of it.
+
+**The Model Armor scores are a local conversion, not a vendor measurement.** Model Armor
+returns `matchState` and a `confidenceLevel` band. `agents/common/armor.py` maps the band to a
+float through `BAND_SCORE`, so `ma_prompt_injection_score` takes exactly four values: 0.0, 0.40,
+0.70 and 0.95. A threshold in a rule is a band selector. `>= 0.75` selects HIGH alone and
+`>= 0.5` selects MEDIUM and HIGH, which is the whole difference between the two rules above.
+`ma_jailbreak_score` carries the same value as `ma_prompt_injection_score`, because Model Armor
+reports both under one filter and one band, and inventing a second number was refused. Two of
+the nine predicate fields are therefore one measurement. Not yet disclosed anywhere outside this
+log.
+
+**Beat emphasis redistributed in section 5, to answer the criterion that carries 40%.** The
+rubric asks for "high-value, autonomous execution over simple chat queries". The beat table gave
+its longest single block to a person typing in a chat window and its shortest treatment to the
+unattended work, which is the opposite of what is scored. Five beats changed, no beat added or
+cut, and the table still totals exactly 240 seconds with no gaps.
+
+- 0:38 now makes the autonomy claim out loud: the orchestrator discovers its detectors from the
+  roster at container start and names none of them in its source.
+- 0:56 is retitled THE FAN-OUT and gains two seconds. The incident becomes the setup and the beat
+  becomes four detectors answering in parallel with four distinct BigQuery job ids on screen at
+  once. Its stale trace-DAG sentence was corrected in the same pass.
+- 1:22, the verdict, drops from fourteen seconds to ten and is labelled deliberate. The line is
+  "that is the only human turn in this loop", and the direction is to cut on the decision id
+  rather than film the typing.
+- 2:10 becomes THE GATE, refusing twice. The hand-written overblocking candidate refused on
+  BENIGN, then the live Day 8 run refused on CATCH at 30/40 three times, then the ceiling stated
+  as arithmetic: ten attacks per family, four families, three of them expressible as a rule over
+  one row. Thirty of forty is the ceiling of the language rather than a shortfall.
+- 3:40 gains one line at roughly 3:50 about the chain root being a custom annotation on a
+  registry entry. The thesis stays the last thing spoken, unchanged, per the pin in this section.
+
+The two seconds taken from the verdict beat went to the fan-out and to bounded authorship.
+
+**Not covered 8: the sealed exam and the live world are not the same shape.** Found by reading
+the generator and the live enforcement path side by side, which is not a check anything runs.
+Three differences, none of which affects the active version.
+
+The live fleet writes through `before_tool_callback`, so `conduct_live` holds one row per tool
+call and nothing else. The generator writes one row per turn and leaves `tool_name` null on the
+roughly sixty percent that call no tool. `turn_index` therefore counts turns in the corpora and
+tool calls in the live table. It sits in `PREDICATE_FIELDS`, so a candidate may key on it and be
+scored against a distribution the fleet does not produce. No v5 rule uses it.
+
+`event_id` differs in format. The generator hashes session, turn and timestamp to sixteen hex
+characters. The live path concatenates session id and turn index. Both are unique within a
+session and nothing joins across the two datasets. `infra/schema_turns_live.json` claimed the
+hashed form and was wrong; `infra/schema_turns.json` claimed it correctly and is unchanged. The
+live description now states both formats and points at the threat entry.
+
+The `privilege-sequencing` family names two different patterns. The detector's SQL finds a write
+to an account no read in the session touched. The generator's holdout attack reads an account and
+writes to that same account. They are complements, so the detector would not flag the holdout's
+own attack sessions. The gate is unaffected, because the Examiner replays rules against holdout
+rows and never runs a detector. The consequence lands on anyone closing Not covered 7: a
+session-scoped predicate built to match the detector scores no improvement on the sealed exam,
+because the exam's ten attacks are the other shape. Nothing in the repository decides which
+pattern the family is meant to be.
+
+Counts updated: `THREATS.md` preamble to eight entries, `docs/DEVPOST.md` to eight holes.
+
+**Not covered 9 and 10: third-party tools, and why the record cannot gain a field.**
+
+Entry 9 starts with a verified positive. The enforcement point is ADK's `before_tool_callback`,
+which the flow runs through `agent.canonical_before_tool_callbacks` for every tool, and
+`McpTool` derives from `BaseTool`. So an MCP tool is screened, decided and recorded with no
+change to this repository. Checked against the installed ADK 2.7.1 rather than assumed.
+
+The rest of entry 9 is what that does not buy. `enforce` reads `target_tenant_id`, `account_id`
+and `amount_cents` out of the call arguments by name, and a tool this project did not write does
+not use those names. `scope-escape` and `injected-turn` survive on `tool_name`, `declared_scope`
+and the Model Armor fields. `cross-tenant` and `privilege-sequencing` go blind. Two smaller gaps
+follow: a tool that appears mid-session through `tools/list_changed` is denied by
+`out-of-declared-scope` for the right outcome by accident, since the DSL cannot represent when the
+scope was taken; and two servers may expose the same tool name, which the row cannot distinguish.
+Delegation stays out of scope, which matters because the AppOmni attack cited in the Devpost text
+worked through exactly that.
+
+Entry 10 promotes a constraint out of a shell comment. Chain link 1 hashes each cited row as
+`SHA256(TO_JSON_STRING(t))`, and `TO_JSON_STRING` emits a key for every column including null
+ones. Adding one column to `conduct_live.turns` changes the digest of every cited row and
+quarantines every chain in the project at once. The behaviour is correct and the migration path is
+missing: `EVENT-WINDOW` is not among the five break codes that refuse re-attestation, so recovery
+exists in principle, but nothing automates it, nothing tests it beyond one version, and no runbook
+covers it. The cheaper shape is a side table joined on `event_id`, which leaves every cited digest
+untouched and costs the detectors a join. That is the recommendation for MCP server identity.
+
+This fact governed every future change to the record and lived only in `infra/26_conduct_live.sh`.
+Counts updated to ten entries and ten holes.
+
+### Entry 10 closed, and what closing it turned up
+
+The migration path entry 10 said was missing is built. Getting there found a live defect that had
+nothing to do with schema evolution.
+
+**`reattest` cleared a tampered conduct row.** `EVENT-WINDOW` is raised by three different causes
+and is re-attestable because one of them is a late-arriving event. The other two are a schema
+change and an edit to a cited row. Running the repo's own adversarial fixture through `reattest`,
+a cited `issue_refund` rewritten to `tenant_id=t_999` with its event id preserved:
+
+    break_code: EVENT-WINDOW
+    link: EVIDENCE-CHANGED seq 8
+    message: RE-ATTESTED. The evidence moved, the gate still passes (29/40 sealed attacks
+             at 100% benign pass). Link 8 EVIDENCE-CHANGED records the new evidence and
+             supersedes link 1.
+
+`verify` caught it. `reattest` cleared it. `test_reattest_refuses_to_launder_an_edited_record`
+did not cover it: it edits `links[2].payload`, a chain link, which breaks `LINK-HASH`. Nothing
+edited a cited conduct row.
+
+**The fixture was lying about what an edit is.** `CITED` rows were `{event_id, ts}` and nothing
+else, so `dict(CITED[0], tool_name=..., tenant_id=...)` ADDED two keys. Against the real table
+those columns exist and hold null, and overriding one is an edit. The double said schema change
+where production says tamper, which is the exact distinction the new check turns on. `CITED` now
+builds from `infra/schema_turns_live.json` so the two cannot drift apart again.
+
+**The first fix was wrong and an adversarial pass broke it.** Storing a fingerprint and treating
+any change to it as licence meant adding a column and rewriting a cited refund in the same edit
+cleared both. Under a schema change every whole-row digest moves, so comparing them proves
+nothing. The evidence link now stores `schema_columns`, and `reattest` re-derives over the sealed
+column list: `TO_JSON_STRING(STRUCT(t.a, t.b, ...))` over the full list in schema order is
+byte-identical to `TO_JSON_STRING(t)`, measured on `conduct_live`, 43 rows, zero differing.
+Verified live afterwards against both datasets: 19 columns over 430 rows and 21 over 22, the
+projection equal to the whole-row digests and equal to the sealed `event_digest` in both.
+
+**`refresh` had a TOCTOU the same pass found.** It verified, then re-read `exam_reach`, which is
+a live IAM call and is not cached, and compared only the event digest. A grant to the Proposer
+landing between the two reads was written into a link whose stated reason is that nothing moved.
+It now refuses unless the event, access and exam-reach digests all match what it just verified.
+
+**Live migration.** `caseharden refresh` on v4 and v5, both `ATTESTED` before and after.
+v4 link 15, `gs://.../certificates/v4/015-fa1bf4f72b80.json`. v5 link 9,
+`gs://.../certificates/v5/009-40cdb5962d49.json`. `repoint`, never `register`, so v5 stayed the
+active version throughout.
+
+**Measured while there.** `conduct_train.turns` 19 columns, `conduct_live.turns` 21. Train holds
+`label` and `is_attack_event`; live holds `attestation_state`, `decision`, `decision_rule`,
+`decision_attested`. Both correct, neither checked against the other. Recorded in entry 8.
+
+291 tests. Every new refusal was mutated back to its bug and the covering test observed to fail:
+drift-as-licence, the single-digest TOCTOU guard, the missing fingerprint field, and the refusal
+itself. `__pycache__` cleared before each run, since a same-length mutation otherwise reuses
+cached bytecode and reports a false PASS.
+
+Those four are now in `tests/mutate_check.py` rather than only in this log, so the guards stay
+proven rather than having been proven once: 63 mutations, 63 caught, 0 survived. A hand-run
+mutation is evidence about one afternoon. A harness entry is evidence about every afternoon
+after it.
+
+Two engines were available and one ran. Codex found the drift-as-licence bypass, the `refresh`
+TOCTOU, the legacy-chain deadlock and the fingerprint-contract test gap; all four are addressed
+or recorded above. The in-house validator was not run.

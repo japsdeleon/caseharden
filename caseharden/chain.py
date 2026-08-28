@@ -93,6 +93,39 @@ def digest_rows(rows: Dict[str, str]) -> str:
     ).hexdigest()
 
 
+COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def column_name(column: str) -> str:
+    """The bare name of a `name:type` entry, refused unless it is an identifier.
+
+    These names come out of a chain payload and are interpolated into SQL, which
+    query parameters cannot carry: a column list is not a value. The hash walk
+    proves nobody edited the payload after it was written. It does not prove
+    that what was written is safe to concatenate, and the two are different
+    claims.
+    """
+    name = column.split(":", 1)[0]
+    if not COLUMN_RE.match(name):
+        raise ValueError(f"not a usable column name: {name!r}")
+    return name
+
+
+def digest_schema(columns: Sequence[str]) -> str:
+    """Digest of the conduct table's column list, in schema order.
+
+    Order is not sorted away. `TO_JSON_STRING` renders a row in schema order, so
+    reordering two columns changes every row digest, and a fingerprint that
+    sorted its input would call that reorder no change at all.
+
+    This exists so re-attestation can tell two causes apart. Adding a column
+    moves the digest of every cited row, and so does editing one of them. The
+    first is a schema change the operator made and the second is the tamper the
+    chain exists to survive; without this they are the same EVENT-WINDOW break.
+    """
+    return hashlib.sha256("\n".join(columns).encode()).hexdigest()[:ROW_DIGEST_CHARS]
+
+
 def _access_pairs(entries: Sequence[dict]) -> List[str]:
     """A dataset access list reduced to sorted `role:member` strings.
 
@@ -445,6 +478,22 @@ class Evidence:
         """Event id to a digest of that event's whole row."""
         raise NotImplementedError
 
+    def schema_columns(self, dataset: str) -> List[str]:
+        """The conduct table's columns as `name:type`, in schema order."""
+        raise NotImplementedError
+
+    def projected_events(self, dataset: str, start: str, end: str,
+                         columns: Sequence[str]) -> Dict[str, str]:
+        """Row digests computed over `columns` only, ignoring any others.
+
+        This is what makes "the table gained a column" a provable claim rather
+        than an assumed one. Under a schema change every whole-row digest moves,
+        so comparing them says nothing; re-derived over the columns the chain
+        was sealed against, an unedited row still digests to its sealed value
+        and an edited one still does not.
+        """
+        raise NotImplementedError
+
     def access_list(self, dataset: str) -> List[dict]:
         raise NotImplementedError
 
@@ -489,6 +538,39 @@ class BigQueryEvidence(Evidence):
         rows = bq.query(
             f"SELECT event_id,"
             f" SUBSTR(TO_HEX(SHA256(TO_JSON_STRING(t))), 1, {ROW_DIGEST_CHARS}) AS row_digest"
+            f" FROM `{table}` t"
+            f" WHERE ts >= TIMESTAMP(@start) AND ts < TIMESTAMP(@end)"
+            f" ORDER BY event_id",
+            self.project, self.token, params={"start": start, "end": end},
+        )
+        return {r["event_id"]: r["row_digest"] for r in rows}
+
+    def schema_columns(self, dataset: str) -> List[str]:
+        # INFORMATION_SCHEMA rather than a tables.get, because the row digest
+        # above is computed by BigQuery and this has to agree with what BigQuery
+        # thinks the row is. ordinal_position is the order TO_JSON_STRING uses.
+        rows = bq.query(
+            f"SELECT column_name, data_type"
+            f" FROM `{self.project}.{dataset}.INFORMATION_SCHEMA.COLUMNS`"
+            f" WHERE table_name = 'turns'"
+            f" ORDER BY ordinal_position",
+            self.project, self.token,
+        )
+        return [f"{r['column_name']}:{r['data_type']}" for r in rows]
+
+    def projected_events(self, dataset: str, start: str, end: str,
+                         columns: Sequence[str]) -> Dict[str, str]:
+        # TO_JSON_STRING(STRUCT(t.a, t.b, ...)) over the full column list in
+        # schema order is byte-identical to TO_JSON_STRING(t): checked against
+        # conduct_live, 43 rows, zero differing. So a projection onto the sealed
+        # column list reproduces the sealed digest exactly.
+        names = [column_name(c) for c in columns]
+        table = bq.qualified_table(self.project, dataset)
+        struct = ", ".join(f"t.{n}" for n in names)
+        rows = bq.query(
+            f"SELECT event_id,"
+            f" SUBSTR(TO_HEX(SHA256(TO_JSON_STRING(STRUCT({struct})))), 1,"
+            f" {ROW_DIGEST_CHARS}) AS row_digest"
             f" FROM `{table}` t"
             f" WHERE ts >= TIMESTAMP(@start) AND ts < TIMESTAMP(@end)"
             f" ORDER BY event_id",
@@ -590,6 +672,23 @@ class LocalEvidence(Evidence):
     def cited_events(self, dataset: str, start: str, end: str) -> Dict[str, str]:
         return {
             e["event_id"]: row_digest(e)
+            for e in self.events.get(dataset, [])
+            if start <= e["ts"] < end
+        }
+
+    def schema_columns(self, dataset: str) -> List[str]:
+        # A local row is a dict and `row_digest` canonicalises it, which sorts
+        # the keys. So the local schema is the sorted union of the keys, and it
+        # moves when a field is added exactly as the BigQuery one does. No types:
+        # a dict has none, and inventing them would make the double disagree
+        # with production about what a schema change is.
+        return sorted({k for e in self.events.get(dataset, []) for k in e})
+
+    def projected_events(self, dataset: str, start: str, end: str,
+                         columns: Sequence[str]) -> Dict[str, str]:
+        keep = {column_name(c) for c in columns}
+        return {
+            e["event_id"]: row_digest({k: v for k, v in e.items() if k in keep})
             for e in self.events.get(dataset, [])
             if start <= e["ts"] < end
         }
