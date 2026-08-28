@@ -2302,3 +2302,66 @@ after it.
 Two engines were available and one ran. Codex found the drift-as-licence bypass, the `refresh`
 TOCTOU, the legacy-chain deadlock and the fingerprint-contract test gap; all four are addressed
 or recorded above. The in-house validator was not run.
+
+### The console is the triage desk now
+
+`caseharden/workbench.html` is replaced by the third of three design prototypes built on Day 9.
+The prototypes are not committed: they are static, every number baked into a `data.js` captured
+from `--fixture fixtures/v5`, and its own header says throwaway. What shipped is that design
+wired to the live endpoints.
+
+What changed, and what did not:
+
+- The page fetches `/api/state` and `/api/finding` on load instead of reading a baked `WB`
+  object. The prototype's key names already matched the endpoints, because they were captured
+  from them.
+- The verdict box now posts to `/api/chat` and renders **the server's** answer. The prototype
+  hard-coded one sentence about snapshot mode. That sentence would have become a lie the first
+  time the console ran live and a true refusal came back for another reason: a verdict naming
+  the wrong job, an empty message, a Copilot that is down. The page states what it was told.
+- Nine `.k-<KIND>` styles were carried over. `test_all_nine_link_kinds_reach_the_browser`
+  asserts they exist so a kind that reaches the browser cannot draw as unstyled text.
+- The prototype navigator, its keyboard handlers and the `data.js` include are gone.
+- A newer finding is announced in the top bar and **not** applied. Swapping the case out from
+  under a half-written verdict would lose the analyst's words, so reloading is their decision.
+
+The claims the README, DEVPOST and PLAN make about this page were re-checked against the file
+rather than assumed to have survived: two fetches and no third, `/api/chat` the only write, no
+approve affordance, no `verify`, no examiner credential, and nothing loaded that was not served
+with it. 291 tests pass, including the three that assert those properties against the parsed
+module and the page text.
+
+Verified in a browser against `--fixture fixtures/v5`, not only in tests. The strip, the inbox,
+the case pane and the plain-words panel render from the fixture. Clicking a verdict fills the
+box with this case's job id, the subject check goes green on `europe-west3:job_nwzQAhCM1Pq…`,
+and sending returns the server's own 409: "this workbench is running against a fixture. There
+is no fleet to talk to and no review row to write."
+
+**An adversarial pass on the new console found four things, all real.** Two were the console
+claiming outcomes it had not derived, which is the failure the rest of this system exists to
+refuse, and one of those was written during this port.
+
+*A 200 from the Copilot was reported as a stored record.* The reply is not evidence of storage:
+the Copilot normally asks for confirmation first, and its own client says so. The page now reads
+`/api/finding` back and reports "Recorded" only when a decision row is actually there, naming its
+id. Otherwise it says the turn was taken and no record exists yet.
+
+*A failed `review.decisions` lookup was reported as "no verdict recorded".* The server hands back
+`decision: null` plus `decision_error`, and the page read only the first. Not knowing and knowing
+there is none are different answers, and the difference invites a second verdict on top of a
+first. The page now says unknown, and withholds the compose box entirely rather than offering it
+with a warning attached. Same shape as an UNKNOWN attestation: the forward action freezes, the
+rest stays readable.
+
+*A half-written finding file drew an ordinary empty desk.* The server answers 200 with
+`present: false` AND an `error` when the file will not parse, and only `present` was read.
+Verified by serving a truncated finding on a second port: the console now draws "The scan result
+could not be read" over the parse error, not "No scan result has been written yet."
+
+*The sent text was trimmed while the card promised it was sent verbatim.* Trim is now only the
+emptiness test. Confirmed in the browser: the echoed message still ends with the prefill's
+trailing space.
+
+Codex ran; the in-house validator did not. Codex could not run the suite itself, its sandbox
+having no writable temporary directory, so its findings are from reading. All four were
+reproduced here before being fixed.

@@ -1,594 +1,1143 @@
-<!doctype html>
-<!--
-  The analyst workbench. One file, no framework, no build step, no request that
-  leaves this page: everything it draws comes from the server that served it.
+<!-- The analyst console. Served by caseharden/workbench.py and by nothing else.
 
-  It is an operator console. It reads records other components wrote and it
-  submits one verdict, through the deployed Analyst Copilot, which screens the
-  text and writes the row itself. Nothing here is a control the rest of the
-  system trusts.
--->
+     Read-only over the same records the fleet enforces, with exactly one write:
+     the verdict box hands its text to the Analyst Copilot, which screens it and
+     stores what it decides to store. This page writes no review row itself, has
+     no approve affordance, never calls verify, and holds no credential for the
+     sealed exam. It is outside the trust boundary by construction and must
+     never be presented as part of it. -->
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>caseharden — analyst workbench</title>
 <style>
-  :root {
-    --bg: #0d1117; --panel: #131a23; --edge: #222c38; --ink: #c9d4e0;
-    --dim: #7b8896; --accent: #4f9ffb; --good: #3fb950; --bad: #f85149;
-    --warn: #d29922; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  :root{
+    --bg:#eef1f5; --surface:#fff; --rail:#f7f9fb;
+    --ink:#16212c; --dim:#5d6b7a; --faint:#8794a3;
+    --line:#dde4ec; --line2:#c9d4e0;
+    --accent:#1160c4; --accent-soft:#e7f0fc;
+    --bad:#a52218; --bad-soft:#fdecea;
+    --good:#14652f; --good-soft:#e8f6ec;
+    --warn:#845000; --warn-soft:#fff3e0;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 13px/1.45 var(--mono);
+  *{box-sizing:border-box}
+  html,body{max-width:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 var(--sans);padding-bottom:96px;
   }
-  header {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 8px 14px; background: var(--panel);
-    border-bottom: 1px solid var(--edge); position: sticky; top: 0; z-index: 2;
+  code,.mono{font-family:var(--mono);font-size:.92em;overflow-wrap:anywhere}
+  h1,h2,h3{margin:0;line-height:1.25}
+  p{margin:0 0 10px}
+  .wrap{max-width:1380px;margin:0 auto;padding:0 18px}
+
+  /* ---------- top bar ---------- */
+  .topbar{background:#12212f;color:#e8eef5;padding:10px 0}
+  .topbar .wrap{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .brand{font-weight:700;letter-spacing:.10em;font-size:13px}
+  .brand span{font-weight:400;letter-spacing:0;color:#9fb1c4;margin-left:8px}
+  .chip{
+    font:12px/1 var(--sans);padding:5px 9px;border-radius:999px;
+    border:1px solid #38495c;color:#cfdcea;white-space:nowrap;
   }
-  header .name { font-weight: 700; letter-spacing: .06em; }
-  header .sep { color: var(--dim); }
-  .badge {
-    padding: 2px 8px; border-radius: 3px; border: 1px solid var(--edge);
-    text-transform: uppercase; letter-spacing: .05em; font-size: 11px;
+  .chip.live{background:#3a2a10;border-color:#6a4c17;color:#ffd79a}
+  .chip.ok{background:#123322;border-color:#1e5236;color:#a8e6c0}
+  .grow{flex:1 1 auto}
+
+  /* ---------- progress strip ---------- */
+  .strip-shell{background:var(--surface);border-bottom:1px solid var(--line);padding:14px 0 16px}
+  .strip-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+  .strip-head h2{font-size:14px;letter-spacing:.02em}
+  .today{
+    background:var(--accent-soft);border:1px solid #bcd6f5;border-radius:8px;
+    padding:9px 12px;margin:8px 0 12px;font-size:13.5px;color:#11375f;
   }
-  .badge.good { color: var(--good); border-color: #1c3f26; background: #10241608; }
-  .badge.bad  { color: var(--bad);  border-color: #4a1d1d; }
-  .badge.warn { color: var(--warn); border-color: #453413; }
-  .badge.flat { color: var(--dim); }
-  /* minmax(0, …) rather than 1fr: a cited-row table is as wide as its widest
-     account id, and a plain 1fr column takes that as its minimum and steals the
-     width from the two panes beside it. */
-  main {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px; padding: 10px; align-items: start;
+  .track{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 10px}
+  .step{
+    flex:0 0 auto;width:168px;text-align:left;cursor:pointer;
+    background:var(--rail);border:1px solid var(--line);border-radius:9px;
+    padding:9px 10px;font:inherit;color:inherit;position:relative;
   }
-  @media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr); } }
-  section {
-    background: var(--panel); border: 1px solid var(--edge); border-radius: 4px;
-    display: flex; flex-direction: column; max-height: calc(100vh - 90px);
+  .step:hover{border-color:var(--line2)}
+  .step[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+  .step .n{font-size:11px;color:var(--faint);letter-spacing:.08em}
+  .step .plain{font-size:13px;font-weight:600;margin:2px 0 3px}
+  .step .kind{font:11px/1.3 var(--mono);color:var(--dim);overflow-wrap:anywhere}
+  .step .tick{color:var(--good);font-size:11px;margin-top:4px}
+  .step.here{border-color:var(--accent);box-shadow:0 0 0 2px #bcd6f5}
+  .step.here .plain{color:#0d4a99}
+  .arrow{flex:0 0 auto;align-self:center;color:var(--faint);padding-bottom:6px}
+  .steps-after{
+    flex:0 0 auto;width:210px;border:1px dashed var(--line2);border-radius:9px;
+    padding:9px 10px;color:var(--dim);font-size:12.5px;background:#fbfcfd;
   }
-  h2 {
-    margin: 0; padding: 7px 10px; font-size: 11px; font-weight: 700;
-    letter-spacing: .09em; text-transform: uppercase; color: var(--dim);
-    border-bottom: 1px solid var(--edge); display: flex; gap: 8px;
-    justify-content: space-between; align-items: center;
+  .linkdetail{
+    border:1px solid var(--line);border-radius:9px;background:var(--rail);
+    padding:12px 14px;margin-top:2px;
   }
-  .body { overflow: auto; padding: 8px 10px; }
-  table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #1a222c; }
-  th { color: var(--dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
-  td.num { text-align: right; color: var(--dim); }
-  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; }
-  .kv dt { color: var(--dim); }
-  .kv dd { margin: 0; overflow-wrap: anywhere; }
-  .hash { color: var(--accent); }
-  .muted { color: var(--dim); }
-  .fail { color: var(--bad); }
-  .ok { color: var(--good); }
-  details > summary { cursor: pointer; color: var(--dim); outline: none; }
-  pre {
-    margin: 4px 0 0; padding: 6px; background: #0a0e14; border: 1px solid var(--edge);
-    border-radius: 3px; overflow: auto; max-height: 280px; font-size: 11px;
-    white-space: pre-wrap; overflow-wrap: anywhere;
+  .linkdetail h3{font-size:14px;margin-bottom:4px}
+
+  /* ---------- app grid ---------- */
+  .app{display:grid;grid-template-columns:322px minmax(0,1fr);gap:18px;padding:18px 0}
+  @media (max-width:1000px){.app{grid-template-columns:minmax(0,1fr)}}
+
+  /* ---------- inbox rail ---------- */
+  .rail{position:sticky;top:14px;align-self:start}
+  @media (max-width:1000px){.rail{position:static}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .card + .card{margin-top:14px}
+  .card-h{
+    padding:11px 14px;border-bottom:1px solid var(--line);background:var(--rail);
+    font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:700;
   }
-  .link-row td:first-child { color: var(--dim); }
-  .kind {
-    display: inline-block; min-width: 132px; padding: 1px 5px; border-radius: 3px;
-    border: 1px solid var(--edge); font-size: 11px; letter-spacing: .04em;
+  .card-b{padding:14px}
+  .mailrow{
+    display:block;width:100%;text-align:left;background:none;border:0;
+    border-bottom:1px solid var(--line);padding:11px 14px;cursor:pointer;font:inherit;color:inherit;
+    border-left:4px solid transparent;
   }
-  .k-EVIDENCE, .k-EVIDENCE-CHANGED { color: #58a6ff; border-color: #1e3a5f; }
-  .k-FINDING { color: #a371f7; border-color: #35244f; }
-  .k-VERDICT, .k-APPROVAL { color: var(--good); border-color: #1c3f26; }
-  .k-DRAFT { color: var(--ink); }
-  .k-DRAFT-REJECTED, .k-HOLDOUT-DENIED { color: var(--bad); border-color: #4a1d1d; }
-  .k-EXAM { color: var(--warn); border-color: #453413; }
-  .turn { margin-bottom: 8px; }
-  .turn .who { color: var(--dim); font-size: 11px; letter-spacing: .06em; }
-  .turn.analyst .what { color: var(--ink); }
-  .turn.copilot .what { color: #9fd0a2; }
-  .turn.refused .what { color: var(--bad); }
-  textarea {
-    width: 100%; min-height: 76px; background: #0a0e14; color: var(--ink);
-    border: 1px solid var(--edge); border-radius: 3px; padding: 6px;
-    font: 12px/1.45 var(--mono); resize: vertical;
+  .mailrow:last-child{border-bottom:0}
+  .mailrow:hover{background:#f4f8fd}
+  .mailrow[aria-pressed="true"]{background:var(--accent-soft);border-left-color:var(--accent)}
+  .mailrow .top{display:flex;gap:8px;align-items:center}
+  .mailrow .subject{font-weight:700;font-size:14px;flex:1 1 auto}
+  .mailrow.quiet .subject{font-weight:400;color:var(--dim)}
+  .count{
+    font:12px/1 var(--sans);font-weight:700;min-width:24px;text-align:center;
+    padding:4px 7px;border-radius:999px;background:var(--bad-soft);color:var(--bad);
   }
-  button {
-    background: #1b2431; color: var(--ink); border: 1px solid var(--edge);
-    border-radius: 3px; padding: 5px 12px; font: 12px var(--mono); cursor: pointer;
+  .count.zero{background:#eef1f5;color:var(--faint);font-weight:400}
+  .mailrow .prev{font-size:12.5px;color:var(--dim);margin-top:3px}
+  .mailrow .tag{font-size:11px;color:var(--accent);font-weight:700;margin-top:5px}
+  .railnote{padding:11px 14px;font-size:12.5px;color:var(--dim);background:var(--rail);border-top:1px solid var(--line)}
+
+  /* ---------- case pane ---------- */
+  .case h1{font-size:24px;letter-spacing:-.01em}
+  .lede{font-size:16px;color:#25333f;margin-top:8px}
+  .from{font-size:13px;color:var(--dim);margin-bottom:2px}
+  .askbox{
+    background:var(--surface);border:1px solid var(--line);border-left:5px solid var(--accent);
+    border-radius:10px;padding:14px 16px;margin:14px 0;
   }
-  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
-  button:disabled { opacity: .45; cursor: default; }
-  .compose { padding: 8px 10px; border-top: 1px solid var(--edge); }
-  .compose .row {
-    display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap;
+  .askbox h3{font-size:14px;margin-bottom:6px}
+  .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;font-size:13.5px}
+  .facts dt{color:var(--dim)}
+  .facts dd{margin:0;overflow-wrap:anywhere}
+  .tablebox{overflow-x:auto;border:1px solid var(--line);border-radius:9px}
+  table{border-collapse:collapse;width:100%;font-size:12.5px;font-family:var(--mono)}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{background:var(--rail);color:var(--dim);font-family:var(--sans);font-size:12px;font-weight:700;position:sticky;top:0}
+  tr:last-child td{border-bottom:0}
+  td.null{color:var(--faint)}
+  .flag{color:var(--bad);font-weight:700}
+  .quote{border-left:3px solid var(--line2);padding-left:12px;color:#2a3846;font-size:14px}
+  .note{font-size:13px;color:var(--dim)}
+  .warnbox{background:var(--warn-soft);border:1px solid #f0d9a8;border-radius:9px;padding:11px 14px;color:var(--warn);font-size:13.5px}
+  .badbox{background:var(--bad-soft);border:1px solid #f3c9c4;border-radius:9px;padding:11px 14px;color:var(--bad);font-size:13.5px}
+  .goodbox{background:var(--good-soft);border:1px solid #bfe3ca;border-radius:9px;padding:11px 14px;color:var(--good);font-size:13.5px}
+
+  /* ---------- verdict ---------- */
+  .choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .choice{
+    text-align:left;cursor:pointer;font:inherit;color:inherit;padding:14px 16px;
+    background:var(--surface);border:2px solid var(--line2);border-radius:11px;
   }
-  .compose .row button { flex: 0 0 auto; }
-  footer {
-    padding: 6px 14px 14px; color: var(--dim); font-size: 11px;
-    border-top: 1px solid var(--edge); margin-top: 4px;
+  .choice:hover{border-color:var(--accent);background:#f6faff}
+  .choice[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+  .choice .big{font-size:17px;font-weight:700;display:block}
+  .choice .sm{font-size:13px;color:var(--dim);display:block;margin-top:4px}
+  textarea{
+    width:100%;min-height:150px;padding:12px;border:1px solid var(--line2);border-radius:9px;
+    font:13px/1.6 var(--mono);color:var(--ink);background:#fcfdfe;resize:vertical;
   }
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .send{
+    background:var(--accent);color:#fff;border:1px solid #0d4fa3;border-radius:9px;
+    padding:11px 20px;font:600 15px var(--sans);cursor:pointer;
+  }
+  .send:hover{background:#0d54ad}
+  .subjcheck{font-size:13px;margin:8px 0 0;padding:9px 12px;border-radius:8px}
+  .subjcheck.ok{background:var(--good-soft);color:var(--good)}
+  .subjcheck.no{background:var(--bad-soft);color:var(--bad)}
+  .outbox{margin-top:14px}
+  .refusal{background:var(--bad-soft);border:1px solid #f3c9c4;border-left:5px solid var(--bad);border-radius:9px;padding:13px 15px}
+  .refusal h3{font-size:14px;color:var(--bad);margin-bottom:6px}
+  .sentpre{
+    margin:10px 0 0;padding:10px;background:#fff;border:1px solid var(--line);border-radius:7px;
+    font:12px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dim);
+  }
+
+  /* ---------- after / glossary ---------- */
+  ol.after{margin:0;padding-left:20px;font-size:14px}
+  ol.after li{margin-bottom:7px}
+  ol.after b{font-weight:700}
+  .g{
+    border-bottom:1px dotted var(--accent);color:var(--accent);cursor:help;
+    background:none;border-top:0;border-left:0;border-right:0;padding:0;font:inherit;
+  }
+  dl.gloss{margin:0;font-size:13.5px}
+  dl.gloss dt{font-weight:700;margin-top:10px}
+  dl.gloss dt:first-child{margin-top:0}
+  dl.gloss dd{margin:2px 0 0;color:var(--dim)}
+  dl.gloss div.hit{background:#fff6cc;border-radius:6px;padding:4px 6px;margin:-4px -6px}
+  details summary{cursor:pointer;font-weight:700;font-size:13.5px}
+  /* One class per link kind. tests/test_workbench.py asserts all nine exist, so a
+     kind that reaches the browser can never draw as unstyled text. */
+  .k-EVIDENCE, .k-EVIDENCE-CHANGED { color:#58a6ff }
+  .k-FINDING { color:#a371f7 }
+  .k-VERDICT, .k-APPROVAL { color:#2ea043 }
+  .k-DRAFT { color:inherit }
+  .k-DRAFT-REJECTED, .k-HOLDOUT-DENIED { color:#f85149 }
+  .k-EXAM { color:#d29922 }
+  .okbox{border:1px solid #1c3f26;border-left-width:4px;padding:12px 14px;border-radius:6px}
+  .okbox h3{margin:0 0 8px;font-size:15px}
+  .stack > * + *{margin-top:14px}
 </style>
 </head>
 <body>
 
-<header>
-  <span class="name">CASEHARDEN</span>
-  <span class="sep">analyst workbench</span>
-  <span id="mode" class="badge flat">…</span>
-  <span id="version" class="badge flat">version …</span>
-  <span id="state" class="badge flat">state …</span>
-  <span id="promotions" class="badge flat">promotions …</span>
-  <span id="freshness" class="muted"></span>
-  <span id="banner" class="fail"></span>
-</header>
+<div class="topbar">
+  <div class="wrap">
+    <span class="brand">CASEHARDEN<span>analyst workbench</span></span>
+    <span class="grow"></span>
+    <span id="chip-mode" class="chip"></span>
+    <span id="chip-version" class="chip"></span>
+    <span id="chip-attest" class="chip"></span>
+    <span id="newcase" class="chip" style="display:none"></span>
+  </div>
+</div>
 
-<main>
+<div id="fatal" style="display:none" class="wrap">
+  <div class="badbox" style="margin:28px 0;font-size:15px">
+    <b>The page could not load its data.</b><br>
+    <code></code><br>
+    Nothing below is real. This is a broken page, not an empty one. The console reads the
+    chain, the registry and the finding from the server that served it; if that server is
+    not answering, it draws nothing rather than drawing an empty record.
+  </div>
+</div>
 
-  <section>
-    <h2>Finding under review <span id="finding-src" class="muted"></span></h2>
-    <div class="body" id="evidence">waiting for the loop driver…</div>
-  </section>
+<div id="page" style="display:none">
 
-  <section>
-    <h2>Verdict <span class="muted">through the Analyst Copilot</span></h2>
-    <div class="body" id="chat"></div>
-    <div class="compose">
-      <textarea id="say" placeholder="Your verdict, in your own words."></textarea>
-      <div class="row">
-        <button id="send">Send to Copilot</button>
-        <span id="chat-note" class="muted"></span>
+  <!-- progress strip: where a case has got to, and what comes next -->
+  <div class="strip-shell">
+    <div class="wrap">
+      <div class="strip-head">
+        <h2>How a case travels, end to end</h2>
+        <span class="note" id="strip-sub"></span>
+      </div>
+      <div class="today" id="today"></div>
+      <div class="track" id="track"></div>
+      <div class="linkdetail" id="linkdetail"></div>
+    </div>
+  </div>
+
+  <div class="wrap app">
+
+    <!-- ---------------- left rail: the inbox ---------------- -->
+    <div class="rail">
+      <div class="card">
+        <div class="card-h">This morning&rsquo;s scan &mdash; 4 checks</div>
+        <div id="mail"></div>
+        <div class="railnote" id="railnote"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">Plain words</div>
+        <div class="card-b">
+          <details id="glossbox">
+            <summary>What the technical words mean</summary>
+            <dl class="gloss" id="gloss"></dl>
+          </details>
+        </div>
       </div>
     </div>
-  </section>
 
-  <section>
-    <h2>Chain <span id="chain-count" class="muted"></span></h2>
-    <div class="body" id="chain">…</div>
-  </section>
+    <!-- ---------------- right: the open case ---------------- -->
+    <div class="case stack" id="case"></div>
 
-  <section style="grid-column: 1 / -1; max-height: 340px;">
-    <h2>Attestation, and the version registry</h2>
-    <div class="body">
-      <div id="attestation"></div>
-      <div id="registry" style="margin-top: 10px;"></div>
-    </div>
-  </section>
-
-</main>
-
-<footer>
-  Read-only over records other components wrote. Its one write is a message to
-  the deployed Analyst Copilot, which screens the text through Model Armor and
-  writes the review row itself under <code>analyst-sa</code>. This console
-  offers a verdict and stores nothing; what gets stored is decided by the
-  Copilot service, which is also where the approval belongs. It never runs
-  <code>verify</code> and holds no credential for the sealed exam.
-  <span id="attest-source">
-    The attestation above comes from somewhere other than this console.
-  </span>
-</footer>
+  </div>
+</div>
 
 <script>
 "use strict";
 
-const $ = (id) => document.getElementById(id);
-const text = (s) => (s === null || s === undefined) ? "" : String(s);
-
-function el(tag, cls, content) {
-  const node = document.createElement(tag);
-  if (cls) node.className = cls;
-  if (content !== undefined) node.textContent = text(content);
-  return node;
-}
-
-function kv(pairs) {
-  const dl = el("dl", "kv");
-  for (const [k, v] of pairs) {
-    if (v === undefined || v === null || v === "") continue;
-    dl.appendChild(el("dt", null, k));
-    dl.appendChild(el("dd", null, v));
-  }
-  return dl;
-}
-
-function table(headers, rows, rowClass) {
-  const t = el("table");
-  const head = el("tr");
-  headers.forEach((h) => head.appendChild(el("th", null, h)));
-  t.appendChild(head);
-  rows.forEach((cells) => {
-    const tr = el("tr", rowClass || null);
-    cells.forEach((c) => {
-      if (c instanceof Node) {
-        const td = el("td");
-        td.appendChild(c);
-        tr.appendChild(td);
-      } else {
-        tr.appendChild(el("td", null, c));
-      }
-    });
-    t.appendChild(tr);
-  });
-  return t;
-}
-
-function badge(node, label, kind) {
-  node.textContent = label;
-  node.className = "badge " + (kind || "flat");
-}
-
-function detail(summary, payload) {
-  const d = el("details");
-  d.appendChild(el("summary", null, summary));
-  const pre = el("pre", null, JSON.stringify(payload, null, 2));
-  d.appendChild(pre);
-  return d;
-}
-
-// ---------------------------------------------------------------- state
-
+/* One session id per page load, sent with every verdict. The server latches a
+   session once it has named the job under review, so this must not change
+   between the first turn and the confirmation. */
 const SESSION = "wb-" + Math.random().toString(36).slice(2, 10);
-let jobId = null;
-// Which job the compose box was filled for, and with what. A plain "have I
-// prefilled yet" boolean was a page-lifetime latch: a second finding rendered
-// into the same page left the FIRST job's id sitting in the box, which is the
-// subject-mismatch failure this console exists to prevent, handed to the
-// analyst pre-typed. Keyed on the job instead, and the text is kept so an
-// analyst's own words are never overwritten.
-let prefilledFor = null;
-let prefillText = "";
-// null means "whatever the registry says is active", which is what the fleet is
-// enforcing. Clicking a registry row pins the page to one version instead.
+
+/* Selected version. null means "whatever the registry says is active", which is
+   what the fleet is enforcing. */
 let selected = null;
+let WB = null;
 
 async function get(path) {
   const response = await fetch(path, { headers: { "Accept": "application/json" } });
   const body = await response.json().catch(() => null);
-  // The status is read, not ignored. Without this an error body was handed
-  // straight to the render functions, which found no versions, no links and no
-  // mode in it and drew a complete, blank, calm-looking console: no chain, no
-  // registry, state UNKNOWN. An empty chain pane and a real empty chain are the
-  // same picture, which on this console is the worst thing it can do. Throwing
-  // leaves the last good render on screen and puts the reason in the banner.
+  /* The status is read, not ignored. An error body handed straight to the render
+     functions finds no versions, no links and no mode in it, and draws a
+     complete, blank, calm-looking console. An empty pane and a real empty record
+     are the same picture, which on this console is the worst thing it can do. */
   if (!response.ok) {
     throw new Error((body && body.error) || ("HTTP " + response.status + " from " + path));
   }
   return body;
 }
 
-function renderHeader(s) {
-  const a = s.attestation || {};
-  badge($("mode"), s.mode || "?", s.mode === "live" ? "warn" : "flat");
-  badge($("version"), "version " + text(s.version || "—"), "flat");
-
-  const state = text(a.state || "UNKNOWN");
-  const good = a.attested === true;
-  badge($("state"), state, good ? "good" : (state === "QUARANTINED" ? "bad" : "warn"));
-  badge($("promotions"), "promotions " + text(a.promotions || "?"),
-        a.promotions === "OPEN" ? "good" : "flat");
-
-  // The Policy Server caches for 60s and says so on every response. Rendered as
-  // the numbers it sent, never as a ticking clock: an animated timer here would
-  // be this page inventing freshness the server did not report.
-  if (a.offline) {
-    $("freshness").textContent = a.checks_run + " offline checks, no cloud access";
-  } else if (a.checked_s_ago !== undefined) {
-    $("freshness").textContent = "checked " + a.checked_s_ago + "s ago" +
-      (a.cached ? " (cached)" : " (fresh)");
-  } else {
-    $("freshness").textContent = "";
-  }
-
-  // The footer's last sentence is only true in live mode. In fixture mode the
-  // checks below ARE computed in this process, offline, from the directory
-  // alone: there is no Policy Server involved and claiming one would be the
-  // console lying about its own provenance on the page a judge is told to run.
-  $("attest-source").textContent = a.offline
-    ? "In fixture mode the state above is not an attestation at all. It is this "
-      + "process re-checking hashes and the seal offline, in-process, with no "
-      + "Policy Server and no cloud access."
-    : "The attestation above is the Policy Server's answer, not this console's.";
-
-  const errors = Object.entries(s.errors || {}).map(([k, v]) => k + ": " + v);
-  if (a.error) errors.push(text(a.error));
-  $("banner").textContent = errors.join("   |   ");
-}
-
-function renderChain(links) {
-  const target = $("chain");
-  target.textContent = "";
-  $("chain-count").textContent = links.length ? links.length + " links" : "";
-  if (!links.length) {
-    target.appendChild(el("div", "muted", "no chain for this version yet"));
+/* A failed load and an empty record must never draw the same picture. */
+(async function load(){
+  try {
+    const [state, finding] = await Promise.all([
+      get("/api/state" + (selected ? "?version=" + encodeURIComponent(selected) : "")),
+      get("/api/finding"),
+    ]);
+    WB = { state: state, finding: finding };
+  } catch (exc) {
+    const box = document.getElementById("fatal");
+    box.style.display = "";
+    box.querySelector("b").textContent = "The page could not load its data.";
+    box.querySelector("code").textContent = String(exc);
     return;
   }
-  links.forEach((l) => {
-    const row = el("div", "turn");
-    const head = el("div");
-    const kind = el("span", "kind k-" + l.kind, l.kind);
-    head.appendChild(el("span", "muted", String(l.seq).padStart(2, "0") + "  "));
-    head.appendChild(kind);
-    head.appendChild(el("span", "hash", "  " + text(l.hash).slice(0, 12)));
-    if (!l.intact) head.appendChild(el("span", "fail", "  HASH DOES NOT RECOMPUTE"));
-    row.appendChild(head);
-    if (l.written_at) row.appendChild(el("div", "muted", l.written_at));
-    row.appendChild(detail("payload", l.payload));
-    target.appendChild(row);
+  document.getElementById("page").style.display = "";
+  boot();
+})();
+
+function boot(){
+
+// ---------------------------------------------------------------- helpers
+
+const $ = (id) => document.getElementById(id);
+const S = (v) => (v === null || v === undefined) ? "" : String(v);
+
+function el(tag, cls, txt){
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt !== undefined) n.textContent = S(txt);
+  return n;
+}
+/* Build DOM from a tiny spec so no user-supplied string is ever parsed as HTML. */
+function frag(html){ const t = document.createElement("template"); t.innerHTML = html; return t.content; }
+
+/* Every glossed term is a button that opens the Plain words panel on its entry. */
+const GLOSS = [
+  ["fleet", "The group of AI agents doing the day job. Here they handle customer support tickets: nine services, seven of them listed in a registry."],
+  ["agent", "A program driven by a language model that can take actions, like looking up an account or issuing a refund."],
+  ["detector", "A read-only agent that scans what the fleet did and reports what it saw. It only observes. It can never block anything."],
+  ["check family", "The category one detector covers. There are exactly four: cross-tenant, scope-escape, injected-turn and privilege-sequencing."],
+  ["prompt injection", "Text hidden in a message that tries to make an agent follow instructions its owner never gave it."],
+  ["Model Armor", "The screening service that scores incoming text for prompt injection. The score runs from 0 to 1; higher means more suspicious."],
+  ["tenant", "One customer of the platform. t_014 is a customer id. Work for one tenant must never touch another tenant's data."],
+  ["turn", "One step in a conversation: one message, or one tool call the agent made."],
+  ["finding", "What a detector returned: a family, a count, and the id of the database query that produced it, so anyone can re-run it."],
+  ["job id", "The database's receipt for one query. Anyone with access can paste it back in and get the same rows. It is how a claim stays checkable."],
+  ["verdict", "Your call on a finding, in your own words: real abuse, or normal activity. It is a record, not a switch."],
+  ["Analyst Copilot", "The service that takes your text, screens it, and writes the record itself. This console cannot write. It can only hand your words over."],
+  ["chain", "The record of one policy version, as a list of steps. Each step carries a fingerprint of the step before it, so a later edit stops matching."],
+  ["link", "One step in the chain. Nine kinds exist; this version used seven of them."],
+  ["sealed exam", "Held-back attack examples used to grade a proposed rule. Exactly one account can read them, and the rule's author is not that account."],
+  ["attestation", "The live check that every step of the record still reproduces from the warehouse right now. It governs whether a rule counts as justified, never whether it is switched on."],
+  ["snapshot mode", "This build is reading a saved copy of a real run from a folder on disk. Nothing is live, and nothing can be sent."],
+  ["policy version", "One numbered set of deny rules. v5 is the newest. Each version records the version it grew from."]
+];
+function gloss(term, shown){
+  const b = el("button", "g", shown || term);
+  b.type = "button";
+  const entry = GLOSS.find(g => g[0] === term);
+  b.title = entry ? entry[1] : term;
+  b.addEventListener("click", () => openGloss(term));
+  return b;
+}
+function openGloss(term){
+  $("glossbox").open = true;
+  const row = document.querySelector('[data-term="' + term + '"]');
+  if (!row) return;
+  document.querySelectorAll("dl.gloss .hit").forEach(n => n.classList.remove("hit"));
+  row.classList.add("hit");
+  row.scrollIntoView({ block: "center" });
+}
+function renderGloss(){
+  const dl = $("gloss");
+  GLOSS.forEach(([term, meaning]) => {
+    const d = el("div");
+    d.setAttribute("data-term", term);
+    d.appendChild(el("dt", null, term));
+    d.appendChild(el("dd", null, meaning));
+    dl.appendChild(d);
   });
 }
 
-function renderAttestation(a) {
-  const target = $("attestation");
-  target.textContent = "";
-  if (!a) return;
-  const pairs = [
-    ["state", a.state],
-    ["attested", String(a.attested)],
-    ["promotions", a.promotions],
-    ["root", a.root],
-    ["verify seconds", a.verify_seconds],
-    ["checked", a.checked_s_ago === undefined ? "" :
-       a.checked_s_ago + "s ago, " + (a.cached ? "cached" : "fresh")],
-    ["break", a.break],
-    ["break detail", a.break_detail],
-    ["registry mismatch", a.registry_mismatch],
-    ["last known", a.last_known ? JSON.stringify(a.last_known) : ""],
-    ["note", a.note],
-    ["error", a.error],
-  ];
-  target.appendChild(kv(pairs));
-  if (Array.isArray(a.links) && a.links.length) {
-    target.appendChild(table(
-      ["seq", "kind", "status", "mode", "detail"],
-      a.links.map((r) => [r.seq, r.kind, r.status, r.mode, r.detail])));
-  }
-  if (Array.isArray(a.checks_failed) && a.checks_failed.length) {
-    const list = el("div", "fail", a.checks_failed.length + " offline check(s) failed");
-    target.appendChild(list);
-    a.checks_failed.forEach((c) =>
-      target.appendChild(el("div", "fail", "  " + c.title + " " + text(c.detail))));
-  }
+/* "sentence with {term} in it" -> DOM with the term glossed. */
+function say(tag, cls, parts){
+  const n = el(tag, cls);
+  parts.forEach(p => n.appendChild(typeof p === "string" ? document.createTextNode(p) : p));
+  return n;
 }
-
-function renderRegistry(versions, shown, attestation) {
-  const target = $("registry");
-  target.textContent = "";
-  if (!versions || !versions.length) {
-    target.appendChild(el("div", "muted", "no registered versions"));
-    return;
-  }
-  const t = table(
-    ["version", "parent", "active", "state", "root", "promoted", "certificate"],
-    versions.map((v) => [
-      v.version, v.parent || "—",
-      String(v.active).toLowerCase() === "true" ? "ACTIVE" : "",
-      // Only the version being inspected carries a state. Badging every row
-      // would mean one Policy Server verification per registered version on
-      // every poll, and each of those re-scans BigQuery. Click a row to move
-      // the whole page, including this badge, onto that version.
-      v.version === shown ? text((attestation || {}).state || "?") : "",
-      text(v.root).slice(0, 12),
-      v.promoted_at || "",
-      text(v.certificate_uri).split("/").pop() || "",
-    ]));
-  // Row 0 is the header.
-  Array.from(t.rows).slice(1).forEach((row, i) => {
-    const version = versions[i].version;
-    row.style.cursor = "pointer";
-    if (version === shown) row.style.background = "#182230";
-    row.title = "inspect " + version;
-    row.addEventListener("click", () => {
-      selected = version;
-      refreshState();
-    });
+function facts(pairs){
+  const dl = el("dl", "facts");
+  pairs.forEach(([k, v]) => {
+    if (v === "" || v === null || v === undefined) return;
+    dl.appendChild(el("dt", null, k));
+    const dd = el("dd");
+    if (v instanceof Node) dd.appendChild(v); else dd.textContent = S(v);
+    dl.appendChild(dd);
   });
-  target.appendChild(t);
-  target.appendChild(el("div", "muted",
-    "Click a version to inspect its chain and its attestation state. "
-    + (selected ? "Showing " + selected + "; " : "")
-    + "the state column is filled for the inspected version only."));
+  return dl;
+}
+function mono(txt){ return el("span", "mono", txt); }
+function ago(seconds){
+  const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
+  if (h >= 1) return h + " hour" + (h === 1 ? "" : "s") + (m ? " " + m + " minutes" : "");
+  return Math.round(seconds / 60) + " minutes";
+}
+function when(ts){                       /* "1.787774304E9" -> readable UTC */
+  const n = Number(ts);
+  return isFinite(n) ? new Date(n * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC" : S(ts);
 }
 
-function renderEvidence(payload) {
-  const target = $("evidence");
-  target.textContent = "";
-  $("finding-src").textContent = payload.path ? payload.path.split("/").slice(-2).join("/") : "";
+// ---------------------------------------------------------------- the data
 
-  if (!payload.present) {
-    target.appendChild(el("div", "muted",
-      "No finding on disk yet. The loop driver writes it after the fan-out " +
-      "answers, and waits there for this verdict."));
-    if (payload.error) target.appendChild(el("div", "fail", payload.error));
-    jobId = null;
-    return;
-  }
+const state   = WB.state || {};
+const links   = Array.isArray(state.links) ? state.links : [];
+const att     = state.attestation || {};
+const fixture = state.mode === "fixture";
+const box     = WB.finding || {};
+const F       = box.finding || {};
+const REPORT  = S(F.report);
 
-  const f = payload.finding || {};
-  jobId = f.job_id || null;
-
-  // Nothing deletes this file between runs, so a stale one renders exactly like
-  // the finding under review. Say how old it is, and say so loudly past a few
-  // minutes: prefilling a verdict against yesterday's job is the quiet version
-  // of the subject-mismatch failure.
-  if (payload.age_s !== undefined && payload.age_s > 600) {
-    target.appendChild(el("div", "fail",
-      "This file was written " + Math.floor(payload.age_s / 60) + " minutes ago. " +
-      "If a run is not in progress, this is a previous run's finding."));
-  } else if (payload.age_s !== undefined) {
-    target.appendChild(el("div", "muted", "written " + payload.age_s + "s ago"));
-  }
-
-  target.appendChild(kv([
-    ["family", f.family],
-    ["detector", f.detector],
-    ["job id", f.job_id],
-    ["table", f.table],
-    ["window", text(f.window_start) + "  to  " + text(f.window_end)],
-    ["sessions", f.sessions_total],
-    ["cites this incident", String(f.cites_incident_session)],
-  ]));
-
-  const rows = Array.isArray(f.rows) ? f.rows : [];
-  if (rows.length) {
-    // Columns are the union across every row, not the keys of row 0, and a
-    // column is dropped only if some row actually holds an object there.
-    // `typeof null === "object"` in JavaScript, so keying off row 0 alone
-    // deleted any column that happened to be null in the first row, from the
-    // header and from every later row that did have a value. On an evidence
-    // pane that silently hides cited conduct.
-    const keys = [];
-    rows.forEach((r) => Object.keys(r).forEach((c) => {
-      if (!keys.includes(c)) keys.push(c);
-    }));
-    const columns = keys.filter(
-      (c) => !rows.some((r) => r[c] !== null && typeof r[c] === "object"));
-    const nested = keys.filter((c) => !columns.includes(c));
-    target.appendChild(el("div", "muted", rows.length + " cited row(s)"));
-    target.appendChild(table(columns, rows.map((r) => columns.map(
-      (c) => (r[c] === null || r[c] === undefined) ? "—" : text(r[c])))));
-    if (nested.length) {
-      target.appendChild(el("div", "muted",
-        "nested column(s) shown in the full finding below: " + nested.join(", ")));
+/* The four check families, read out of the Copilot's own report text.
+   Nothing here is typed in by hand: if the report cannot be read, the rail
+   says so rather than showing a made-up list. */
+function parseFamilies(report){
+  const out = [];
+  const re = /^-\s*Family:\s*([a-z-]+),\s*Count:\s*(\d+),\s*Job ID:\s*"([^"]+)"/gim;
+  let m;
+  while ((m = re.exec(report))) {
+    if (!out.some(f => f.family === m[1])) {
+      out.push({ family: m[1], count: Number(m[2]), job_id: m[3], note: "", ids: "" });
     }
   }
-  target.appendChild(detail("the detector's whole finding", f));
+  report.split(/^Family:\s*/m).slice(1).forEach(chunk => {
+    const name = (chunk.match(/^([a-z-]+)/) || [])[1];
+    const f = out.find(x => x.family === name);
+    if (!f) return;
+    const note = chunk.match(/^(?:Commonality|Common details):\s*(.+)$/m);
+    const ids  = chunk.match(/^(?:Identifiers|Event IDs[^:]*):\s*(.+)$/m);
+    if (note && !f.note) f.note = note[1].trim();
+    if (ids && !f.ids)  f.ids  = ids[1].trim();
+  });
+  return out;
+}
+const FAMS = parseFamilies(REPORT);
 
-  const d = payload.decision;
-  const note = el("div", null);
-  note.style.marginTop = "10px";
-  if (d) {
-    note.appendChild(el("div", "ok", "verdict recorded: " + text(d.decision_id)));
-    note.appendChild(kv([
-      ["analyst", d.analyst],
-      ["disposition", d.disposition],
-      ["recorded at", d.ts],
-      ["rationale", d.rationale],
-    ]));
-    // Screening is load-bearing here: the Proposer reads this rationale. A row
-    // stored with SCREENING_FAILED looks exactly like a clean one in a flat
-    // field, and the loop driver refuses to continue on it.
-    const armor = String(d.ma_verdict || "").toUpperCase();
-    const bad = ["BLOCK", "SCREENING_FAILED", "NOT_SCREENED", ""].includes(armor);
-    note.appendChild(el("div", bad ? "fail" : "ok",
-      "Model Armor: " + text(d.ma_verdict || "(none)") + " / " + text(d.ma_band) +
-      (bad ? "  — the loop driver refuses to pass this text on" : "")));
-  } else if (payload.near_miss) {
-    // The failure this console exists to prevent, caught while it is still
-    // fixable. Before this, a diverged subject rendered as "no row yet", which
-    // is the same string shown before the analyst has typed anything.
-    const n = payload.near_miss;
-    note.appendChild(el("div", "fail",
-      "A VERDICT row exists for this job under a DIFFERENT subject: " +
-      text(n.subject)));
-    note.appendChild(el("div", "fail",
-      "The driver is waiting for exactly " + text(jobId) + " and will not find " +
-      "that row. Re-file the verdict with the full id, prefix included."));
-    note.appendChild(kv([
-      ["stored as", n.decision_id],
-      ["recorded at", n.ts],
-      ["disposition", n.disposition],
-    ]));
-  } else {
-    note.appendChild(el("div", "muted",
-      "No VERDICT row yet for this finding. The Copilot writes it; nothing else may."));
-  }
-  if (payload.decision_error) note.appendChild(el("div", "fail", payload.decision_error));
-  target.appendChild(note);
+/* Plain-English name for each family. The counts and ids stay as the report gave them. */
+const FAM_PLAIN = {
+  "cross-tenant":         ["One customer's work touching another's", "An agent used a tool on a customer other than the one it was working for."],
+  "scope-escape":         ["An agent going outside what it was allowed", "The session said what it was allowed to do, then called a tool outside that."],
+  "injected-turn":        ["Someone trying to hijack an agent", "A tool call on a turn the screening service scored as an attempt to hijack the agent."],
+  "privilege-sequencing": ["Acting before checking", "The agent changed something it had never read first. Order of operations, not permission."]
+};
 
-  // Re-fill whenever the job changes, and only over an empty box or over a
-  // prefill nobody edited. Anything the analyst typed themselves survives.
-  const current = $("say").value;
-  if (jobId && prefilledFor !== jobId && (current === "" || current === prefillText)) {
-    // The subject is spelled out as an instruction, not just mentioned. The
-    // Copilot's model chooses what it passes to record_verdict, and its tool
-    // docstring offers "the investigation id, or the BigQuery job id", so a
-    // sentence that merely contains the id can still store a normalised one.
-    prefillText =
-      "Record my verdict on this finding. Use exactly this string as the " +
-      "finding argument, including the location prefix, and do not shorten " +
-      "it: " + jobId + "\nDisposition: confirmed abuse. Rationale: ";
-    $("say").value = prefillText;
-    prefilledFor = jobId;
-  }
-  $("chat-note").textContent = jobId
-    ? "subject must be exactly " + jobId
+/* Which family is the case actually waiting for a verdict? Matched by job id,
+   never assumed. */
+const openFam = FAMS.find(f => f.job_id === F.job_id) || null;
+let selected  = openFam ? openFam.family : (FAMS[0] ? FAMS[0].family : null);
+
+const chainFinding = links.find(l => l.kind === "FINDING");
+const chainJob = chainFinding ? S(chainFinding.payload && chainFinding.payload.job_id) : "";
+const sameCase = chainJob && chainJob === S(F.job_id);
+
+// ---------------------------------------------------------------- top chips
+
+$("chip-mode").textContent = fixture
+  ? "SNAPSHOT MODE — reading a saved copy on disk"
+  : "LIVE MODE — reading the running system";
+$("chip-mode").className = "chip " + (fixture ? "" : "live");
+$("chip-version").textContent = "policy version " + S(state.version || "—")
+  + (state.source && state.source.parent ? " (grew from " + state.source.parent + ")" : "");
+$("chip-attest").textContent = att.offline
+  ? "offline re-check: " + S(att.checks_run) + " checks, " + (att.checks_failed || []).length + " failed"
+  : "attestation: " + S(att.state || "unknown");
+$("chip-attest").className = "chip " + ((att.checks_failed || []).length === 0 && att.attested ? "ok" : "");
+
+// ------------------------------------------------------- the progress strip
+
+const STEP_PLAIN = {
+  "EVIDENCE":         ["The rows were pinned down", "The exact window of agent activity this case rests on, plus who could read the sealed exam."],
+  "FINDING":          ["A detector reported", "What the scan found, and the database receipt so anyone can re-run the same query."],
+  "VERDICT":          ["A human said what it was", "A person read the evidence and wrote, in their own words, whether it was abuse."],
+  "DRAFT":            ["A new rule was written", "A separate agent proposed a tightened rule. It only drafts. It cannot approve or switch anything on."],
+  "HOLDOUT-DENIED":   ["The author was locked out", "The database refused the rule's author access to the sealed exam. The refusal is filed as evidence."],
+  "DRAFT-REJECTED":   ["A draft was thrown out", "A proposed rule failed its schema check. The rejection is recorded too."],
+  "EXAM":             ["The rule was graded", "The draft was scored against held-back attacks. Three tests, all required."],
+  "APPROVAL":         ["A human approved it", "A person approved this exact graded result, and that approval is bound to it."],
+  "EVIDENCE-CHANGED": ["The evidence was re-checked", "A later re-check replaced the original evidence step. Nothing was deleted."]
+};
+
+function renderStrip(){
+  $("strip-sub").textContent = links.length
+    ? links.length + " steps recorded for version " + S(state.version)
     : "";
+
+  const today = $("today");
+  today.textContent = "";
+  today.appendChild(say("div", null, [
+    el("b", null, "Where today's case is. "),
+    "A ", gloss("detector"), " has reported (step 2 below). ",
+    el("b", null, "Step 3, your "), gloss("verdict"),
+    el("b", null, ", is what this desk is asking you for. "),
+    "Steps 4 to 7 happen in other services. This console cannot do them and has no password that would let it."
+  ]));
+  if (links.length && !sameCase) {
+    today.appendChild(say("div", null, [
+      el("br"),
+      "The seven steps below are the finished record of the ",
+      el("b", null, "previous"), " case, ", S(state.version), ". Its ",
+      gloss("job id"), " was ", mono(chainJob.slice(0, 34) + "…"),
+      ". Today's case is a different scan, so it has no steps of its own yet."
+    ]));
+  }
+
+  const track = $("track");
+  track.textContent = "";
+
+  if (!links.length) {
+    /* Deliberately different from the load failure at the top of the page. */
+    const empty = el("div", "steps-after");
+    empty.style.width = "100%";
+    empty.textContent = "This version has no recorded steps yet. The data loaded correctly; the chain is genuinely empty.";
+    track.appendChild(empty);
+    $("linkdetail").style.display = "none";
+    return;
+  }
+
+  links.forEach((l, i) => {
+    if (i) track.appendChild(el("span", "arrow", "→"));
+    const plain = STEP_PLAIN[l.kind] || [l.kind, ""];
+    const b = el("button", "step" + (l.kind === "VERDICT" ? " here" : ""));
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(l.seq === detailSeq));
+    b.appendChild(el("div", "n", "STEP " + l.seq));
+    b.appendChild(el("div", "plain", plain[0]));
+    b.appendChild(el("div", "kind", l.kind));
+    b.appendChild(el("div", "tick", l.intact ? "✓ recorded, fingerprint matches" : "✗ fingerprint does not match"));
+    if (!l.intact) b.querySelector(".tick").style.color = "var(--bad)";
+    b.addEventListener("click", () => { detailSeq = l.seq; renderStrip(); renderLinkDetail(); });
+    track.appendChild(b);
+  });
+
+  const after = el("div", "steps-after");
+  after.appendChild(el("b", null, "Then it repeats."));
+  after.appendChild(el("div", null,
+    "A new case starts at step 1 with a fresh scan. Each version records the version it grew from."));
+  track.appendChild(el("span", "arrow", "→"));
+  track.appendChild(after);
 }
 
-// ---------------------------------------------------------------- chat
+let detailSeq = 3;   /* opens on VERDICT: the step this desk is about */
 
-function turn(who, what, cls) {
-  const node = el("div", "turn " + cls);
-  node.appendChild(el("div", "who", who));
-  node.appendChild(el("div", "what", what));
-  $("chat").appendChild(node);
-  $("chat").scrollTop = $("chat").scrollHeight;
+function renderLinkDetail(){
+  const host = $("linkdetail");
+  host.textContent = "";
+  const l = links.find(x => x.seq === detailSeq);
+  if (!l) { host.style.display = "none"; return; }
+  host.style.display = "";
+  const plain = STEP_PLAIN[l.kind] || [l.kind, ""];
+  host.appendChild(el("h3", null, "Step " + l.seq + " — " + plain[0]));
+  host.appendChild(el("p", "note", plain[1]));
+
+  const p = l.payload || {};
+  const rows = [
+    ["recorded at", l.written_at],
+    ["fingerprint", mono(S(l.hash).slice(0, 24) + "…")],
+    ["follows the step before", l.prev_hash ? "yes, it carries step " + (l.seq - 1) + "'s fingerprint" : "nothing before it — this is the first step"]
+  ];
+  if (l.kind === "EVIDENCE")       rows.push(["rows of activity cited", p.row_count], ["window", S(p.window_start) + " to " + S(p.window_end)], ["who can read the sealed exam", (p.access || []).join(", ")]);
+  if (l.kind === "FINDING")        rows.push(["family", p.family], ["sessions", p.sessions_total], ["job id", mono(p.job_id)]);
+  if (l.kind === "VERDICT")        rows.push(["who", p.analyst], ["their call", p.disposition], ["screening of their text", (p.model_armor || {}).verdict + " (" + (p.model_armor || {}).band + ")"], ["their words", p.rationale]);
+  if (l.kind === "DRAFT")          rows.push(["rules in the draft", p.rule_count], ["version", p.version]);
+  if (l.kind === "HOLDOUT-DENIED") rows.push(["what was refused", p.status + " " + p.http_code], ["who was refused", p.principal], ["filed as", p.recorded_as]);
+  if (l.kind === "EXAM")           rows.push(["result", p.verdict], ...(p.checks || []).map(c => [c[0], (c[1] ? "pass — " : "fail — ") + c[2]]));
+  if (l.kind === "APPROVAL")       rows.push(["who", p.approver], ["what they approved", "the graded result at step 6, by its fingerprint"], ["their note", p.note]);
+  host.appendChild(facts(rows));
 }
 
-async function send() {
-  const value = $("say").value.trim();
-  if (!value) return;
-  $("send").disabled = true;
-  turn("analyst", value, "analyst");
-  $("say").value = "";
+// ---------------------------------------------------------------- the inbox
+
+function renderMail(){
+  const host = $("mail");
+  host.textContent = "";
+
+  if (!FAMS.length) {
+    host.appendChild(el("div", "railnote",
+      "The scan report could not be read, so no list of checks is shown. Nothing is invented here."));
+    return;
+  }
+  FAMS.forEach(f => {
+    const plain = FAM_PLAIN[f.family] || [f.family, ""];
+    const b = el("button", "mailrow" + (f.count === 0 ? " quiet" : ""));
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(f.family === selected));
+    const top = el("div", "top");
+    top.appendChild(el("span", "subject", plain[0]));
+    const c = el("span", "count" + (f.count === 0 ? " zero" : ""), f.count);
+    top.appendChild(c);
+    b.appendChild(top);
+    b.appendChild(el("div", "prev", f.count === 0 ? "Nothing found" : plain[1]));
+    if (openFam && f.family === openFam.family) b.appendChild(el("div", "tag", "WAITING FOR YOUR VERDICT"));
+    b.addEventListener("click", () => { selected = f.family; renderMail(); renderCase(); window.scrollTo({top:0}); });
+    host.appendChild(b);
+  });
+
+  const total = FAMS.reduce((a, f) => a + f.count, 0);
+  const note = $("railnote");
+  note.textContent = "";
+  note.appendChild(say("span", null, [
+    "Four ", gloss("detector", "detectors"), " scanned the same 72 hours of what the ",
+    gloss("fleet"), " did. ", el("b", null, String(total)), " events flagged in total. ",
+    "A detector only looks. It cannot block anything."
+  ]));
+}
+
+// ---------------------------------------------------------------- the case
+
+function renderCase(){
+  const host = $("case");
+  host.textContent = "";
+  const fam = FAMS.find(f => f.family === selected);
+
+  /* A failed read and an empty desk are different pictures. The server answers
+     200 with present:false AND an error when the finding file is half-written or
+     malformed, and calling that "nothing has arrived yet" is the same mistake as
+     drawing an empty pane for a failed fetch. */
+  if (box.error) {
+    host.appendChild(el("h1", null, "The scan result could not be read"));
+    host.appendChild(el("p", "lede",
+      "This is a broken read, not an empty desk. Nothing below is missing because nothing "
+      + "happened; it is missing because the file could not be parsed."));
+    host.appendChild(el("div", "badbox", S(box.error)));
+    host.appendChild(el("p", "note",
+      "If a run is writing the file right now, this clears on its own within a few seconds."));
+    return;
+  }
+  if (!box.present) {
+    host.appendChild(el("h1", null, "Nothing on the desk"));
+    host.appendChild(el("p", "lede", "No scan result has been written yet. When one arrives it appears here."));
+    return;
+  }
+  if (!fam) {
+    host.appendChild(el("h1", null, "Nothing selected"));
+    return;
+  }
+
+  const isOpen = openFam && fam.family === openFam.family;
+  const plain = FAM_PLAIN[fam.family] || [fam.family, ""];
+
+  // ---- headline. Only the open case knows which detector answered; the other
+  // families are named by their own report line, never by this one's detector.
+  host.appendChild(el("div", "from", isOpen
+    ? "From: " + S(F.detector) + "   ·   check family: " + fam.family
+    : "From: the " + fam.family + " detector"));
+  host.appendChild(el("h1", null,
+    fam.count === 0 ? plain[0] + " — nothing found" : fam.count + " flagged: " + plain[0].toLowerCase()));
+
+  // ---- empty folder
+  if (fam.count === 0) {
+    host.appendChild(el("p", "lede", plain[1]));
+    host.appendChild(el("div", "goodbox",
+      "This check ran and came back with nothing. That is a result, not a gap: the query id below "
+      + "lets anyone re-run the same search and get the same empty answer."));
+    const c = el("div", "card"); c.appendChild(el("div", "card-h", "What the detector said"));
+    const cb = el("div", "card-b");
+    cb.appendChild(facts([["in its own words", fam.note], ["query receipt (job id)", mono(fam.job_id)]]));
+    c.appendChild(cb); host.appendChild(c);
+    host.appendChild(notThisCase());
+    return;
+  }
+
+  // ---- summary
+  host.appendChild(say("p", "lede", [
+    "A ", gloss("detector"), " scanned the last 72 hours of what the ", gloss("fleet"),
+    " did and flagged ", el("b", null, String(fam.count)),
+    fam.count === 1 ? " event. " : " events. ",
+    fam.note
+  ]));
+
+  if (!isOpen) {
+    host.appendChild(el("div", "warnbox",
+      "This desk has this check's summary, but not its cited rows. The cited rows on this desk "
+      + "belong to the case that is waiting for a verdict, which is a different check. "
+      + "This one has its own query id, so its rows can be pulled from the database directly."));
+    const c = el("div", "card"); c.appendChild(el("div", "card-h", "What the detector said"));
+    const cb = el("div", "card-b");
+    cb.appendChild(facts([
+      ["in its own words", fam.note],
+      ["identifiers named", fam.ids],
+      ["query receipt (job id)", mono(fam.job_id)]
+    ]));
+    c.appendChild(cb); host.appendChild(c);
+    host.appendChild(notThisCase());
+    return;
+  }
+
+  // ---- the open case: what you are being asked
+  const ask = el("div", "askbox");
+  ask.appendChild(el("h3", null, "What you are being asked to do"));
+  ask.appendChild(say("p", null, [
+    "Read the evidence below, then say in your own words whether this is real abuse or normal activity. ",
+    "Your answer changes nothing on its own. Nothing gets blocked, unblocked or deployed because of it. ",
+    "It is a ", el("b", null, "record"), " — and the next step in the chain cannot start without it."
+  ]));
+  ask.appendChild(say("p", "note", [
+    "This console cannot write that record. It hands your words to the ", gloss("Analyst Copilot"),
+    ", which screens them and writes the row itself."
+  ]));
+  host.appendChild(ask);
+
+  // ---- freshness of the file, stated as the numbers given
+  if (box.age_s !== undefined) {
+    const stale = box.age_s > 600;
+    host.appendChild(el(stale ? "div" : "div", stale ? "warnbox" : "note",
+      stale
+        ? "Careful: this scan result was written " + ago(box.age_s) + " ago. If no investigation is "
+          + "running right now, you are looking at a previous run, not a live one."
+        : "This scan result was written " + ago(box.age_s) + " ago."));
+  }
+
+  // ---- the facts
+  const c1 = el("div", "card");
+  c1.appendChild(el("div", "card-h", "The case in numbers"));
+  const c1b = el("div", "card-b");
+  c1b.appendChild(facts([
+    ["what was flagged", say("span", null, [gloss("check family"), ": ", mono(F.family)])],
+    ["which detector", mono(F.detector)],
+    ["time window", S(F.window_start) + "  to  " + S(F.window_end) + "  (72 hours)"],
+    ["conversations involved", S(F.sessions_total) + " sessions"],
+    ["rows shown below", (F.rows || []).length + " of them, cited in full"],
+    ["where the rows live", mono(F.table)],
+    ["query receipt (job id)", say("span", null, [mono(F.job_id), " — ", gloss("job id", "what is this?")])]
+  ]));
+  c1.appendChild(c1b);
+  host.appendChild(c1);
+
+  // ---- cited rows
+  const c2 = el("div", "card");
+  c2.appendChild(el("div", "card-h", "The actual conduct, row by row"));
+  const c2b = el("div", "card-b");
+  c2b.appendChild(say("p", "note", [
+    "Each row is one ", gloss("turn"), " the agent took. ",
+    el("b", null, "ma_prompt_injection_score"), " is what ", gloss("Model Armor"),
+    " scored the incoming text: 0.95 out of 1 means it looks very much like ", gloss("prompt injection"), ". ",
+    el("b", null, "tenant_id"), " is the customer. Scroll sideways inside the box to see every column."
+  ]));
+  const rows = Array.isArray(F.rows) ? F.rows : [];
+  if (!rows.length) {
+    c2b.appendChild(el("div", "warnbox", "The detector cited no individual rows for this finding."));
+  } else {
+    /* Columns are the union across all rows: keying off row 0 would drop any
+       column that happens to be null in the first row, hiding cited conduct. */
+    const keys = [];
+    rows.forEach(r => Object.keys(r).forEach(k => { if (!keys.includes(k)) keys.push(k); }));
+    const t = el("table");
+    const hr = el("tr");
+    keys.forEach(k => hr.appendChild(el("th", null, k === "ts" ? "ts (shown as UTC time)" : k)));
+    t.appendChild(hr);
+    rows.forEach(r => {
+      const tr = el("tr");
+      keys.forEach(k => {
+        const v = r[k];
+        if (v === null || v === undefined) { tr.appendChild(el("td", "null", "—")); return; }
+        const td = el("td", null, k === "ts" ? when(v) : S(v));
+        if (k === "ts") td.title = "raw value in the row: " + S(v);
+        if (k === "ma_prompt_injection_score" && Number(v) >= 0.75) td.className = "flag";
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    const scroller = el("div", "tablebox");
+    scroller.appendChild(t);
+    c2b.appendChild(scroller);
+    c2b.appendChild(el("p", "note",
+      rows.length + " rows cited here. The detector listed " + S(F.sessions_total)
+      + " sessions in total for this family."));
+  }
+  c2.appendChild(c2b);
+  host.appendChild(c2);
+
+  // ---- the copilot's read of it
+  const pat = REPORT.match(/\*\*Most Serious Pattern:\*\*\s*\n([\s\S]*?)\n\s*\*\*To Disagree:\*\*\s*\n([\s\S]*?)(?=\nInvestigate |\nFamily:|$)/);
+  if (pat) {
+    const c3 = el("div", "card");
+    c3.appendChild(el("div", "card-h", "How the report reads it, and how you could disagree"));
+    const c3b = el("div", "card-b");
+    c3b.appendChild(el("h3", null, "The worst thing it sees"));
+    c3b.appendChild(el("p", "quote", pat[1].trim()));
+    c3b.appendChild(el("h3", null, "What would make this benign"));
+    c3b.appendChild(el("p", "quote", pat[2].trim()));
+    c3b.appendChild(el("p", "note",
+      "Both paragraphs are the report's own words, shown unedited. They are an argument, not a finding. "
+      + "The rows above are the finding."));
+    c3.appendChild(c3b);
+    host.appendChild(c3);
+  }
+
+  // ---- prior verdict state
+  const c4 = el("div", "card");
+  c4.appendChild(el("div", "card-h", "Has anyone ruled on this already?"));
+  const c4b = el("div", "card-b");
+  if (box.decision_error) {
+    /* The lookup against review.decisions failed. Saying "no verdict recorded"
+       here would invite a second one to be filed on top of a first. Not knowing
+       and knowing there is none are different answers. */
+    c4b.appendChild(el("div", "badbox",
+      "Unknown. The check for an existing verdict did not complete, so this page cannot say "
+      + "whether one exists. It is not saying there is none."));
+    c4b.appendChild(el("p", "note", S(box.decision_error)));
+  } else if (box.decision) {
+    c4b.appendChild(el("div", "goodbox", "A verdict is already recorded: " + S(box.decision.decision_id)));
+  } else if (box.near_miss) {
+    c4b.appendChild(el("div", "badbox",
+      "A verdict exists, but it was filed against a different id: " + S(box.near_miss.subject)
+      + ". Nothing is waiting on that row. File it again with the id exactly as written above."));
+  } else {
+    c4b.appendChild(el("div", "note",
+      "No. No verdict has been recorded for this case. The Copilot writes that row when it accepts your text; nothing else may write it."));
+  }
+  c4.appendChild(c4b);
+  host.appendChild(c4);
+
+  host.appendChild(verdictCard());
+  host.appendChild(afterCard());
+  host.appendChild(attestCard());
+}
+
+function notThisCase(){
+  const d = el("div", "note");
+  d.appendChild(say("span", null, [
+    "No ", gloss("verdict"), " is being asked for on this check. The case waiting for you is ",
+    el("b", null, openFam ? (FAM_PLAIN[openFam.family] || [openFam.family])[0].toLowerCase() : "elsewhere"),
+    " — pick it in the list on the left. A verdict must name one exact case, and naming the wrong one files it against nothing."
+  ]));
+  return d;
+}
+
+// ---------------------------------------------------------------- verdict
+
+function verdictCard(){
+  const c = el("div", "card");
+  c.appendChild(el("div", "card-h", "Your verdict"));
+  const b = el("div", "card-b stack");
+
+  if (box.decision_error) {
+    /* Freeze the forward action, keep everything else readable. Same shape as an
+       UNKNOWN attestation: enforcement unchanged, promotion frozen. Offering a
+       compose box here invites a second verdict on top of one that may exist. */
+    b.appendChild(el("div", "badbox",
+      "Held. The check for an existing verdict did not complete, so filing one now could "
+      + "duplicate a verdict already on this case. The box is withheld on purpose rather "
+      + "than offered with a warning attached. Reload once the lookup succeeds."));
+    c.appendChild(b);
+    return c;
+  }
+
+  b.appendChild(say("p", null, [
+    "Pick one. It writes a draft message for you, with this case's exact id already in it. ",
+    el("b", null, "Read it, change any of it, add your reasons"), " — then send. What you see in the box is exactly what gets sent."
+  ]));
+
+  const choices = el("div", "choices");
+  const mk = (key, big, sm) => {
+    const btn = el("button", "choice");
+    btn.type = "button";
+    btn.dataset.key = key;
+    btn.appendChild(el("span", "big", big));
+    btn.appendChild(el("span", "sm", sm));
+    btn.addEventListener("click", () => fill(key));
+    choices.appendChild(btn);
+    return btn;
+  };
+  mk("confirmed abuse", "Yes — this is abuse",
+     "The flagged activity is real misuse. Say why, so the next step has your reasoning.");
+  mk("benign", "No — this is normal",
+     "The check fired on legitimate activity. Say why, so the same pattern is not chased again.");
+  b.appendChild(choices);
+
+  const ta = el("textarea");
+  ta.id = "msg";
+  ta.setAttribute("aria-label", "The message that will be sent");
+  ta.placeholder = "Pick one above to start, or write your own. The message must contain this case's id exactly.";
+  b.appendChild(ta);
+
+  const check = el("div", "subjcheck no");
+  check.id = "subjcheck";
+  b.appendChild(check);
+
+  const row = el("div");
+  row.style.cssText = "display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:4px";
+  const send = el("button", "send", "Send to the Analyst Copilot");
+  send.type = "button";
+  send.addEventListener("click", trySend);
+  row.appendChild(send);
+  row.appendChild(say("span", "note", [
+    "It is sent to the ", gloss("Analyst Copilot"), ", not written by this page."
+  ]));
+  b.appendChild(row);
+
+  if (fixture) {
+    b.appendChild(say("div", "warnbox", [
+      el("b", null, "This send will be refused, and here is why. "),
+      "This build is in ", gloss("snapshot mode"),
+      ": it is reading a saved copy of a real run from a folder, so there is no Copilot service on the "
+      + "other end and no password to talk to one with. The server refuses the send. The button is left "
+      + "working on purpose, so you can see the refusal rather than guess at a grey button."
+    ]));
+  }
+
+  const out = el("div", "outbox");
+  out.id = "outbox";
+  b.appendChild(out);
+
+  c.appendChild(b);
+  setTimeout(checkSubject, 0);
+  return c;
+}
+
+function fill(key){
+  const ta = $("msg");
+  if (!ta) return;
+  document.querySelectorAll(".choice").forEach(n =>
+    n.setAttribute("aria-pressed", String(n.dataset.key === key)));
+  /* The subject is spelled out as an instruction, not merely mentioned: the
+     Copilot chooses what it passes on, and a sentence that only contains the id
+     can still be stored in a shortened form. */
+  ta.value =
+    "Record my verdict on this finding. Use exactly this string as the finding "
+    + "argument, including the location prefix, and do not shorten it: " + S(F.job_id)
+    + "\nDisposition: " + key + ". Rationale: ";
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  checkSubject();
+}
+
+function checkSubject(){
+  const ta = $("msg"), out = $("subjcheck");
+  if (!ta || !out) return;
+  const ok = S(F.job_id) && ta.value.includes(S(F.job_id));
+  out.className = "subjcheck " + (ok ? "ok" : "no");
+  out.textContent = "";
+  if (ok) {
+    out.appendChild(document.createTextNode("Good. The message names this case exactly: "));
+    out.appendChild(mono(S(F.job_id)));
+  } else {
+    out.appendChild(document.createTextNode(
+      "The message does not yet contain this case's id, exactly as written, prefix and all: "));
+    out.appendChild(mono(S(F.job_id)));
+    out.appendChild(document.createTextNode(
+      ". Shortened or missing, the record is filed against nothing and the case stays open."));
+  }
+}
+document.addEventListener("input", e => { if (e.target && e.target.id === "msg") checkSubject(); });
+
+async function trySend(){
+  const ta = $("msg"), out = $("outbox");
+  if (!ta || !out) return;
+  /* Sent unchanged. The card promises that what is in the box is what is sent, so
+     the trim is only ever a test for emptiness and never the payload. */
+  const text = ta.value;
+  out.textContent = "";
+  if (!text.trim()) {
+    out.appendChild(el("div", "warnbox", "Nothing to send yet. Pick a verdict above, or write your own."));
+    return;
+  }
+  /* The refusal is the server's, not this page's. The prototype hard-coded one
+     sentence about snapshot mode, which would have been a lie the moment the
+     console ran live and a true refusal came back for some other reason: a
+     verdict naming the wrong job, an empty message, a Copilot that is down. The
+     page states what it was told and never guesses. */
+  const button = out.parentElement.querySelector(".send");
+  if (button) button.disabled = true;
+  let ok = false, detail = "";
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: value, session: SESSION }),
+      body: JSON.stringify({ text: text, session: SESSION }),
     });
-    const body = await response.json();
-    if (!response.ok) {
-      turn("refused", body.error || ("HTTP " + response.status), "refused");
-      $("say").value = value;
+    const body = await response.json().catch(() => null);
+    ok = response.ok;
+    detail = (body && (ok ? body.reply : body.error))
+             || ("HTTP " + response.status + ", and no reason in the body");
+  } catch (exc) {
+    detail = String(exc);
+  }
+  if (button) button.disabled = false;
+
+  if (ok) {
+    /* A 200 means the Copilot took the turn. It does NOT mean a row was written:
+       the Copilot normally asks for confirmation first, and its own client says
+       the reply is not evidence of storage. Claiming "recorded" here would be
+       this console asserting an outcome it did not derive, which is the exact
+       failure the rest of this system exists to refuse. So the record is looked
+       up, and only a real decision row is reported as one. */
+    const r = el("div", "okbox");
+    let stored = null;
+    try {
+      const later = await get("/api/finding");
+      if (later && later.decision && !later.decision_error) stored = later.decision;
+    } catch (exc) {
+      /* The lookup failed. That is not a reason to claim either outcome. */
+    }
+    if (stored) {
+      r.appendChild(el("h3", null, "Recorded. The Copilot wrote the row."));
+      r.appendChild(say("p", null, [
+        "Confirmed by reading the record back, not by the reply alone. Decision id ",
+        mono(S(stored.decision_id)), ". The ", gloss("Analyst Copilot"),
+        " wrote it under its own identity; this page wrote nothing."
+      ]));
     } else {
-      turn("copilot", body.reply || "(no text in the reply)", "copilot");
+      r.appendChild(el("h3", null, "Sent. No record for this case yet."));
+      r.appendChild(say("p", null, [
+        "The ", gloss("Analyst Copilot"), " took the turn and replied. No verdict row for this "
+        + "case is in the record yet, which usually means it is asking you to confirm. Read the "
+        + "reply and answer it. This page does not claim a record it cannot see."
+      ]));
+    }
+    r.appendChild(el("p", "note", "What the Copilot said:"));
+    r.appendChild(el("pre", "sentpre", detail));
+    out.appendChild(r);
+  } else {
+    const r = el("div", "refusal");
+    r.appendChild(el("h3", null, "Refused. Nothing was recorded."));
+    r.appendChild(el("p", "note", "The server's reason, verbatim:"));
+    r.appendChild(el("pre", "sentpre", detail));
+    r.appendChild(say("p", null, [
+      "Against the running system this button hands the text to the ", gloss("Analyst Copilot"),
+      ". That service screens it, then writes the record itself. This page never writes anything."
+    ]));
+    r.appendChild(el("p", "note", "What you composed, unchanged and still in the box above:"));
+    r.appendChild(el("pre", "sentpre", text));
+    out.appendChild(r);
+  }
+  out.scrollIntoView({ block: "nearest" });
+}
+
+// ---------------------------------------------------------------- after
+
+function afterCard(){
+  const c = el("div", "card");
+  c.appendChild(el("div", "card-h", "What happens after you send, and who does it"));
+  const b = el("div", "card-b");
+  b.appendChild(el("p", "note", "None of this happens on this page. There is no button here for any of it."));
+  const ol = el("ol", "after");
+  const step = (who, what) => {
+    const li = el("li");
+    li.appendChild(el("b", null, who + " "));
+    li.appendChild(document.createTextNode(what));
+    ol.appendChild(li);
+  };
+  step("The Copilot", "screens your words for anything that looks like an attempt to manipulate the next agent, then writes your verdict into the record.");
+  step("A drafting agent", "reads your verdict and proposes a tightened rule. It can read past activity. It is deliberately locked out of the held-back exam, and that lockout is filed as evidence.");
+  step("The grader", "scores the draft against held-back attacks. Three tests, all required: it must catch more attacks, it must not start blocking normal activity, and it must still block everything the current rule blocks.");
+  step("A person", "approves the graded result, and that approval is tied to that exact result.");
+  step("The rule", "becomes the version in force, and the whole trail is sealed into storage that cannot be edited afterwards, even by the project's owner.");
+  b.appendChild(ol);
+  c.appendChild(b);
+  return c;
+}
+
+// ---------------------------------------------------------------- record health
+
+function attestCard(){
+  const c = el("div", "card");
+  c.appendChild(el("div", "card-h", "Is the record itself trustworthy?"));
+  const b = el("div", "card-b stack");
+  const failed = Array.isArray(att.checks_failed) ? att.checks_failed : [];
+
+  if (att.offline) {
+    b.appendChild(say("p", null, [
+      el("b", null, "This is an offline re-check, not an "), gloss("attestation"), el("b", null, "."), " ",
+      S(att.checks_run), " checks ran against the saved folder alone, and ",
+      el("b", null, failed.length === 0 ? "none failed" : failed.length + " failed"), ". ",
+      "That proves the saved record has not been edited since it was written."
+    ]));
+    b.appendChild(el("div", "warnbox",
+      "It does not prove the record was true when it was written. Only a live check against the "
+      + "warehouse can do that, and this console never runs one: it holds no password for it."));
+    if (att.note) b.appendChild(el("p", "quote", att.note));
+  } else {
+    b.appendChild(el("p", null, "State reported by the Policy Server: " + S(att.state)
+      + ". This console did not compute it and cannot."));
+  }
+
+  if (failed.length) {
+    const bad = el("div", "badbox");
+    bad.appendChild(el("b", null, failed.length + " check(s) failed:"));
+    failed.forEach(f => bad.appendChild(el("div", null, "· " + S(f.title || f) + " " + S(f.detail || ""))));
+    b.appendChild(bad);
+  }
+
+  b.appendChild(facts([
+    ["version", att.version],
+    ["fingerprint of the whole chain", mono(S(att.root).slice(0, 32) + "…")],
+    ["sealed copy", state.source ? mono(state.source.certificate_uri) : ""],
+    ["promoted at", state.source ? state.source.promoted_at : ""],
+    ["further promotions", S(att.promotions) === "n/a"
+      ? "not applicable in snapshot mode — a saved folder has nothing to promote" : S(att.promotions)]
+  ]));
+
+  const versions = Array.isArray(state.versions) ? state.versions : [];
+  const d = el("details");
+  d.appendChild(el("summary", null, "Registered versions (" + versions.length + ")"));
+  if (!versions.length) {
+    d.appendChild(el("p", "note", "No versions are registered in this saved copy."));
+  } else {
+    versions.forEach(v => d.appendChild(facts([
+      ["version", S(v.version) + (v.parent ? "  (grew from " + v.parent + ")" : "")],
+      ["in force", S(v.active).toLowerCase() === "true" ? "yes" : "not marked active in this copy"],
+      ["fingerprint", mono(S(v.root).slice(0, 32) + "…")],
+      ["promoted at", v.promoted_at]
+    ])));
+  }
+  b.appendChild(d);
+  c.appendChild(b);
+  return c;
+}
+
+// ---------------------------------------------------------------- go
+
+renderGloss();
+renderStrip();
+renderLinkDetail();
+renderMail();
+renderCase();
+
+/* The finding file changes mid-run. A poll that swapped the case out from under
+   a half-written verdict would lose the analyst's words, so a newer finding is
+   announced and not applied. Reloading is the analyst's decision. */
+const BOOT_JOB = S(F.job_id);
+async function refreshFinding(){
+  try {
+    const later = await get("/api/finding");
+    const now = S((later && later.finding && later.finding.job_id) || "");
+    if (now && now !== BOOT_JOB) {
+      const chip = $("newcase");
+      chip.style.display = "";
+      chip.textContent = "a newer finding is under review \u2014 reload";
+      chip.title = now;
     }
   } catch (exc) {
-    turn("refused", String(exc), "refused");
-    $("say").value = value;
-  }
-  $("send").disabled = false;
-  refreshFinding();
-}
-
-$("send").addEventListener("click", send);
-$("say").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
-});
-
-// ---------------------------------------------------------------- polling
-
-async function refreshState() {
-  try {
-    const s = await get("/api/state" +
-      (selected ? "?version=" + encodeURIComponent(selected) : ""));
-    renderHeader(s);
-    renderChain(s.links || []);
-    renderAttestation(s.attestation);
-    renderRegistry(s.versions, s.version, s.attestation);
-  } catch (exc) {
-    $("banner").textContent = String(exc);
+    /* A failed poll leaves the last good render on screen. It must never blank
+       a pane: an empty pane and an empty record are the same picture here. */
   }
 }
-
-async function refreshFinding() {
-  try {
-    renderEvidence(await get("/api/finding"));
-  } catch (exc) {
-    $("banner").textContent = String(exc);
-  }
-}
-
-refreshState();
-refreshFinding();
-// The finding file changes mid-run; the chain and the registry change once, at
-// the promotion. Polled at the rate each actually moves.
 setInterval(refreshFinding, 3000);
-setInterval(refreshState, 10000);
+
+}
 </script>
 </body>
 </html>
