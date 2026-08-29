@@ -28,3 +28,6 @@ infra/fleet.env
 
 # the agents venv, pinned into agents/requirements.txt instead
 .venv-agents/
+
+# static mockups, baked from a fixture capture; never shipped, never filmed
+prototypes/
