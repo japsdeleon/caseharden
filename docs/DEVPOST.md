@@ -180,8 +180,8 @@ until it passes is the tuning the Proposer and Examiner split exists to prevent.
 the fleet enforces today is the one the gate let through, not the newest one drafted
 (`captures/day8-gate-refuses-v6-no-improvement.txt`).
 
-Every number published is measured. `verify` p95 is 3.66s against a 5s target. 291 tests. 63
-mutations broken on purpose and all 63 caught, including one that survived its first run and
+Every number published is measured. `verify` p95 is 3.66s against a 5s target. 300 tests. 65
+mutations broken on purpose and all 65 caught, including one that survived its first run and
 now has two tests.
 
 ## What I learned
