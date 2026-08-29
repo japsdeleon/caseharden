@@ -61,9 +61,10 @@ BigQuery. An orchestrator then reads Agent Registry at container start, names no
 anywhere in its source, and fans an investigation out over A2A (the agent-to-agent protocol)
 to whatever the roster lists. Four detectors answer in parallel. Each returns a finding and
 the BigQuery job id that produced it, so a reviewer re-runs the query instead of trusting a
-summary. W3C trace context rides the fan-out, so one investigation is one Cloud Trace trace:
-361 spans across the orchestrator and all four detectors, and every conduct row and chain
-link carries the trace id that opens it.
+summary. W3C trace context rides the fan-out, so one investigation is one Cloud Trace trace.
+Every conduct row carries the trace id that opens it, the fleet proof asserts a 60-span DAG
+resolves in Cloud Trace, and the build log records one fan-out at 361 spans across the
+orchestrator and all four detectors.
 
 The finding reaches a human analyst, who records one verdict in the Agent Development Kit's
 (ADK) own chat window. That is the first human turn; the second is the approval that ends the
@@ -74,16 +75,18 @@ into every promoted chain as its own link, so the record attests to what was pre
 deterministic Examiner, not a model, scores the draft against that sealed holdout under a
 different service account, over 40 labelled attack sessions and 640 legitimate turns, and
 applies a three-leg gate: blocked attacks must go up, the benign pass rate must not fall, and
-the new version must only narrow authority. A candidate that fails the gate never enters the
-record at all.
+the new version must only narrow authority. A failed candidate is never promoted; when a later
+attempt passes, the failures are sealed into the same chain beside the approval, and when none
+passes the chain stays untouched.
 
 **The gate holds at 30 of 40, and that is a property of the language rather than a shortfall.**
 The sealed holdout carries ten attack sessions for each of four check families. Three families
 are expressible as rules over a single conduct event. The fourth is a read and a write inside
 one session, which is a self-join and not a field, so no predicate in this DSL reaches it. No
-version of the policy can deny those ten without also blocking legitimate work: the one
-candidate that caught one of them was refused by the gate for exactly that
-(`captures/day5-gate-refuses-the-proposer.txt`). The ceiling sits under the best-evidenced
+version of the policy can deny those ten without also blocking legitimate work: every
+candidate that has caught any of them was refused by the gate on the benign leg
+(`captures/day5-gate-refuses-the-proposer.txt`,
+`captures/day5-gate-refuses-overblocking.txt`). The ceiling sits under the best-evidenced
 attack shape in the field — the AppOmni sequence from Inspiration is a privileged read
 followed by a write — which is why the session-scoped predicate is first in What's next, and
 why `THREATS.md` names this hole twice. The system knows where its own ceiling is and can show
@@ -121,9 +124,9 @@ This is the Fortified Enterprise Fleet track. Its five themes, one row each:
 |---|---|---|
 | Corporate agent discovery | the orchestrator reads Agent Registry at boot and names no detector in its source; each entry carries its policy version's chain root | `captures/day7-fleet-proof-all-held.txt` |
 | Multi-agent orchestration | one investigation fans out over A2A to four detectors in parallel, each answering with a BigQuery job id | `captures/day4-fleet-proof.txt` |
-| Long-term state persistence | Memory Bank precedent ids are read before drafting and sealed into the DRAFT chain link | `infra/110_run_loop.py` |
-| Runtime observability | every conduct row and chain link carries a trace id; one fan-out is a 361-span Cloud Trace DAG | `captures/day7-fleet-proof-all-held.txt` |
-| Security posture enforcement | the three-leg gate, Model Armor verdicts as DSL predicates, the IAM 403, the locked retention root | `captures/day2-gate-two-sided.txt` |
+| Long-term state persistence | the Proposer reads the fleet's own review history out of Memory Bank before every draft | `agents/proposer/agent.py` |
+| Runtime observability | every conduct row carries a trace id; the fleet proof asserts its 60-span DAG resolves in Cloud Trace | `captures/day7-fleet-proof-all-held.txt` |
+| Security posture enforcement | the three-leg gate, Model Armor verdicts as DSL predicates, the IAM 403, the locked retention root | `captures/day2-gate-two-sided.txt` · `captures/day1-retention-refuses-delete.txt` |
 
 - **Agent Registry** is the roster and the discovery layer. The orchestrator's source names
   no detector. Each entry carries the chain root of the policy version it was registered
@@ -133,8 +136,8 @@ This is the Fortified Enterprise Fleet track. Its five themes, one row each:
   and `holdout_sealed`'s access list has exactly one entry.
 - **Model Armor** screens in both directions, and its verdict fields are first-class
   predicates in the policy DSL, so policy composes with it instead of re-implementing it.
-- **Memory Bank** holds the fleet's own review history. The Proposer reads it before drafting
-  and the memory ids it used are recorded in the chain.
+- **Memory Bank** holds the fleet's own review history, and the Proposer reads it before
+  drafting.
 - **BigQuery** holds the conduct events, the sealed holdout, the benign corpus, the chain and
   the policy registry. **Cloud Storage** with a locked retention policy holds the
   certificates. **Gemini 3.5 Flash** only, no Pro. The Examiner and the Notary make no model
@@ -170,8 +173,8 @@ throw it out. No fixture was involved.
 
 It happened again on the final live run, and this time nothing passed. The Proposer got a
 capped four attempts: three drafts scored no improvement on sealed attacks and the fourth
-failed schema validation, so the loop stopped and wrote nothing to the chain — a candidate
-that fails the gate never enters the record. Each attempt's feedback named only the failed
+returned no candidate at all, so the loop stopped and wrote nothing to the chain — when no
+attempt passes, the record stays untouched. Each attempt's feedback named only the failed
 leg, never a holdout row, and the run was not re-taken: drafting against the sealed exam
 until it passes is the tuning the Proposer and Examiner split exists to prevent. The version
 the fleet enforces today is the one the gate let through, not the newest one drafted
@@ -190,9 +193,10 @@ unattested that was false for every block ever taken.
 
 ## What's next for Caseharden
 
-A session-scoped predicate in the DSL. The four check families the detectors cover are
-per-turn; the attacks that survive the current policy are the ones that spread their steps
-across a session, and the Examiner already has the corpus to score that gate honestly.
+A session-scoped predicate in the DSL. The policy language is per-turn; the attacks that
+survive the current policy spread their steps across a session. The sealed holdout already
+carries ten session-shaped attacks, and `THREATS.md` records the one decision that gate needs
+first: which of the two session patterns the family means.
 
 Then a second host. Every agent is on Cloud Run today, and putting one on Agent Runtime
 would show that the roster and the enforcement callback do not care where a worker lives.
@@ -209,7 +213,7 @@ Python · OpenTelemetry
 
 - Repository: https://github.com/japsdeleon/caseharden
 - Specification: `docs/PLAN.md` · Daily build log with measured numbers: `BUILD_LOG.md`
-- Terminal captures for every claim: `captures/`
+- Terminal captures for the claims above: `captures/`
 - Check the record yourself, no credentials, no network, seconds:
   `python3 -m caseharden.recheck fixtures/v5` — seventeen checks, including a full Examiner
   replay against corpora regenerated from the committed seeded generator
