@@ -232,6 +232,13 @@ sealed attacks rather than a benign regression. And the 2:52 break beat still wo
 `docs/REHEARSAL.md` scripts it, because `v6` was never registered and is still the free version
 name that beat attempts and is refused.
 
+**From the official rules, read 2026-08-29.** The video must be publicly visible on YouTube
+or Vimeo — unlisted fails the rule. 4:00 maximum, only the first four minutes are evaluated.
+English, or English subtitles. It must show the backend running on Google Cloud on screen
+(console, Cloud Run dashboard, or Vertex logs). Cut-list item 3 removes the only console
+shot; if that cut is taken, keep another unambiguous Google Cloud frame — the GCS retention
+object at 2:34 or the Cloud Audit entry at 1:52 qualify.
+
 **Written cut list, in order.** 1) The retention-expiry cut at 2:34. 2) The rejected-draft half of the 1:34 beat. 3) The registry console page at 0:38, keeping the terminal only. 4) The rewind beat at 0:14, folding the green chain into the 2:52 payoff.
 **Untouchable, in priority order.** The cold open at 0:00. The 403 at 1:52. The gate rejection at 2:10. The break at 2:52.
 
