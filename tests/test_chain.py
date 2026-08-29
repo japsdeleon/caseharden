@@ -520,6 +520,50 @@ def test_a_column_name_that_is_not_an_identifier_is_refused():
         chain.column_name("x) FROM t; DROP TABLE turns--:STRING")
 
 
+def test_two_rows_sharing_one_event_id_are_refused_not_collapsed():
+    """BigQuery enforces no uniqueness on event_id, whatever the schema says.
+
+    Keyed by event id, the obvious dict comprehension keeps whichever duplicate
+    came back last and drops the other in silence. An adversarial pass pointed
+    out that inserting a second row with a cited id, one copy sealed and one
+    rewritten, leaves the changed copy outside the digest entirely.
+    """
+    rows = [{"event_id": "s1-4", "row_digest": "aaaa"},
+            {"event_id": "s1-5", "row_digest": "bbbb"},
+            {"event_id": "s1-4", "row_digest": "cccc"}]
+    with pytest.raises(RuntimeError) as caught:
+        chain.rows_by_event(rows)
+    assert "s1-4" in str(caught.value)
+    assert chain.rows_by_event(rows[:2]) == {"s1-4": "aaaa", "s1-5": "bbbb"}
+
+
+def test_a_second_writer_refuses_to_seal_over_a_duplicated_sequence():
+    """`append` is an INSERT with no compare-and-swap and `next_seq` is a COUNT.
+
+    Two writers at once compute the same sequence number and both insert. The
+    chain that results is rejected by _required_shape, but the command sealed and
+    repointed the version to that root anyway. This does not prevent the race; it
+    makes the loser refuse to seal.
+    """
+    links = make_chain()
+    mine = Link("v4", links[-1].seq + 1, "EVIDENCE-CHANGED", {"x": 1}, links[-1].hash)
+    theirs = Link("v4", links[-1].seq + 1, "EVIDENCE-CHANGED", {"x": 2}, links[-1].hash)
+
+    class Store:
+        def __init__(self, tail):
+            self._links = list(links) + list(tail)
+
+        def read(self, version):
+            return self._links
+
+    assert notary._tail_confirmed(Store([mine]), "v4", mine) is None
+    both = notary._tail_confirmed(Store([mine, theirs]), "v4", mine)
+    assert both and both.startswith("REFUSED to seal")
+    assert str(mine.seq) in both
+    lost = notary._tail_confirmed(Store([theirs]), "v4", mine)
+    assert lost and "no longer the tail" in lost
+
+
 def _legacy(links):
     """The same chain with no schema fingerprint, rebuilt so the hashes hold."""
     payloads = [(l.kind, dict(l.payload)) for l in links]

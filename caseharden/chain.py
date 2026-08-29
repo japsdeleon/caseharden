@@ -456,6 +456,29 @@ def sealed_root(uri: str, impersonate: Optional[str] = None) -> Optional[dict]:
 # Where verification re-derives from
 # --------------------------------------------------------------------------
 
+def rows_by_event(rows: Sequence[dict]) -> Dict[str, str]:
+    """event_id to row digest, refusing to collapse two rows into one.
+
+    The obvious dict comprehension keeps whichever duplicate BigQuery returned
+    last and drops the other silently. `event_id` is described as unique within a
+    session and BigQuery enforces no such thing, so an adversarial pass pointed
+    out that inserting a second row with a cited id, one copy sealed and one
+    rewritten, leaves the changed copy outside the digest entirely. Failing here
+    is a verification that could not run, which freezes promotion and claims
+    nothing, rather than a digest that silently covered fewer rows than it names.
+    """
+    out: Dict[str, str] = {}
+    for row in rows:
+        event_id = row["event_id"]
+        if event_id in out:
+            raise RuntimeError(
+                f"event_id {event_id!r} appears more than once in the cited window. "
+                f"The evidence digest is keyed by event id, so two rows sharing one id "
+                f"cannot both be covered by it.")
+        out[event_id] = row["row_digest"]
+    return out
+
+
 def row_digest(event: dict) -> str:
     """The local counterpart of the BigQuery row digest.
 
@@ -543,7 +566,7 @@ class BigQueryEvidence(Evidence):
             f" ORDER BY event_id",
             self.project, self.token, params={"start": start, "end": end},
         )
-        return {r["event_id"]: r["row_digest"] for r in rows}
+        return rows_by_event(rows)
 
     def schema_columns(self, dataset: str) -> List[str]:
         # INFORMATION_SCHEMA rather than a tables.get, because the row digest
@@ -566,7 +589,12 @@ class BigQueryEvidence(Evidence):
         # column list reproduces the sealed digest exactly.
         names = [column_name(c) for c in columns]
         table = bq.qualified_table(self.project, dataset)
-        struct = ", ".join(f"t.{n}" for n in names)
+        # Aliased, though BigQuery infers the same names from the path
+        # expressions: measured against conduct_live, adding two columns and
+        # projecting onto the original 21 reproduced the pre-widening row
+        # byte-for-byte on all 43 rows. The alias states the guarantee instead of
+        # leaving a reader to know that rule, and cannot change the result.
+        struct = ", ".join(f"t.{n} AS {n}" for n in names)
         rows = bq.query(
             f"SELECT event_id,"
             f" SUBSTR(TO_HEX(SHA256(TO_JSON_STRING(STRUCT({struct})))), 1,"
@@ -576,7 +604,7 @@ class BigQueryEvidence(Evidence):
             f" ORDER BY event_id",
             self.project, self.token, params={"start": start, "end": end},
         )
-        return {r["event_id"]: r["row_digest"] for r in rows}
+        return rows_by_event(rows)
 
     def access_list(self, dataset: str) -> List[dict]:
         """The dataset's access list, read once per verification.

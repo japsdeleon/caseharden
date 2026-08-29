@@ -293,6 +293,10 @@ CASES = [
   "a grant landing during refresh is restated as the justified baseline"),
  ("chain.py", "    if not COLUMN_RE.match(name):", "    if False:",
   "a column name out of a chain payload is concatenated into SQL unchecked"),
+ ("chain.py", "        if event_id in out:", "        if False:",
+  "two rows sharing one event id collapse and the changed one is not hashed"),
+ ("notary.py", "    if len(seqs) != len(set(seqs)):", "    if False:",
+  "a chain with a duplicated sequence is sealed and repointed anyway"),
 ]
 
 def suite():

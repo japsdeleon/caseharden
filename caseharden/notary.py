@@ -664,6 +664,35 @@ def refresh(version: str, links: Sequence[Link], evidence: Evidence,
         f"The event digest is unchanged, so nothing about the evidence itself moved.")
 
 
+def _tail_confirmed(store, version: str, link: Link) -> Optional[str]:
+    """Re-read the chain and refuse to seal unless our link is its only tail.
+
+    `append` is an INSERT with no compare-and-swap, `next_seq` is a COUNT, and
+    BigQuery enforces no uniqueness on (version, seq). Two `refresh` or
+    `reattest` runs at once therefore both compute the same sequence number and
+    both insert, leaving a chain with a duplicate seq that `_required_shape`
+    rejects. An adversarial pass pointed out that the command sealed and
+    repointed the version to that invalid root regardless.
+
+    This does not prevent the race. It makes the second writer refuse to seal,
+    so the damage is a rejected command rather than a version pointed at a root
+    no reader will accept.
+    """
+    links = store.read(version)
+    seqs = [l.seq for l in links]
+    if len(seqs) != len(set(seqs)):
+        duplicated = sorted({q for q in seqs if seqs.count(q) > 1})
+        return (f"REFUSED to seal. The chain now holds more than one link at sequence "
+                f"{duplicated}, which means another writer appended at the same time. "
+                f"Nothing was sealed and the version still points at its previous root. "
+                f"Re-read the chain before running this again.")
+    if not links or links[-1].hash != link.hash:
+        return ("REFUSED to seal. The link appended here is no longer the tail of the "
+                "chain, so another writer got there first. Nothing was sealed and the "
+                "version still points at its previous root.")
+    return None
+
+
 def _content_edit_refusal(prior: dict, actual: Dict[str, str],
                           evidence: Evidence) -> Optional[str]:
     """Refuse re-derivation over rows that were edited, schema change or not.
@@ -849,6 +878,10 @@ def cmd_reattest(args) -> int:
     if link is None:
         return 0 if before.attested else 6
     store.append(link)
+    problem = _tail_confirmed(store, args.version, link)
+    if problem:
+        print(problem)
+        return 6
     links = store.read(args.version)
     uri = chain.seal(args.bucket, args.version, link.seq, chain.root_of(links), links,
                      args.notary_sa)
@@ -885,6 +918,10 @@ def cmd_refresh(args) -> int:
         # for a migration that has to be safe to run twice over every version.
         return 0 if before.attested else 6
     store.append(link)
+    problem = _tail_confirmed(store, args.version, link)
+    if problem:
+        print(problem)
+        return 6
     links = store.read(args.version)
     uri = chain.seal(args.bucket, args.version, link.seq, chain.root_of(links), links,
                      args.notary_sa)
