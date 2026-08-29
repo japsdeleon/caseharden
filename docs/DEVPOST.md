@@ -6,8 +6,8 @@ Paste-ready. Section headings match Devpost's own fields.
 
 ## Elevator pitch (200 characters)
 
-An agent's authority to act is derived from evidence, not granted by config. A guardrail
-keeps its authority only while its provenance chain re-derives from raw conduct.
+An agent's authority is derived from evidence, not config. Refusals are stored beside
+approvals, and the record's root sits under a retention lock even the project owner cannot delete.
 
 ---
 
@@ -74,9 +74,13 @@ one session, which is a self-join and not a field, so no predicate in this DSL r
 detector finds those sessions. The chain records them. No version of the policy can deny them.
 The system knows where its own ceiling is and can show the arithmetic.
 
-Every step is a hash-linked record in a BigQuery chain, append-only by convention, whose root
-is sealed into a retention-locked Cloud Storage object and annotated onto the Agent Registry
-entry. The lock is what makes a rewrite detectable.
+Every step is a hash-linked record in a BigQuery chain, append-only by convention, and a hash
+chain alone proves little: anyone holding the writer's credentials can rewrite it end to end.
+The guarantee is the root, sealed into a Cloud Storage object under a locked 30-day retention
+policy and annotated onto the Agent Registry entry. The bucket refuses delete, overwrite, and
+removal of the policy itself, from the project owner, and the lock is irreversible. A rewritten
+chain no longer matches a root that cannot be touched, and that mismatch is what `verify`
+detects.
 
 **The product is not the detection. The product is the attestation.** A guardrail version is
 served as `attested` only while `caseharden verify` re-derives its evidence and its exam from
@@ -139,6 +143,13 @@ The gate refused the real Proposer's real candidate. It caught one more sealed a
 the active version and blocked two legitimate turns, and that was enough. No fixture was
 involved.
 
+It happened again on the final live run. The Examiner refused all four drafts of a v6, the
+refusal sits as a link in the same chain as every approval, and no second attempt was made:
+redrafting against a failing gate until it passes is tuning to the sealed exam by trial,
+which is the practice the Proposer and Examiner split exists to prevent. The version the
+fleet enforces today is the one the gate let through, not the newest one drafted
+(`captures/day8-gate-refuses-v6-no-improvement.txt`).
+
 Every number published is measured. `verify` p95 is 3.66s against a 5s target. 291 tests. 63
 mutations broken on purpose and all 63 caught, including one that survived its first run and
 now has two tests.
@@ -172,6 +183,10 @@ Python · OpenTelemetry
 - Repository: https://github.com/japsdeleon/caseharden
 - Specification: `docs/PLAN.md` · Daily build log with measured numbers: `BUILD_LOG.md`
 - Terminal captures for every claim: `captures/`
+- The two guarantees reproduce without trusting this code:
+  `captures/day1-proposer-403-on-holdout.txt` (BigQuery refuses the Proposer its own exam) and
+  `captures/day1-retention-refuses-delete.txt` (Cloud Storage refuses a delete from the
+  project owner)
 - Threat model, including ten holes stated plainly: `THREATS.md`
 
 ## Clean-room disclosure
