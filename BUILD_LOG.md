@@ -2,6 +2,11 @@
 
 One entry per day. Measured numbers only, never estimates.
 
+Headers are build-day labels, not calendar dates: `git log --date=short` shows Days 1
+through 5 all landed on 2026-08-25, so some early headers carry planned-schedule dates that
+are later than the commits that closed them. They are left as written; the full note is under
+Day 8.
+
 ---
 
 ## 2026-08-25 — Day 1

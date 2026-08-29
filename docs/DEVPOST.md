@@ -6,8 +6,9 @@ Paste-ready. Section headings match Devpost's own fields.
 
 ## Elevator pitch (200 characters)
 
-An agent's authority is derived from evidence, not config. Refusals are stored beside
-approvals, and the record's root sits under a retention lock even the project owner cannot delete.
+Governance plane for enterprise agent fleets: guardrails keep authority only while their evidence re-verifies, refusals are recorded beside approvals, and the record's root is delete-proof.
+
+*(paste into the form as one line)*
 
 ---
 
@@ -37,8 +38,10 @@ Two pieces of work got there first, and they are named in the README's prior-art
 than left for a judge to find. Microsoft's Agent Governance Toolkit, MIT-licensed since April
 2026, already intercepts every tool call before it executes, with Cedar and Rego behind it.
 Salfeld-Nebgen's *Governing Actions, Not Agents* (arXiv 2606.26298, June 2026) already states
-the authority-from-attested-evidence model, and states it more generally than this entry does.
-Neither addresses what happens after the evidence moves. That is the part this entry builds.
+the authority-from-attested-evidence model. Neither addresses what happens after the evidence
+moves. That is the part this entry builds: the quarantine state itself — enforcement retained,
+standing lost, promotion frozen. A late-arriving event can quarantine a version no attacker
+ever touched, which no signature scheme detects.
 
 ## What it does
 
@@ -49,38 +52,52 @@ The friction it removes is specific. A security team tightens a rule that govern
 and learns in production whether the tightening broke legitimate work. Caseharden makes that
 answer a precondition of the change rather than a consequence of it.
 
-**One human turn sits inside the loop. Everything around it runs unattended.**
+**The human appears exactly twice in the loop, to judge and to approve. Everything else runs
+unattended.**
 
 A support agent does ordinary work with two tools, a tenant-scoped read and a refund write.
-Every turn is screened by Model Armor and written as one structured conduct event to BigQuery.
-An orchestrator then reads Agent Registry at container start, names no detector anywhere in its
-source, and fans an investigation out over A2A to whatever the roster lists. Four detectors
-answer in parallel. Each returns a finding and the BigQuery job id that produced it, so a
-reviewer re-runs the query instead of trusting a summary.
+Every tool call is screened by Model Armor and written as one structured conduct event to
+BigQuery. An orchestrator then reads Agent Registry at container start, names no detector
+anywhere in its source, and fans an investigation out over A2A (the agent-to-agent protocol)
+to whatever the roster lists. Four detectors answer in parallel. Each returns a finding and
+the BigQuery job id that produced it, so a reviewer re-runs the query instead of trusting a
+summary. W3C trace context rides the fan-out, so one investigation is one Cloud Trace trace:
+361 spans across the orchestrator and all four detectors, and every conduct row and chain
+link carries the trace id that opens it.
 
-The finding reaches a human analyst, who records one verdict in ADK's own chat window. That is
-the human turn. From there a Proposer agent reads the fleet's own review history out of Memory
-Bank, drafts a guardrail change in a small deny-only DSL, and is refused by BigQuery with a real
-403 when it reaches for its own exam. A deterministic Examiner, not a model, scores the draft
-against that sealed holdout under a different service account, over 40 labelled attack sessions
-and 640 legitimate turns, and applies a three-leg gate: blocked attacks must go up, the benign
-pass rate must not fall, and the new version must only narrow authority. A refusal is written to
-the chain as its own link, so the record attests to what was prevented.
+The finding reaches a human analyst, who records one verdict in the Agent Development Kit's
+(ADK) own chat window. That is the first human turn; the second is the approval that ends the
+loop. Between them a Proposer agent reads the fleet's own review history out of Memory Bank,
+drafts a guardrail change in a small deny-only DSL (a rule language that can only forbid), and
+is refused by BigQuery with a real 403 when it reaches for its own exam. That denial is sealed
+into every promoted chain as its own link, so the record attests to what was prevented. A
+deterministic Examiner, not a model, scores the draft against that sealed holdout under a
+different service account, over 40 labelled attack sessions and 640 legitimate turns, and
+applies a three-leg gate: blocked attacks must go up, the benign pass rate must not fall, and
+the new version must only narrow authority. A candidate that fails the gate never enters the
+record at all.
 
 **The gate holds at 30 of 40, and that is a property of the language rather than a shortfall.**
 The sealed holdout carries ten attack sessions for each of four check families. Three families
 are expressible as rules over a single conduct event. The fourth is a read and a write inside
-one session, which is a self-join and not a field, so no predicate in this DSL reaches it. The
-detector finds those sessions. The chain records them. No version of the policy can deny them.
-The system knows where its own ceiling is and can show the arithmetic.
+one session, which is a self-join and not a field, so no predicate in this DSL reaches it. No
+version of the policy can deny those ten without also blocking legitimate work: the one
+candidate that caught one of them was refused by the gate for exactly that
+(`captures/day5-gate-refuses-the-proposer.txt`). The ceiling sits under the best-evidenced
+attack shape in the field — the AppOmni sequence from Inspiration is a privileged read
+followed by a write — which is why the session-scoped predicate is first in What's next, and
+why `THREATS.md` names this hole twice. The system knows where its own ceiling is and can show
+the arithmetic.
 
 Every step is a hash-linked record in a BigQuery chain, append-only by convention, and a hash
 chain alone proves little: anyone holding the writer's credentials can rewrite it end to end.
-The guarantee is the root, sealed into a Cloud Storage object under a locked 30-day retention
-policy and annotated onto the Agent Registry entry. The bucket refuses delete, overwrite, and
-removal of the policy itself, from the project owner, and the lock is irreversible. A rewritten
-chain no longer matches a root that cannot be touched, and that mismatch is what `verify`
-detects.
+The anchor is the root, sealed at promotion into a Cloud Storage object under a locked 30-day
+retention policy and annotated onto the Agent Registry entry. The bucket refuses delete,
+overwrite, and removal of the policy itself, from the project owner, and the lock is
+irreversible. What the lock buys is narrower than tamper-proof, and `THREATS.md` says so
+plainly: a credentialed writer who reseals a rewritten chain to a new certificate still passes
+`verify`, so the locked object is the durable witness a rewrite cannot erase, not a gate a
+rewrite cannot pass.
 
 **The product is not the detection. The product is the attestation.** A guardrail version is
 served as `attested` only while `caseharden verify` re-derives its evidence and its exam from
@@ -93,19 +110,27 @@ re-derives.
 Nine private Cloud Run services in europe-west3. Eight run from one image and differ only by
 environment; the ninth is `adk deploy cloud_run --with_ui`, unmodified: the agent surface is
 ADK's own and the two tools behind it are the part I wrote. The analyst also gets a local
-operator console, which reads the chain, the registry and the finding under review and takes
-attestation from the Policy Server rather than deciding it. Its one write goes *through* the
-unmodified Copilot, not around it, so the console is outside the trust boundary by
-construction: it offers a verdict and writes nothing itself, and what is stored is decided by
-the Copilot service under its own identity. It runs against a committed fixture with no
-credentials at all.
+operator console that reads the chain, the registry and the finding under review, and routes
+its one write *through* the unmodified Copilot, so it sits outside the trust boundary: it
+offers a verdict and stores nothing itself. It runs against a committed fixture with no
+credentials at all; the README carries the full trust-boundary argument.
+
+This is the Fortified Enterprise Fleet track. Its five themes, one row each:
+
+| Track theme | In this entry | Proof |
+|---|---|---|
+| Corporate agent discovery | the orchestrator reads Agent Registry at boot and names no detector in its source; each entry carries its policy version's chain root | `captures/day7-fleet-proof-all-held.txt` |
+| Multi-agent orchestration | one investigation fans out over A2A to four detectors in parallel, each answering with a BigQuery job id | `captures/day4-fleet-proof.txt` |
+| Long-term state persistence | Memory Bank precedent ids are read before drafting and sealed into the DRAFT chain link | `infra/110_run_loop.py` |
+| Runtime observability | every conduct row and chain link carries a trace id; one fan-out is a 361-span Cloud Trace DAG | `captures/day7-fleet-proof-all-held.txt` |
+| Security posture enforcement | the three-leg gate, Model Armor verdicts as DSL predicates, the IAM 403, the locked retention root | `captures/day2-gate-two-sided.txt` |
 
 - **Agent Registry** is the roster and the discovery layer. The orchestrator's source names
   no detector. Each entry carries the chain root of the policy version it was registered
   against, so the platform's own discovery layer carries the audit anchor.
-- **Agent Identity** is load-bearing rather than decorative. `proposer-sa` and `examiner-sa`
-  are distinct principals. No principal holds a project-wide BigQuery data role, and
-  `holdout_sealed`'s access list has exactly one entry.
+- **Per-agent IAM identities** are load-bearing rather than decorative. `proposer-sa` and
+  `examiner-sa` are distinct principals. No principal holds a project-wide BigQuery data role,
+  and `holdout_sealed`'s access list has exactly one entry.
 - **Model Armor** screens in both directions, and its verdict fields are first-class
   predicates in the policy DSL, so policy composes with it instead of re-implementing it.
 - **Memory Bank** holds the fleet's own review history. The Proposer reads it before drafting
@@ -140,14 +165,16 @@ is broken" from "the spans are never recorded".
 ## Accomplishments I am proud of
 
 The gate refused the real Proposer's real candidate. It caught one more sealed attack than
-the active version and blocked two legitimate turns, and that was enough. No fixture was
-involved.
+the active version and blocked two legitimate turns, and the benign leg alone was enough to
+throw it out. No fixture was involved.
 
-It happened again on the final live run. The Examiner refused all four drafts of a v6, the
-refusal sits as a link in the same chain as every approval, and no second attempt was made:
-redrafting against a failing gate until it passes is tuning to the sealed exam by trial,
-which is the practice the Proposer and Examiner split exists to prevent. The version the
-fleet enforces today is the one the gate let through, not the newest one drafted
+It happened again on the final live run, and this time nothing passed. The Proposer got a
+capped four attempts: three drafts scored no improvement on sealed attacks and the fourth
+failed schema validation, so the loop stopped and wrote nothing to the chain — a candidate
+that fails the gate never enters the record. Each attempt's feedback named only the failed
+leg, never a holdout row, and the run was not re-taken: drafting against the sealed exam
+until it passes is the tuning the Proposer and Examiner split exists to prevent. The version
+the fleet enforces today is the one the gate let through, not the newest one drafted
 (`captures/day8-gate-refuses-v6-no-improvement.txt`).
 
 Every number published is measured. `verify` p95 is 3.66s against a 5s target. 291 tests. 63
@@ -174,8 +201,8 @@ would show that the roster and the enforcement callback do not care where a work
 
 ## Built with
 
-`google-adk` · Agent Registry · Agent Identity · Model Armor · Memory Bank · Vertex AI Gemini
-3.5 Flash · Cloud Run · BigQuery · Cloud Storage retention lock · Cloud IAM · Cloud Build ·
+`google-adk` · Agent Registry · Model Armor · Memory Bank · Vertex AI Gemini 3.5 Flash ·
+Cloud Run · BigQuery · Cloud Storage retention lock · Cloud IAM · Cloud Trace · Cloud Build ·
 Python · OpenTelemetry
 
 ## Try it out
@@ -183,6 +210,13 @@ Python · OpenTelemetry
 - Repository: https://github.com/japsdeleon/caseharden
 - Specification: `docs/PLAN.md` · Daily build log with measured numbers: `BUILD_LOG.md`
 - Terminal captures for every claim: `captures/`
+- Check the record yourself, no credentials, no network, seconds:
+  `python3 -m caseharden.recheck fixtures/v5` — seventeen checks, including a full Examiner
+  replay against corpora regenerated from the committed seeded generator
+- Open the analyst console on the same fixture, also credential-free:
+  `python3 -m caseharden.workbench --fixture fixtures/v5`
+- The same recheck runs on GitHub's own runners on every push (Actions tab), so a machine
+  that is not mine vouches for the record
 - The two guarantees reproduce without trusting this code:
   `captures/day1-proposer-403-on-holdout.txt` (BigQuery refuses the Proposer its own exam) and
   `captures/day1-retention-refuses-delete.txt` (Cloud Storage refuses a delete from the
