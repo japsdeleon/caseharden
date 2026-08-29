@@ -69,7 +69,14 @@ def take_lock() -> None:
     # Registered here rather than in a `finally` around the loop below. There is
     # a window between this function returning and that `try` being entered, and
     # a signal landing in it would leave the lock behind with nothing mutated.
-    atexit.register(lambda: LOCK.unlink(missing_ok=True))
+    #
+    # `path` binds the lock taken here. Read as a global at exit time instead,
+    # this unlinked whatever LOCK named by then: the tests monkeypatch it to a
+    # temporary path, monkeypatch restores the real path on teardown, and every
+    # suite run therefore deleted the live harness's own lock on case 1. The
+    # remaining 64 cases then ran unprotected, and a killed run left no stale
+    # lock to tell a human a mutation might still be in the tree.
+    atexit.register(lambda path=LOCK: path.unlink(missing_ok=True))
 
 
 # Without these, a plain `kill` skips every `finally` below: the lock survives

@@ -121,6 +121,38 @@ def test_the_lock_is_released_on_exit(harness, tmp_path):
     assert not (tmp_path / "exit.lock").exists()
 
 
+def test_the_release_unlinks_the_lock_it_took_not_whatever_LOCK_names_later(
+        harness, tmp_path):
+    """The atexit closure binds its path, so a reassigned LOCK is left alone.
+
+    The `harness` fixture monkeypatches LOCK to a temporary path, and monkeypatch
+    restores the real path on teardown. A release that read LOCK as a global at
+    exit time therefore unlinked the real lock when this process ended, so a live
+    harness lost its lock to the first suite run of its own first case. It was
+    observed gone 20 seconds into a 23-minute run. The module docstring above
+    says nothing here touches the real lock; this is the test that makes that
+    true.
+
+    Reassignment stands in for the teardown, since monkeypatch cannot restore
+    into the subprocess.
+    """
+    taken, restored = tmp_path / "taken.lock", tmp_path / "restored.lock"
+    script = (
+        "import importlib.util, pathlib, sys\n"
+        f"spec = importlib.util.spec_from_file_location('m', {str(REPO / 'tests' / 'mutate_check.py')!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        f"m.LOCK = pathlib.Path({str(taken)!r})\n"
+        "m.take_lock()\n"
+        f"m.LOCK = pathlib.Path({str(restored)!r})\n"
+        "m.LOCK.write_text('a live run holds this')\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                          text=True, timeout=60)
+    assert done.returncode == 0, done.stderr[-400:]
+    assert not taken.exists(), "the lock it actually took was left behind"
+    assert restored.exists(), "it deleted a lock another run holds"
+
+
 def test_write_atomically_leaves_no_half_written_file(harness, tmp_path):
     """The source is replaced, never truncated in place.
 
