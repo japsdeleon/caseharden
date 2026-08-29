@@ -1,0 +1,14 @@
+{
+  "version": "v1-pay",
+  "rules": [
+    {
+      "id": "large-refund",
+      "action": "deny",
+      "reason": "A refund at or above 500000 cents requires a human.",
+      "all_of": [
+        {"op": "equals", "field": "tool_name", "value": "issue_refund"},
+        {"op": "at_least", "field": "amount_cents", "value": 500000}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+Day 10. A second policy line, and the boundary between lines. THREATS.md
+entry 11: the registry and the serving layer are line-aware and nothing else
+is. payments-policy holds one human-granted rule and no chain; what this
+capture proves is that its existence cannot touch conduct-policy, and that the
+system reports its unattested floor honestly instead of dressing it up.
+
+$ bash infra/26_policy_lines.sh
+policy.versions carries policy_id
+existing rows claimed for conduct-policy
+
+The deployed (pre-lines) Policy Server, asked before any redeploy — the new
+column must not disturb old code:
+
+$ GET /policy/active        (revision built before policy_id existed)
+v5 ATTESTED OPEN
+
+$ python3 -m caseharden.notary genesis --version v1-pay \
+    --policy policies/v1-pay.json --policy-id payments-policy
+registered v1-pay as the genesis version of payments-policy, active, with no chain
+
+Both lines active at once. Before this change, registering ANY version ran
+`UPDATE ... SET active = FALSE WHERE active` with no scope, so this genesis
+would have silently deactivated conduct-policy's v5:
+
+$ SELECT version, policy_id, active, SUBSTR(root, 1, 12) AS root
+    FROM policy.versions ORDER BY promoted_at
++---------+-----------------+--------+--------------+
+| version |    policy_id    | active |     root     |
++---------+-----------------+--------+--------------+
+| v3      | conduct-policy  |  false |              |
+| v4      | conduct-policy  |  false | fa1bf4f72b80 |
+| v5      | conduct-policy  |   true | 40cdb5962d49 |
+| v1-pay  | payments-policy |   true |              |
++---------+-----------------+--------+--------------+
+
+A parent from another line is nothing to build on. Lineage never crosses
+lines, because a candidate cannot inherit a baseline it was never gated
+against:
+
+$ python3 -m caseharden.notary promote --version v6 --parent v1-pay \
+    --candidate policies/v4-candidate-b.json
+v1-pay belongs to policy line payments-policy, not conduct-policy; lineage never crosses lines.
+REFUSED — v1-pay is not a version of this policy line. It has no chain and no registry row in this line, so there is nothing to build on. Register the first version with `notary genesis` if this is it.
+v6 was not promoted and nothing was written to the chain.
+
+The floor is reported as what it is. v1-pay is served and active, and it is
+NOT attested: its authority is human-granted configuration, exactly the thing
+this project exists to replace, held at one deny rule until the line earns its
+own sealed exam:
+
+$ python3 -m caseharden.notary verify --version v1-pay
+caseharden verify payments-policy@v1-pay
+
+
+  QUARANTINED  break at link 0 NO-CHAIN
+               no chain has been written for v1-pay
+               enforcement unchanged, promotions FROZEN
+
+conduct-policy is untouched by any of the above, re-derived live:
+
+$ python3 -m caseharden.notary verify --version v5   (tail)
+  root 40cdb5962d490c4c68c5be74805e19c06d3eeab5c6b751765070efe2a2accced
+  ATTESTED   re-derived from raw events in 3.2s
+
+The redeployed Policy Server serves each line its own answer:
+
+$ GET /policy/active
+{ "version": "v5", "state": "ATTESTED", "promotions": "OPEN" }
+
+$ GET /policy/payments-policy/active
+{ "version": "v1-pay", "state": "QUARANTINED", "promotions": "FROZEN" }
+
+And a version addressed through a line it does not belong to is refused, not
+served — found by an adversarial review of this change, fixed, and taken live:
+
+$ GET /policy/payments-policy/v5
+{ "error": "v5 is not a version of policy line payments-policy" }
+HTTP 404

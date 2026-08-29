@@ -263,6 +263,33 @@ The cheaper route remains to leave the cited table alone and put new fields in a
 joined on `event_id`, which does not touch the digest of any cited row. That is still the
 recommended shape for the MCP server identity in entry 9, and it costs the detectors a join.
 
+**11. A second policy line exists in the registry and the serving layer, and nowhere else.**
+`policy.versions` carries a `policy_id`, registration deactivates only within its own line,
+a parent from another line is refused, and the Policy Server answers
+`/policy/<line>/active` beside the unchanged `/policy/active`. What a second line does not
+have is everything that makes the first one governed: the workload agent still enforces
+`conduct-policy` alone, and `payments-policy` has no sealed holdout, so no candidate for it
+can be examined and none can be promoted. Its genesis is a human-granted floor — served,
+active, and reported by `verify` as carrying no chain — which is exactly the
+configuration-granted authority this project exists to replace, held at one deny rule until
+the line earns its own exam.
+
+Scaling the *guarantee* across lines is not the open problem. Every rule in every line is
+deny-only, so fleet authority is the complement of the union of the active lines' denial
+sets; a promotion inside one line replaces that line's contribution with a superset (the
+per-line MONOTONICITY leg), and a union of supersets is a superset, under any interleaving
+of promotions. The BENIGN leg composes for the same reason: deny predicates do not
+interact. What scales linearly and cannot be waved away is the evidence: one sealed
+holdout, one access-list attestation and one live 403 per line, because an exam is
+domain-specific. Retiring a line would widen authority and is refused the same way
+dropping a rule is.
+
+One race is known and left open. Version-name uniqueness across lines is a read before a
+write, four BigQuery jobs with no transaction and no primary key, so two concurrent
+`genesis` calls claiming the same name in different lines can both insert. Registry writes
+here are one operator at a keyboard; an adversarial reviewer named the race and the fix
+(a multi-statement transaction) and it is not built.
+
 ---
 
 ## Three smaller notes

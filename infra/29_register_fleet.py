@@ -64,11 +64,18 @@ def fetch_card(base_url: str) -> dict:
 
 
 def active_version_and_root() -> tuple:
-    """The active policy version and the root its certificate was sealed at."""
+    """The active conduct-policy version and the root its certificate was sealed at.
+
+    Filtered to the enforced line. The roster annotates workers with the policy
+    they are governed by, and that is conduct-policy; without the filter, a
+    later-registered line's floor version (active, no root) would be annotated
+    onto every worker instead.
+    """
     try:
         token = bq.access_token(f"notary-sa@{PROJECT}.iam.gserviceaccount.com")
         rows = [r for r in ChainStore(PROJECT, token).versions()
-                if r["active"] in ("true", True)]
+                if r["active"] in ("true", True)
+                and (r.get("policy_id") or "conduct-policy") == "conduct-policy"]
         if not rows:
             return None, None
         return rows[-1]["version"], rows[-1].get("root")

@@ -51,10 +51,11 @@ Conduct is what the fleet did. It is the raw material every claim is derived fro
 | Term | Means | Does not mean |
 |---|---|---|
 | **Policy** | A set of **rules** with a version. The document the Policy Server serves and the workload enforces. | Not configuration. A policy has authority only while its chain re-derives. |
+| **Policy line** | A named lineage of policy versions with its own genesis, its own gate baseline, and eventually its own sealed exam. Two exist: `conduct-policy` (enforced, examined) and `payments-policy` (registered, floor only). | Not a **check family** — that word groups detector evidence. A line groups enforcement lineage. |
 | **Rule** | One deny, expressed as **predicates** over a closed field vocabulary. | There is no allow verb. A policy cannot grant. |
 | **Predicate** | One condition: `equals`, `in_set`, `at_least`, `present`, `outside_declared_scope`, `tenant_mismatch`. | Not arbitrary code. The DSL forbids unknown fields and unknown operators. |
 | **Candidate** | A policy version that has been drafted but not promoted. | Not a version in force. A candidate has no authority of any kind. |
-| **Active version** | The one version marked active. What the Policy Server serves. | Not the newest version. A promotion that the gate refuses never becomes active. |
+| **Active version** | The one version marked active in its **policy line**. What the Policy Server serves for that line. | Not the newest version. A promotion that the gate refuses never becomes active. |
 | **Promotion** | Making a candidate the active version. Requires a passing **gate**, a human **approval**, and a written chain. | Not a deploy. |
 | **Deny-only** | The property that the DSL has no way to express permission. | Not a convention. `caseharden/dsl.py` has no allow node to write. |
 

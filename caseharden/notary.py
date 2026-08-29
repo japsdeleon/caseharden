@@ -807,8 +807,11 @@ def _exam_payload(candidate: Policy, current: Policy, cand: Score, curr: Score,
 MARK = {"OK": "OK  ", "BREAK": "BREAK", "SUPERSEDED": "----", "SKIPPED": "    "}
 
 
-def print_attestation(att: Attestation) -> None:
-    print(f"caseharden verify conduct-policy@{att.version}")
+def print_attestation(att: Attestation, line: str = "conduct-policy") -> None:
+    # ponytail: reattest/refresh print the default line name; both only run on
+    # chained versions, which are all conduct-policy today. Pass the looked-up
+    # line there too when a second line earns a chain.
+    print(f"caseharden verify {line}@{att.version}")
     print()
     for r in att.results:
         mark = MARK.get(r.status, r.status)
@@ -863,7 +866,9 @@ def cmd_verify(args) -> int:
     if args.json:
         print(json.dumps(att.as_dict(), indent=2))
     else:
-        print_attestation(att)
+        rows = [r for r in store.versions() if r["version"] == args.version]
+        line = (rows[0].get("policy_id") or "conduct-policy") if rows else "conduct-policy"
+        print_attestation(att, line)
     return 0 if att.attested else (7 if att.state == UNKNOWN else 6)
 
 
@@ -941,22 +946,35 @@ def cmd_refresh(args) -> int:
 
 
 def parent_basis(store, evidence: Evidence, parent: str,
-                 notary_sa: Optional[str]) -> Tuple[Optional[str], Optional[Attestation]]:
+                 notary_sa: Optional[str],
+                 policy_id: str = "conduct-policy",
+                 ) -> Tuple[Optional[str], Optional[Attestation]]:
     """May a new version be built on `parent`? Returns the basis, or None.
 
     Called from `seed` as well as `promote`. `promote` on its own was a
     pre-check that wrote nothing and that nothing forced anyone to run, which
     made the freeze advisory: `seed` would write a chain onto a quarantined
     parent, or onto a version name that had never existed, and mark it active.
+
+    A parent registered to a different policy line is nothing to build on:
+    lineage never crosses lines, so a candidate cannot inherit another line's
+    baseline. A registry row without `policy_id` predates the column and
+    belongs to `conduct-policy`.
     """
+    registered = [r for r in store.versions() if r["version"] == parent]
+    if registered and (registered[0].get("policy_id")
+                       or "conduct-policy") != policy_id:
+        print(f"{parent} belongs to policy line "
+              f"{registered[0].get('policy_id') or 'conduct-policy'}, not {policy_id}; "
+              f"lineage never crosses lines.")
+        return None, None
     links = store.read(parent)
     if links:
         attestation = verify(parent, links, evidence, _sealed_for(store, parent, notary_sa))
         if not attestation.attested:
             return None, attestation
         return f"{parent} attested at root {attestation.root[:12]}", attestation
-    rows = [r for r in store.versions() if r["version"] == parent]
-    if rows and not rows[0].get("root"):
+    if registered and not registered[0].get("root"):
         return f"{parent} is the registered genesis version and carries no chain", None
     return None, None
 
@@ -969,9 +987,9 @@ def _refuse_parent(version: str, parent: str, attestation: Optional[Attestation]
               f"{parent} is {attestation.state.upper()} "
               f"(break at link {attestation.break_seq} {attestation.break_code}).")
     else:
-        print(f"REFUSED — {parent} is not a version of this policy. It has no chain and "
-              f"no registry row, so there is nothing to build on. Register the first "
-              f"version with `notary genesis` if this is it.")
+        print(f"REFUSED — {parent} is not a version of this policy line. It has no chain "
+              f"and no registry row in this line, so there is nothing to build on. "
+              f"Register the first version with `notary genesis` if this is it.")
     print(f"{version} was not promoted and nothing was written to the chain.")
     return 5
 
@@ -980,7 +998,8 @@ def cmd_promote(args) -> int:
     """A promotion is refused on an unattested parent. That is the freeze."""
     _, evidence, store = _tokens(args.project, args)
     candidate = load(args.candidate)
-    basis, attestation = parent_basis(store, evidence, args.parent, args.notary_sa)
+    basis, attestation = parent_basis(store, evidence, args.parent, args.notary_sa,
+                                      policy_id=args.policy_id)
     if basis is None:
         return _refuse_parent(args.version, args.parent, attestation)
     digest = hashlib.sha256(canonical_json(candidate).encode()).hexdigest()
@@ -1002,8 +1021,10 @@ def cmd_genesis(args) -> int:
     if store.read(args.version):
         print(f"{args.version} has a chain; it is not a genesis version.")
         return 2
-    store.register(args.version, None, canonical_json(policy), "", "")
-    print(f"registered {args.version} as the genesis version, active, with no chain")
+    store.register(args.version, None, canonical_json(policy), "", "",
+                   policy_id=args.policy_id)
+    print(f"registered {args.version} as the genesis version of {args.policy_id}, "
+          f"active, with no chain")
     return 0
 
 
@@ -1053,7 +1074,8 @@ def cmd_seed(args) -> int:
 
     # The freeze is enforced here, at the point that actually writes a chain and
     # marks a version active, not only in the separate `promote` pre-check.
-    basis, attestation = parent_basis(store, evidence, args.parent, args.notary_sa)
+    basis, attestation = parent_basis(store, evidence, args.parent, args.notary_sa,
+                                      policy_id=args.policy_id)
     if basis is None:
         return _refuse_parent(args.version, args.parent, attestation)
     print(f"parent accepted: {basis}")
@@ -1163,7 +1185,8 @@ def cmd_seed(args) -> int:
     store.append_all(links)
     root = chain.root_of(links)
     uri = chain.seal(args.bucket, args.version, links[-1].seq, root, links, args.notary_sa)
-    store.register(args.version, args.parent, canonical_json(candidate), root, uri)
+    store.register(args.version, args.parent, canonical_json(candidate), root, uri,
+                   policy_id=args.policy_id)
     print(f"wrote {len(links)} links for {args.version}")
     print(f"root   {root}")
     print(f"sealed {uri}")
@@ -1336,6 +1359,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--version", required=True)
     p.add_argument("--parent", required=True)
     p.add_argument("--candidate", required=True)
+    p.add_argument("--policy-id", default="conduct-policy",
+                   help="the policy line this promotion belongs to")
     p.set_defaults(func=cmd_promote)
 
     c = sub.add_parser("certificate")
@@ -1355,11 +1380,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     s.add_argument("--bundle", default=None,
                    help="JSON from infra/110_run_loop.py: the finding, verdict, "
                         "refused drafts and the Proposer's own 403")
+    s.add_argument("--policy-id", default="conduct-policy",
+                   help="the policy line this promotion belongs to")
     s.set_defaults(func=cmd_seed)
 
     g = sub.add_parser("genesis")
     g.add_argument("--version", required=True)
     g.add_argument("--policy", required=True)
+    g.add_argument("--policy-id", default="conduct-policy",
+                   help="the policy line this genesis starts")
     g.set_defaults(func=cmd_genesis)
 
     args = parser.parse_args(argv)

@@ -138,14 +138,42 @@ CASES = [
   "project-level grants on the exam go unnoticed"),
  ("notary.py", '                problem = _describe_approval(payload, links)', '                problem = None',
   "the approval is not bound to its exam"),
- ("notary.py", '''    rows = [r for r in store.versions() if r["version"] == parent]
-    if rows and not rows[0].get("root"):
+ ("notary.py", '''    if registered and not registered[0].get("root"):
         return f"{parent} is the registered genesis version and carries no chain", None
     return None, None''',
   '    return f"{parent} is the genesis version and carries no chain", None',
   "any parent name is accepted as genesis"),
  ("notary.py", '        if not attestation.attested:\n            return None, attestation',
   '        if False:\n            return None, attestation', "a quarantined parent is accepted"),
+
+ # Day 10. The policy-line boundary: THREATS.md entry 11. Each of these is a
+ # way one line could reach into another, and each must be a test failure.
+ ("chain.py",
+  '''            f"UPDATE `{target}` SET active = FALSE"
+            f" WHERE active AND IFNULL(policy_id, 'conduct-policy') = @policy_id",''',
+  '''            f"UPDATE `{target}` SET active = FALSE WHERE active",''',
+  "a promotion in one line deactivates every other line"),
+ ("chain.py", "            if owner != policy_id:", "            if False:",
+  "a genesis in one line silently swallows another line's version"),
+ ("notary.py",
+  '''    if registered and (registered[0].get("policy_id")
+                       or "conduct-policy") != policy_id:''',
+  '''    if False:''',
+  "a parent from another line is accepted as a baseline"),
+ ("policy_server.py",
+  '''                and (r.get("policy_id") or "conduct-policy") == policy_id]''',
+  '''                and True]''',
+  "the active version is resolved across all lines at once"),
+ ("policy_server.py",
+  '''            if att.get("policy_line") not in (None, line):''',
+  '''            if False:''',
+  "a version is served through another line's route"),
+ ("chain.py", "        if not LINE_RE.match(policy_id):", "        if False:",
+  "an empty line name registers and hides from its own scoped deactivation"),
+ ("infra/29_register_fleet.py",
+  '''                and (r.get("policy_id") or "conduct-policy") == "conduct-policy"]''',
+  '''                and True]''',
+  "the roster is annotated with whichever line registered last"),
  ("policy_server.py", '            att["policy"] = _attested_policy(links)', '            att["policy"] = registered',
   "the policy is served from the registry, not the chain"),
  ("policy_server.py", '            if not att["registry_agrees"]:\n                att["attested"] = False',

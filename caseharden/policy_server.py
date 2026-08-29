@@ -13,8 +13,10 @@ failure than the one it detects. What a break withdraws is `attested` and
 `promotions`.
 
 usage: python -m caseharden.policy_server --port 8080
-  GET /policy/v4      the version, its policy document, and its live state
-  GET /policy/active  whichever version policy.versions marks active
+  GET /policy/v4                    the version, its policy document, and its live state
+  GET /policy/active                the conduct-policy line's active version
+  GET /policy/<line>/active         a named policy line's active version
+  GET /policy/<line>/<version>      a version addressed through its line
   GET /healthz
 """
 
@@ -98,6 +100,8 @@ class Attestations:
             # registry copy made the attested artifact and the enforced artifact
             # two different objects, with nothing comparing them.
             att["policy"] = _attested_policy(links)
+            att["policy_line"] = ((rows[0].get("policy_id") or "conduct-policy")
+                                  if rows else None)
             registered = json.loads(rows[0]["policy"]) if rows else None
             att["registry_agrees"] = registered == att["policy"]
             if not att["registry_agrees"]:
@@ -142,11 +146,29 @@ class Attestations:
                 att = current[1]
         return dict(att, checked_s_ago=0.0, cached=False)
 
-    def active_version(self) -> Optional[str]:
+    def active_version(self, policy_id: str = "conduct-policy") -> Optional[str]:
         token = bq.access_token(identities(self.project)[0])
         rows = [r for r in ChainStore(self.project, token).versions()
-                if r["active"] in ("true", True)]
+                if r["active"] in ("true", True)
+                and (r.get("policy_id") or "conduct-policy") == policy_id]
         return rows[-1]["version"] if rows else None
+
+
+def parse_policy_path(path: str) -> Optional[Tuple[str, str]]:
+    """(policy line, version) for a /policy path, or None for any other.
+
+    Two shapes: `/policy/<version>` keeps its pre-lines meaning and belongs to
+    `conduct-policy`; `/policy/<line>/<version>` names the line. `active` is a
+    version placeholder in both.
+    """
+    if not path.startswith("/policy/"):
+        return None
+    parts = path[len("/policy/"):].split("/")
+    if len(parts) == 1 and parts[0]:
+        return "conduct-policy", parts[0]
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return parts[0], parts[1]
+    return None
 
 
 def _attested_policy(links) -> Optional[dict]:
@@ -176,12 +198,15 @@ def handler_for(attestations: Attestations):
             path = self.path.split("?")[0].rstrip("/")
             if path == "/healthz":
                 return self._send(200, {"ok": True})
-            if not path.startswith("/policy/"):
+            route = parse_policy_path(path)
+            if route is None:
                 return self._send(404, {"error": "no such path"})
-            version = path[len("/policy/"):]
+            line, version = route
+            if not line.replace("-", "").replace("_", "").isalnum():
+                return self._send(400, {"error": "not a usable policy line name"})
             if version == "active":
                 try:
-                    version = attestations.active_version()
+                    version = attestations.active_version(line)
                 except Exception as exc:  # noqa: BLE001
                     # An enforcement callback that does not know the version
                     # number calls exactly this path. It gets a state, not a
@@ -195,7 +220,15 @@ def handler_for(attestations: Attestations):
                     return self._send(404, {"error": "no active version"})
             if not version.replace("-", "").replace("_", "").isalnum():
                 return self._send(400, {"error": "not a usable version name"})
-            return self._send(200, attestations.get(version))
+            att = attestations.get(version)
+            # A version addressed through a line it does not belong to is not
+            # served through it: /policy/payments-policy/v5 must not answer
+            # with conduct-policy's document. A version with no registry row
+            # has no line to check and is served as the unknown it is.
+            if att.get("policy_line") not in (None, line):
+                return self._send(404, {
+                    "error": f"{version} is not a version of policy line {line}"})
+            return self._send(200, att)
 
         def log_message(self, fmt: str, *args) -> None:
             pass

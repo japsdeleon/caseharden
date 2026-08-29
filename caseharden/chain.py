@@ -64,6 +64,12 @@ ROW_DIGEST_CHARS = 16
 # newlines could produce the same hash input as a different link.
 VERSION_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,30}$")
 
+# A policy line name arrives from a command-line flag too. The serving layer
+# treats any falsey stored value as conduct-policy, so an empty or whitespace
+# name registered here would create a row the scoped deactivation never matches
+# and the server then reads as a second active conduct version.
+LINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
 
 def canonical(payload: dict) -> str:
     """Byte-stable JSON. The hash is over these exact bytes."""
@@ -319,7 +325,7 @@ class ChainStore:
 
     def versions(self) -> List[dict]:
         return bq.query(
-            f"SELECT version, parent, active, root, certificate_uri,"
+            f"SELECT version, parent, active, root, certificate_uri, policy_id,"
             f" FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', promoted_at) AS promoted_at, policy"
             f" FROM `{bq.qualified_table(self.project, 'policy', 'versions')}`"
             f" ORDER BY promoted_at",
@@ -327,28 +333,50 @@ class ChainStore:
         )
 
     def register(self, version: str, parent: Optional[str], policy_json: str,
-                 root: str, certificate_uri: str) -> None:
+                 root: str, certificate_uri: str,
+                 policy_id: str = "conduct-policy") -> None:
         """Record the promoted version and the root that justifies it.
 
         On Day 4 the same root is written as an annotation on the version's Agent
         Registry entry, so the platform's own discovery layer carries the anchor.
+
+        Registration deactivates only within its own policy line. Version names
+        stay globally unique across lines: this path DELETE-then-INSERTs its own
+        version name, so without the ownership check a genesis in one line would
+        silently swallow another line's version. A row written before the
+        `policy_id` column existed carries NULL and belongs to `conduct-policy`.
         """
+        if not LINE_RE.match(policy_id):
+            raise ValueError(f"not a usable policy line name: {policy_id!r}")
         target = bq.qualified_table(self.project, "policy", "versions")
+        owners = bq.query(
+            f"SELECT policy_id FROM `{target}` WHERE version = @version",
+            self.project, self.token, params={"version": version},
+        )
+        for row in owners:
+            owner = row.get("policy_id") or "conduct-policy"
+            if owner != policy_id:
+                raise ValueError(
+                    f"version {version!r} belongs to policy line {owner!r}; "
+                    f"a name is never claimed twice across lines")
         bq.query(
             f"DELETE FROM `{target}` WHERE version = @version",
             self.project, self.token, params={"version": version},
         )
         bq.query(
-            f"UPDATE `{target}` SET active = FALSE WHERE active",
-            self.project, self.token,
+            f"UPDATE `{target}` SET active = FALSE"
+            f" WHERE active AND IFNULL(policy_id, 'conduct-policy') = @policy_id",
+            self.project, self.token, params={"policy_id": policy_id},
         )
         bq.query(
             f"INSERT INTO `{target}`"
-            f" (version, parent, policy, active, root, certificate_uri, promoted_at)"
-            f" VALUES (@version, @parent, @policy, TRUE, @root, @uri, CURRENT_TIMESTAMP())",
+            f" (version, parent, policy, active, root, certificate_uri, promoted_at,"
+            f" policy_id)"
+            f" VALUES (@version, @parent, @policy, TRUE, @root, @uri,"
+            f" CURRENT_TIMESTAMP(), @policy_id)",
             self.project, self.token,
             params={"version": version, "parent": parent or "", "policy": policy_json,
-                    "root": root, "uri": certificate_uri},
+                    "root": root, "uri": certificate_uri, "policy_id": policy_id},
         )
 
     def repoint(self, version: str, root: str, certificate_uri: str) -> None:

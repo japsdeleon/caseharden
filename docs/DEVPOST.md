@@ -180,8 +180,8 @@ until it passes is the tuning the Proposer and Examiner split exists to prevent.
 the fleet enforces today is the one the gate let through, not the newest one drafted
 (`captures/day8-gate-refuses-v6-no-improvement.txt`).
 
-Every number published is measured. `verify` p95 is 3.66s against a 5s target. 300 tests. 65
-mutations broken on purpose and all 65 caught, including one that survived its first run and
+Every number published is measured. `verify` p95 is 3.66s against a 5s target. 313 tests. 72
+mutations broken on purpose and all 72 caught, including one that survived its first run and
 now has two tests.
 
 ## What I learned
@@ -197,6 +197,18 @@ A session-scoped predicate in the DSL. The policy language is per-turn; the atta
 survive the current policy spread their steps across a session. The sealed holdout already
 carries ten session-shaped attacks, and `THREATS.md` records the one decision that gate needs
 first: which of the two session patterns the family means.
+
+An exam for the second policy line. The registry and the serving layer already hold two
+lines — `conduct-policy`, examined and enforced, and `payments-policy`, a one-rule
+human-granted floor — and the deny-only DSL makes their composition provable: a promotion in
+any line can only narrow the fleet's total authority (`THREATS.md` entry 11). What the
+second line is missing is its own sealed holdout, and building one at scale is a curation
+problem: detectors reduce millions of conduct events to findings, a Curator agent — a
+distinct identity that must never share anything with the Proposer — clusters them, drafts
+attack variations from confirmed patterns, and proposes the near-boundary benign sessions
+that make the BENIGN leg mean something, with every exam addition chained the way promotions
+are today. The exam evolving is the evidence moving, and the system already knows what to do
+when the evidence moves.
 
 Then a second host. Every agent is on Cloud Run today, and putting one on Agent Runtime
 would show that the roster and the enforcement callback do not care where a worker lives.

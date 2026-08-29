@@ -30,7 +30,7 @@ mk chain.links \
   "--time_partitioning_field=written_at --time_partitioning_type=DAY --clustering_fields=version,seq"
 
 mk policy.versions \
-  "version:STRING,parent:STRING,policy:STRING,active:BOOLEAN,root:STRING,certificate_uri:STRING,promoted_at:TIMESTAMP"
+  "version:STRING,parent:STRING,policy:STRING,active:BOOLEAN,root:STRING,certificate_uri:STRING,promoted_at:TIMESTAMP,policy_id:STRING"
 
 # The Notary must be able to read WHO may read the sealed exam without being
 # able to read the exam. roles/bigquery.metadataViewer carries datasets.get and
