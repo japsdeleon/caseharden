@@ -187,14 +187,23 @@
   details summary{cursor:pointer;font-weight:700;font-size:13.5px}
   /* One class per link kind. tests/test_workbench.py asserts all nine exist, so a
      kind that reaches the browser can never draw as unstyled text. */
-  .k-EVIDENCE, .k-EVIDENCE-CHANGED { color:#58a6ff }
-  .k-FINDING { color:#a371f7 }
-  .k-VERDICT, .k-APPROVAL { color:#2ea043 }
-  .k-DRAFT { color:inherit }
-  .k-DRAFT-REJECTED, .k-HOLDOUT-DENIED { color:#f85149 }
-  .k-EXAM { color:#d29922 }
-  .okbox{border:1px solid #1c3f26;border-left-width:4px;padding:12px 14px;border-radius:6px}
-  .okbox h3{margin:0 0 8px;font-size:15px}
+  /* Two classes each, so these match the specificity of `.step .kind` above and
+     win on order. Written as a one-class selector they lost that cascade outright,
+     which is one of the two reasons every kind drew as the same grey.
+     The other reason was that nothing carried the class at all.
+     Colours are this page's light palette. The values here were a dark theme's,
+     survivors of the mockup, and were only never seen because the rules were
+     dead. DRAFT states the default rather than inheriting it: `inherit` would
+     now override `.step .kind` and quietly restyle the one kind meant to have
+     no treatment. */
+  .kind.k-EVIDENCE, .kind.k-EVIDENCE-CHANGED { color:var(--accent) }
+  .kind.k-FINDING { color:#6b3fb5 }
+  .kind.k-VERDICT, .kind.k-APPROVAL { color:var(--good) }
+  .kind.k-DRAFT { color:var(--dim) }
+  .kind.k-DRAFT-REJECTED, .kind.k-HOLDOUT-DENIED { color:var(--bad) }
+  .kind.k-EXAM { color:var(--warn) }
+  .okbox{background:var(--good-soft);border:1px solid #bfe3ca;border-left:5px solid var(--good);border-radius:9px;padding:13px 15px}
+  .okbox h3{font-size:14px;color:var(--good);margin-bottom:6px}
   .stack > * + *{margin-top:14px}
 </style>
 </head>
@@ -241,7 +250,7 @@
     <!-- ---------------- left rail: the inbox ---------------- -->
     <div class="rail">
       <div class="card">
-        <div class="card-h">This morning&rsquo;s scan &mdash; 4 checks</div>
+        <div class="card-h" id="scanhead">This morning&rsquo;s scan</div>
         <div id="mail"></div>
         <div class="railnote" id="railnote"></div>
       </div>
@@ -271,9 +280,6 @@
    between the first turn and the confirmation. */
 const SESSION = "wb-" + Math.random().toString(36).slice(2, 10);
 
-/* Selected version. null means "whatever the registry says is active", which is
-   what the fleet is enforcing. */
-let selected = null;
 let WB = null;
 
 async function get(path) {
@@ -290,12 +296,24 @@ async function get(path) {
 }
 
 /* A failed load and an empty record must never draw the same picture. */
+function stateFailure(state) {
+  /* The server answers 200 with an `errors` map when a source read throws, so
+     links: [] can mean "nothing recorded" or "the read failed". Drawing the
+     first for the second is the worst thing this console can do. */
+  const errors = (state && state.errors) || {};
+  const keys = Object.keys(errors);
+  return keys.length ? keys.map(k => k + ": " + S(errors[k])).join("; ") : "";
+}
+
 (async function load(){
   try {
     const [state, finding] = await Promise.all([
-      get("/api/state" + (selected ? "?version=" + encodeURIComponent(selected) : "")),
+      /* The server still accepts ?version=; nothing on this page sets one. */
+      get("/api/state"),
       get("/api/finding"),
     ]);
+    const failed = stateFailure(state);
+    if (failed) throw new Error(failed);
     WB = { state: state, finding: finding };
   } catch (exc) {
     const box = document.getElementById("fatal");
@@ -322,7 +340,6 @@ function el(tag, cls, txt){
   return n;
 }
 /* Build DOM from a tiny spec so no user-supplied string is ever parsed as HTML. */
-function frag(html){ const t = document.createElement("template"); t.innerHTML = html; return t.content; }
 
 /* Every glossed term is a button that opens the Plain words panel on its entry. */
 const GLOSS = [
@@ -390,6 +407,21 @@ function facts(pairs){
   return dl;
 }
 function mono(txt){ return el("span", "mono", txt); }
+/* Payload fields arrive as whatever the record holds. `_shape_of_payload` requires
+   these keys to be present, not to be lists, so a malformed link reaches here and
+   `.join` throws on it. Rendering it as empty instead would state that nobody can
+   read the exam, which is a claim about the record rather than about the record
+   being unreadable. */
+function listSays(v, malformed){ return Array.isArray(v) ? v.join(", ") : malformed; }
+/* The scanned window is whatever the finding says it is. "72 hours" was this
+   fixture's, hand-written into three separate sentences, and every one of them
+   would have kept saying 72 against a finding that scanned something else. */
+function windowSpan(f){
+  const a = Date.parse(S(f.window_start)), b = Date.parse(S(f.window_end));
+  if (!isFinite(a) || !isFinite(b) || b <= a) return "";
+  const h = Math.round((b - a) / 3600000);
+  return h + " hour" + (h === 1 ? "" : "s");
+}
 function ago(seconds){
   const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
   if (h >= 1) return h + " hour" + (h === 1 ? "" : "s") + (m ? " " + m + " minutes" : "");
@@ -479,6 +511,12 @@ const STEP_PLAIN = {
   "EVIDENCE-CHANGED": ["The evidence was re-checked", "A later re-check replaced the original evidence step. Nothing was deleted."]
 };
 
+/* The kind is server data and it lands in a class attribute, so it is filtered to
+   the shape chain.py defines instead of trusted. A className cannot execute, but an
+   unfiltered value could append a class this stylesheet already uses for something
+   else, and the strip would style itself on the say-so of the record it is drawing. */
+const kindClass = k => String(k).replace(/[^A-Z-]/g, "");
+
 function renderStrip(){
   $("strip-sub").textContent = links.length
     ? links.length + " steps recorded for version " + S(state.version)
@@ -486,17 +524,25 @@ function renderStrip(){
 
   const today = $("today");
   today.textContent = "";
+  /* Which steps come after the analyst's is a fact about this chain. The fixture
+     had seven links with the verdict third, and "Steps 4 to 7" was written from
+     counting them once. */
+  const verdictLink = links.find(l => l.kind === "VERDICT");
+  const afterFirst = verdictLink ? verdictLink.seq + 1 : 0;
+  const afterVerdict = (afterFirst && afterFirst <= links.length)
+    ? (afterFirst === links.length ? "Step " + afterFirst : "Steps " + afterFirst + " to " + links.length)
+    : "The steps after yours";
   today.appendChild(say("div", null, [
     el("b", null, "Where today's case is. "),
     "A ", gloss("detector"), " has reported (step 2 below). ",
     el("b", null, "Step 3, your "), gloss("verdict"),
     el("b", null, ", is what this desk is asking you for. "),
-    "Steps 4 to 7 happen in other services. This console cannot do them and has no password that would let it."
+    afterVerdict, " happen in other services. This console cannot do them and has no password that would let it."
   ]));
   if (links.length && !sameCase) {
     today.appendChild(say("div", null, [
       el("br"),
-      "The seven steps below are the finished record of the ",
+      "The " + links.length + " steps below are the finished record of the ",
       el("b", null, "previous"), " case, ", S(state.version), ". Its ",
       gloss("job id"), " was ", mono(chainJob.slice(0, 34) + "…"),
       ". Today's case is a different scan, so it has no steps of its own yet."
@@ -524,7 +570,7 @@ function renderStrip(){
     b.setAttribute("aria-pressed", String(l.seq === detailSeq));
     b.appendChild(el("div", "n", "STEP " + l.seq));
     b.appendChild(el("div", "plain", plain[0]));
-    b.appendChild(el("div", "kind", l.kind));
+    b.appendChild(el("div", "kind k-" + kindClass(l.kind), l.kind));
     b.appendChild(el("div", "tick", l.intact ? "✓ recorded, fingerprint matches" : "✗ fingerprint does not match"));
     if (!l.intact) b.querySelector(".tick").style.color = "var(--bad)";
     b.addEventListener("click", () => { detailSeq = l.seq; renderStrip(); renderLinkDetail(); });
@@ -539,7 +585,9 @@ function renderStrip(){
   track.appendChild(after);
 }
 
-let detailSeq = 3;   /* opens on VERDICT: the step this desk is about */
+/* Opens on VERDICT, the step this desk is about. It was the fixture's seq 3,
+   which is only the verdict's position in that one chain. */
+let detailSeq = (links.find(l => l.kind === "VERDICT") || links[0] || {}).seq || 1;
 
 function renderLinkDetail(){
   const host = $("linkdetail");
@@ -557,12 +605,19 @@ function renderLinkDetail(){
     ["fingerprint", mono(S(l.hash).slice(0, 24) + "…")],
     ["follows the step before", l.prev_hash ? "yes, it carries step " + (l.seq - 1) + "'s fingerprint" : "nothing before it — this is the first step"]
   ];
-  if (l.kind === "EVIDENCE")       rows.push(["rows of activity cited", p.row_count], ["window", S(p.window_start) + " to " + S(p.window_end)], ["who can read the sealed exam", (p.access || []).join(", ")]);
+  if (l.kind === "EVIDENCE" || l.kind === "EVIDENCE-CHANGED")
+                                   rows.push(["rows of activity cited", p.row_count], ["window", S(p.window_start) + " to " + S(p.window_end)], ["who can read the sealed exam", listSays(p.access, "this link\u2019s access list is not a list; the record is malformed")]);
   if (l.kind === "FINDING")        rows.push(["family", p.family], ["sessions", p.sessions_total], ["job id", mono(p.job_id)]);
   if (l.kind === "VERDICT")        rows.push(["who", p.analyst], ["their call", p.disposition], ["screening of their text", (p.model_armor || {}).verdict + " (" + (p.model_armor || {}).band + ")"], ["their words", p.rationale]);
   if (l.kind === "DRAFT")          rows.push(["rules in the draft", p.rule_count], ["version", p.version]);
   if (l.kind === "HOLDOUT-DENIED") rows.push(["what was refused", p.status + " " + p.http_code], ["who was refused", p.principal], ["filed as", p.recorded_as]);
-  if (l.kind === "EXAM")           rows.push(["result", p.verdict], ...(p.checks || []).map(c => [c[0], (c[1] ? "pass — " : "fail — ") + c[2]]));
+  if (l.kind === "EXAM")           rows.push(["result", p.verdict], ...(Array.isArray(p.checks) ? p.checks : []).map(c => [c[0], (c[1] ? "pass — " : "fail — ") + c[2]]));
+  /* EVIDENCE-CHANGED carries everything EVIDENCE does and replaces an earlier
+     link. Which link it replaces and why are the two things that make it a
+     re-attestation rather than a first reading, and both are in the payload. */
+  if (l.kind === "EVIDENCE-CHANGED") rows.push(["replaces step", p.supersedes], ["why the evidence was restated", p.reason]);
+  /* `error` is the one key the grammar requires of a refused draft. */
+  if (l.kind === "DRAFT-REJECTED")   rows.push(["why the grammar refused it", p.error], ...(p.version ? [["candidate version", p.version]] : []));
   if (l.kind === "APPROVAL")       rows.push(["who", p.approver], ["what they approved", "the graded result at step 6, by its fingerprint"], ["their note", p.note]);
   host.appendChild(facts(rows));
 }
@@ -572,6 +627,9 @@ function renderLinkDetail(){
 function renderMail(){
   const host = $("mail");
   host.textContent = "";
+  /* The count is the parsed report's, not the fixture's four. */
+  $("scanhead").textContent = "This morning\u2019s scan"
+    + (FAMS.length ? " \u2014 " + FAMS.length + (FAMS.length === 1 ? " check" : " checks") : "");
 
   if (!FAMS.length) {
     host.appendChild(el("div", "railnote",
@@ -598,7 +656,7 @@ function renderMail(){
   const note = $("railnote");
   note.textContent = "";
   note.appendChild(say("span", null, [
-    "Four ", gloss("detector", "detectors"), " scanned the same 72 hours of what the ",
+    String(FAMS.length), " ", gloss("detector", "detectors"), " scanned the same ", windowSpan(F), " of what the ",
     gloss("fleet"), " did. ", el("b", null, String(total)), " events flagged in total. ",
     "A detector only looks. It cannot block anything."
   ]));
@@ -662,7 +720,7 @@ function renderCase(){
 
   // ---- summary
   host.appendChild(say("p", "lede", [
-    "A ", gloss("detector"), " scanned the last 72 hours of what the ", gloss("fleet"),
+    "A ", gloss("detector"), " scanned the last ", windowSpan(F), " of what the ", gloss("fleet"),
     " did and flagged ", el("b", null, String(fam.count)),
     fam.count === 1 ? " event. " : " events. ",
     fam.note
@@ -702,7 +760,7 @@ function renderCase(){
   // ---- freshness of the file, stated as the numbers given
   if (box.age_s !== undefined) {
     const stale = box.age_s > 600;
-    host.appendChild(el(stale ? "div" : "div", stale ? "warnbox" : "note",
+    host.appendChild(el("div", stale ? "warnbox" : "note",
       stale
         ? "Careful: this scan result was written " + ago(box.age_s) + " ago. If no investigation is "
           + "running right now, you are looking at a previous run, not a live one."
@@ -716,7 +774,8 @@ function renderCase(){
   c1b.appendChild(facts([
     ["what was flagged", say("span", null, [gloss("check family"), ": ", mono(F.family)])],
     ["which detector", mono(F.detector)],
-    ["time window", S(F.window_start) + "  to  " + S(F.window_end) + "  (72 hours)"],
+    ["time window", S(F.window_start) + "  to  " + S(F.window_end)
+      + (windowSpan(F) ? "  (" + windowSpan(F) + ")" : "")],
     ["conversations involved", S(F.sessions_total) + " sessions"],
     ["rows shown below", (F.rows || []).length + " of them, cited in full"],
     ["where the rows live", mono(F.table)],
@@ -943,6 +1002,41 @@ function checkSubject(){
 }
 document.addEventListener("input", e => { if (e.target && e.target.id === "msg") checkSubject(); });
 
+/* What the record already held before anything was sent from this page. A row
+   that was there at boot is not evidence that a later send landed, and both
+   readback branches below used to treat any row as proof of the send in hand. */
+const decisionBefore = box.decision ? S(box.decision.decision_id) : null;
+
+/* Read the record back and answer the one question both branches below ask: is
+   there a verdict row that was not already there before this send?
+
+     {known:false}                   the lookup did not complete, so nothing is known
+     {known:true, row:null}          no verdict row for this case
+     {known:true, row, fresh:false}  a row, but the one already there at boot
+     {known:true, row, fresh:true}   a row this send is the first to see
+
+   `decision_error` is a failed lookup, not an answer of none. The server sends
+   `decision: null` beside it and the difference is the whole point. */
+async function readBackDecision(){
+  let later = null;
+  try {
+    later = await get("/api/finding");
+  } catch (exc) {
+    return { known: false };
+  }
+  /* A 200 is not a finding. The server answers present:false with an `error`
+     when the file is half written, and present:false without one when there is
+     no file at all, and in neither case did it look a decision up. Reporting
+     either as "no verdict recorded" is the defect already fixed on the boot
+     path, on a path that did not exist when that fix was made. */
+  if (!later || later.present !== true || later.error || later.decision_error) return { known: false };
+  /* A readback about a different case says nothing about this send. */
+  if (S((later.finding || {}).job_id || "") !== BOOT_JOB) return { known: false };
+  const row = later.decision || null;
+  if (!row) return { known: true, row: null };
+  return { known: true, row: row, fresh: S(row.decision_id) !== decisionBefore };
+}
+
 async function trySend(){
   const ta = $("msg"), out = $("outbox");
   if (!ta || !out) return;
@@ -961,7 +1055,7 @@ async function trySend(){
      page states what it was told and never guesses. */
   const button = out.parentElement.querySelector(".send");
   if (button) button.disabled = true;
-  let ok = false, detail = "";
+  let ok = false, unknown = false, detail = "";
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -970,14 +1064,59 @@ async function trySend(){
     });
     const body = await response.json().catch(() => null);
     ok = response.ok;
+    /* A 5xx is not a refusal. The Copilot may have written the row and failed on
+       the way back, and this page has been told nothing either way. Only an
+       explicit 4xx is the server saying no. */
+    unknown = !ok && response.status >= 500;
     detail = (body && (ok ? body.reply : body.error))
              || ("HTTP " + response.status + ", and no reason in the body");
   } catch (exc) {
+    /* The request never completed. Whether it arrived is unknowable from here. */
+    unknown = true;
     detail = String(exc);
   }
   if (button) button.disabled = false;
 
-  if (ok) {
+  if (unknown) {
+    /* Neither outcome may be claimed, so the record is read back and the answer
+       is whatever it says. An adversarial pass caught this branch asserting
+       "Refused. Nothing was recorded." on a dropped connection. */
+    const r = el("div", "warnbox");
+    const back = await readBackDecision();
+    if (back.known && back.row && back.fresh) {
+      r.appendChild(el("h3", null, "A verdict is on this case now."));
+      r.appendChild(say("p", null, [
+        "The send failed on the way back. Reading the record back shows a verdict that was "
+        + "not there when this page loaded, decision id ", mono(S(back.row.decision_id)),
+        ". That is not proof your message is what wrote it: another analyst, or another tab, "
+        + "could have recorded one in between. Check the id is the verdict you meant to file "
+        + "before you send again."
+      ]));
+    } else if (back.known && back.row) {
+      r.appendChild(el("h3", null, "Unknown. A verdict was already on this case before you sent."));
+      r.appendChild(say("p", null, [
+        "The send did not complete. The record holds decision id ", mono(S(back.row.decision_id)),
+        ", but that row was already there when this page loaded, so it says nothing about whether "
+        + "your message arrived. Reload before sending again, so you do not file a second verdict."
+      ]));
+    } else if (back.known) {
+      r.appendChild(el("h3", null, "Unknown. This page cannot tell you whether it was recorded."));
+      r.appendChild(el("p", null,
+        "The send did not complete, and no verdict row for this case is in the record. "
+        + "That is not the same as a refusal: the request may never have arrived, or it "
+        + "may have arrived and failed on the way back. Reload before sending again, so "
+        + "you do not file a second verdict on top of a first."));
+    } else {
+      r.appendChild(el("h3", null, "Unknown. This page cannot tell you whether it was recorded."));
+      r.appendChild(el("p", null,
+        "The send did not complete, and the check for an existing verdict did not complete "
+        + "either, so this page knows nothing about the state of the record. Reload before "
+        + "sending again."));
+    }
+    r.appendChild(el("p", "note", "What went wrong, verbatim:"));
+    r.appendChild(el("pre", "sentpre", detail));
+    out.appendChild(r);
+  } else if (ok) {
     /* A 200 means the Copilot took the turn. It does NOT mean a row was written:
        the Copilot normally asks for confirmation first, and its own client says
        the reply is not evidence of storage. Claiming "recorded" here would be
@@ -985,26 +1124,36 @@ async function trySend(){
        failure the rest of this system exists to refuse. So the record is looked
        up, and only a real decision row is reported as one. */
     const r = el("div", "okbox");
-    let stored = null;
-    try {
-      const later = await get("/api/finding");
-      if (later && later.decision && !later.decision_error) stored = later.decision;
-    } catch (exc) {
-      /* The lookup failed. That is not a reason to claim either outcome. */
-    }
-    if (stored) {
-      r.appendChild(el("h3", null, "Recorded. The Copilot wrote the row."));
+    const back = await readBackDecision();
+    if (back.known && back.row && back.fresh) {
+      r.appendChild(el("h3", null, "Recorded. A verdict row is there now."));
       r.appendChild(say("p", null, [
         "Confirmed by reading the record back, not by the reply alone. Decision id ",
-        mono(S(stored.decision_id)), ". The ", gloss("Analyst Copilot"),
-        " wrote it under its own identity; this page wrote nothing."
+        mono(S(back.row.decision_id)), ", and it was not there when this page loaded. The ",
+        gloss("Analyst Copilot"), " writes under its own identity; this page wrote nothing. ",
+        "What this page cannot show you is that your message is the one that produced this "
+        + "row, only that the row is new."
       ]));
-    } else {
+    } else if (back.known && back.row) {
+      r.appendChild(el("h3", null, "Sent. The only verdict on this case predates this message."));
+      r.appendChild(say("p", null, [
+        "The ", gloss("Analyst Copilot"), " took the turn and replied. The record holds decision id ",
+        mono(S(back.row.decision_id)), ", but that row was already there when this page loaded, so "
+        + "it is not evidence that this message was written. Read the reply."
+      ]));
+    } else if (back.known) {
       r.appendChild(el("h3", null, "Sent. No record for this case yet."));
       r.appendChild(say("p", null, [
         "The ", gloss("Analyst Copilot"), " took the turn and replied. No verdict row for this "
         + "case is in the record yet, which usually means it is asking you to confirm. Read the "
         + "reply and answer it. This page does not claim a record it cannot see."
+      ]));
+    } else {
+      r.appendChild(el("h3", null, "Sent. Whether a row was written is unknown."));
+      r.appendChild(say("p", null, [
+        "The ", gloss("Analyst Copilot"), " took the turn and replied, but the check for a verdict "
+        + "row did not complete, so this page cannot say whether one exists. Read the reply, and "
+        + "reload before sending again."
       ]));
     }
     r.appendChild(el("p", "note", "What the Copilot said:"));
@@ -1069,6 +1218,23 @@ function attestCard(){
       "It does not prove the record was true when it was written. Only a live check against the "
       + "warehouse can do that, and this console never runs one: it holds no password for it."));
     if (att.note) b.appendChild(el("p", "quote", att.note));
+  } else if (att.policy_server_reached === false) {
+    /* UNREACHABLE is this console's own word for not knowing. workbench.py mints
+       it when the request throws, so attributing it to the Policy Server would be
+       the page stating an outcome no server ever sent. The reason is rendered
+       too: it was the only thing the unknown state carried and it was dropped. */
+    b.appendChild(el("div", "warnbox",
+      "This console could not reach the Policy Server, so it does not know whether the record "
+      + "is attested. UNREACHABLE is this page's word for not knowing, not an answer the Policy "
+      + "Server gave. Enforcement is unchanged and promotion stays frozen while it is unknown."));
+    if (att.policy_url) {
+      b.appendChild(el("p", "note", "The address it tried:"));
+      b.appendChild(el("pre", "sentpre", S(att.policy_url)));
+    }
+    if (att.error) {
+      b.appendChild(el("p", "note", "Why the request failed, verbatim:"));
+      b.appendChild(el("pre", "sentpre", S(att.error)));
+    }
   } else {
     b.appendChild(el("p", null, "State reported by the Policy Server: " + S(att.state)
       + ". This console did not compute it and cannot."));
@@ -1086,6 +1252,9 @@ function attestCard(){
     ["fingerprint of the whole chain", mono(S(att.root).slice(0, 32) + "…")],
     ["sealed copy", state.source ? mono(state.source.certificate_uri) : ""],
     ["promoted at", state.source ? state.source.promoted_at : ""],
+    ["when this answer was checked", att.checked_s_ago === undefined ? ""
+      : (att.cached ? S(att.checked_s_ago) + "s ago, from the Policy Server's cache"
+                    : "just now, verified for this request")],
     ["further promotions", S(att.promotions) === "n/a"
       ? "not applicable in snapshot mode — a saved folder has nothing to promote" : S(att.promotions)]
   ]));
@@ -1096,9 +1265,21 @@ function attestCard(){
   if (!versions.length) {
     d.appendChild(el("p", "note", "No versions are registered in this saved copy."));
   } else {
+    /* The sprint doc asks for attested / quarantined / frozen per row. The
+       registry does not carry them: versions() selects version, parent, active,
+       root, certificate_uri, promoted_at and policy, and nothing else. Those
+       states come from re-scoring the sealed exam, which only the Policy Server's
+       identity may do, and this console asks it about one version per page load
+       and holds no credential to ask again. So the row it did ask about carries
+       the answer it was given, and every other row says it was not asked. A badge
+       on a row nobody reported on would be the page inventing the one field the
+       whole system exists to establish. */
     versions.forEach(v => d.appendChild(facts([
       ["version", S(v.version) + (v.parent ? "  (grew from " + v.parent + ")" : "")],
       ["in force", S(v.active).toLowerCase() === "true" ? "yes" : "not marked active in this copy"],
+      ["attestation", S(v.version) === S(att.version) && att.policy_server_reached !== false
+        ? S(att.state) + (S(att.promotions) === "FROZEN" ? ", further promotions frozen" : "")
+        : "not checked; this console asks about one version per load"],
       ["fingerprint", mono(S(v.root).slice(0, 32) + "…")],
       ["promoted at", v.promoted_at]
     ])));
@@ -1120,6 +1301,16 @@ renderCase();
    a half-written verdict would lose the analyst's words, so a newer finding is
    announced and not applied. Reloading is the analyst's decision. */
 const BOOT_JOB = S(F.job_id);
+/* Every poll costs one BigQuery job for the decision row in live mode, and a
+   second one for the near miss while no verdict exists, which is precisely the
+   stretch an analyst is being waited on. At three seconds that was up to 2,400
+   queries an hour per open tab, for a chip.
+   ponytail: announce-only, and it stops once it has announced. Rough edge 1 in
+   the handoff wants a re-render that leaves a half-written verdict alone; that
+   is the upgrade path, not a faster tick. */
+const NEWCASE_POLL_MS = 30000;
+let newcasePoll = null;
+
 async function refreshFinding(){
   try {
     const later = await get("/api/finding");
@@ -1129,13 +1320,16 @@ async function refreshFinding(){
       chip.style.display = "";
       chip.textContent = "a newer finding is under review \u2014 reload";
       chip.title = now;
+      /* The chip has no else branch and never clears, so once it is showing
+         there is nothing further to look for and the interval is only cost. */
+      if (newcasePoll) { clearInterval(newcasePoll); newcasePoll = null; }
     }
   } catch (exc) {
     /* A failed poll leaves the last good render on screen. It must never blank
        a pane: an empty pane and an empty record are the same picture here. */
   }
 }
-setInterval(refreshFinding, 3000);
+newcasePoll = setInterval(refreshFinding, NEWCASE_POLL_MS);
 
 }
 </script>

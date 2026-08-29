@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import http.client
 import json
+import re
 import sys
 import threading
 import time
@@ -912,7 +913,15 @@ def test_an_old_finding_reports_a_large_age(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_all_nine_link_kinds_reach_the_browser():
-    """DRAFT-REJECTED and EVIDENCE-CHANGED are in no fixture, so nothing else draws them."""
+    """DRAFT-REJECTED and EVIDENCE-CHANGED are in no fixture, so nothing else draws them.
+
+    ponytail: still a text assertion, because the suite runs no JavaScript. It is a
+    stronger one than it was. The previous version asserted only that `.k-<KIND>`
+    appeared somewhere in the file, so it passed against a stylesheet no element ever
+    carried: measured in a browser, all nine kinds drew as the same grey. A rule
+    existing is not a rule reaching anything. Executing renderStrip is the real
+    check and wants a DOM this suite does not have.
+    """
     from caseharden.chain import build
 
     links = build("v9", [(kind, {"kind_under_test": kind}) for kind in KINDS])
@@ -921,9 +930,24 @@ def test_all_nine_link_kinds_reach_the_browser():
     assert len(KINDS) == 9
     assert all(r["intact"] for r in rows)
     assert all(r["hash"] and r["seq"] for r in rows)
+
     page = workbench.PAGE.read_text()
     for kind in KINDS:
         assert f".k-{kind}" in page, f"the timeline has no styling for {kind}"
+
+    # The styling has to reach an element. Nothing above proves that, and for as
+    # long as this test was only the loop above, nothing did.
+    assert 'el("div", "kind k-" + kindClass(l.kind), l.kind)' in page, \
+        "the strip no longer puts the kind's class on the element it draws"
+    assert 'el("div", "kind", l.kind)' not in page, \
+        "the unstyled kind label is back"
+
+    # And it has to win the cascade. `.step .kind` sets a colour at two classes,
+    # so a bare `.k-KIND` rule loses to it and is dead while still being present,
+    # which is exactly what this test used to accept.
+    for selector in re.findall(r"\.k-[A-Z-]+", page):
+        assert f".kind{selector}" in page, \
+            f"{selector} is written without .kind and loses to `.step .kind`"
 
 
 # --------------------------------------------------------------------------
@@ -994,3 +1018,147 @@ def test_a_full_recheck_still_claims_the_replay(capsys):
     assert recheck(FIXTURE) == 0
     out = capsys.readouterr().out
     assert "replay proves its measurements were not invented" in out
+
+
+# --------------------------------------------------------------------------
+# The console never states an outcome it did not receive from the server.
+# Two more defects of that family, found by a review on 2026-08-29.
+# --------------------------------------------------------------------------
+
+class _Answered:
+    """A Policy Server that answers. `json.load` reads through `read`."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        import json as _json
+        return _json.dumps(self._payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def test_the_unknown_state_is_marked_as_this_consoles_own_word(monkeypatch):
+    """UNREACHABLE is minted in the exception handler. Nothing reported it.
+
+    The page says who reported the state, in words, so the payload has to carry
+    which of the two it is. Without this flag the console printed 'State reported
+    by the Policy Server: UNREACHABLE' for a server that never answered.
+    """
+    monkeypatch.setattr(workbench.bq, "access_token", lambda sa: "t")
+    monkeypatch.setattr(workbench.ChainStore, "versions",
+                        lambda self: [{"version": "v5", "active": "true"}])
+    monkeypatch.setattr(workbench.ChainStore, "read", lambda self, v: [])
+    source = workbench.LiveSource("devpost-hackathon-506416",
+                                  "http://127.0.0.1:1", workbench.Tokens())
+    att = source.state(None)["attestation"]
+    assert att["policy_server_reached"] is False
+    assert att["error"], "the only account of what failed was dropped"
+    assert att["policy_url"]
+
+
+def test_a_policy_server_that_answers_is_marked_reached(monkeypatch):
+    monkeypatch.setattr(workbench.bq, "access_token", lambda sa: "t")
+    monkeypatch.setattr(workbench.ChainStore, "versions",
+                        lambda self: [{"version": "v5", "active": "true"}])
+    monkeypatch.setattr(workbench.ChainStore, "read", lambda self, v: [])
+    monkeypatch.setattr(workbench.urllib.request, "urlopen",
+                        lambda *_a, **_k: _Answered(
+                            {"version": "v5", "attested": True, "state": "ATTESTED"}))
+    source = workbench.LiveSource("devpost-hackathon-506416",
+                                  "https://policy.example.run.app", workbench.Tokens())
+    att = source.state(None)["attestation"]
+    assert att["policy_server_reached"] is True
+    assert att["state"] == "ATTESTED"
+
+
+def test_the_flag_tracks_who_answered_not_what_they_said(monkeypatch):
+    """A Policy Server is allowed to report UNREACHABLE about something else.
+
+    That answer came from the server and may be attributed to it. A flag keyed on
+    the value rather than on provenance would call this one unreached, which is
+    the same confusion in the other direction.
+    """
+    monkeypatch.setattr(workbench.bq, "access_token", lambda sa: "t")
+    monkeypatch.setattr(workbench.ChainStore, "versions",
+                        lambda self: [{"version": "v5", "active": "true"}])
+    monkeypatch.setattr(workbench.ChainStore, "read", lambda self, v: [])
+    monkeypatch.setattr(workbench.urllib.request, "urlopen",
+                        lambda *_a, **_k: _Answered(
+                            {"version": "v5", "attested": False, "state": "UNREACHABLE"}))
+    source = workbench.LiveSource("devpost-hackathon-506416",
+                                  "https://policy.example.run.app", workbench.Tokens())
+    att = source.state(None)["attestation"]
+    assert att["policy_server_reached"] is True
+    assert att["state"] == "UNREACHABLE"
+
+
+def _before(page, needle, window=900):
+    """The slice of page text leading up to `needle`, for a coupling assertion."""
+    at = page.find(needle)
+    assert at != -1, f"{needle!r} is no longer on the page"
+    return page[max(0, at - window):at]
+
+
+def test_a_delivery_claim_is_coupled_to_a_row_the_send_produced():
+    """ponytail: text assertions, because the suite runs no JavaScript.
+
+    Weaker than executing the branch, and named so rather than dressed up. The
+    upgrade path is a node harness over the page's pure functions; node is on
+    this machine but adding a JS runner to the suite two days before submission
+    buys less than it risks. What these do catch is the exact regression: a claim
+    of delivery that is not guarded by the freshness comparison.
+    """
+    page = workbench.PAGE.read_text()
+    assert "const decisionBefore = box.decision" in page, "the baseline is gone"
+    assert "fresh: S(row.decision_id) !== decisionBefore" in page
+    for claim in ("A verdict is on this case now.",
+                  "Recorded. A verdict row is there now."):
+        assert "back.fresh" in _before(page, claim), \
+            f"{claim!r} is no longer guarded by the freshness check"
+    assert "if (later && later.decision && !later.decision_error) stored" not in page, \
+        "the old any-row-is-proof readback is back"
+
+    # A 200 is not a finding. read_finding answers present:false with an `error`
+    # for a half-written file and without one when there is no file, and neither
+    # involved a decision lookup. The boot path checks box.error; the readback
+    # did not, which is how the already-fixed defect came back on a new path.
+    assert "later.present !== true || later.error" in page, \
+        "a failed or absent finding read classifies as an absence again"
+    assert 'S((later.finding || {}).job_id || "") !== BOOT_JOB' in page, \
+        "a readback about a different case counts as an answer about this one"
+
+
+def test_a_payload_field_that_should_be_a_list_is_named_when_it_is_not():
+    """`_shape_of_payload` requires these keys to exist, not to be lists.
+
+    A served link with `access` as an object reached `(p.access || []).join(...)`
+    and threw, which drew an empty pane rather than a malformed record. Widening
+    the EVIDENCE branch to EVIDENCE-CHANGED widened that exposure too.
+    """
+    page = workbench.PAGE.read_text()
+    assert "(p.access || []).join" not in page, "a non-list access field throws again"
+    assert "listSays(p.access" in page
+    # Pin the guard, not just the call site: a listSays whose body dropped the
+    # isArray check would leave every call site reading exactly as it does now.
+    assert "function listSays(v, malformed){ return Array.isArray(v) ? v.join" in page, \
+        "listSays no longer checks that the value is a list"
+    assert "Array.isArray(p.checks)" in page, "a non-list checks field throws"
+
+
+def test_the_unknown_state_is_not_attributed_to_the_policy_server():
+    page = workbench.PAGE.read_text()
+    claim = "State reported by the Policy Server: "
+    # Ordering, not a byte window: the guard branch has to open before the only
+    # sentence that names the Policy Server as the source of the state.
+    assert page.count(claim) == 1, "a second, unguarded attribution appeared"
+    guard = page.find("att.policy_server_reached === false")
+    assert guard != -1, "the reached check is gone"
+    assert guard < page.find(claim), \
+        "the attribution is no longer behind the reached check"
+    assert "UNREACHABLE is this page's word for not knowing" in page
+    assert "att.error" in page, "the reason the request failed is dropped again"

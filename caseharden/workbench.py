@@ -271,13 +271,22 @@ class LiveSource(Source):
                     headers["Authorization"] = "Bearer " + token
             request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=30) as response:
-                return json.load(response)
+                answer = json.load(response)
+            # Which of the two answers below the page is holding is not derivable
+            # from the value: the unknown state minted in the handler carries the
+            # same shape and its own "state". The page says in words who reported
+            # the state, so it has to be told, not left to guess from a key.
+            answer["policy_server_reached"] = True
+            return answer
         except Exception as exc:  # noqa: BLE001 - every failure is the unknown state
             # A console that cannot reach the Policy Server does not know the
             # state, and "unknown" is a state this system already defines. It is
             # never rendered as attested, so a broad catch fails closed.
+            # "UNREACHABLE" is minted here, by this console. Nothing answered.
+            # The page renders it as not knowing rather than as a Policy Server
+            # verdict, which is what policy_server_reached tells it.
             return {"version": version, "attested": False, "state": "UNREACHABLE",
-                    "promotions": "FROZEN",
+                    "promotions": "FROZEN", "policy_server_reached": False,
                     "error": f"{type(exc).__name__}: {exc}"[:300],
                     "policy_url": url}
 
