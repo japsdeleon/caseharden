@@ -48,6 +48,7 @@ usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -61,7 +62,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from . import bq, creds
+from . import bq, cases, creds, verdicts
+# The same list infra/110_run_loop.py refuses on, imported rather than
+# restated: a queue whose idea of unusable screening drifts from the
+# driver's shows cases as done that the driver will not proceed with.
+from .verdicts import UNUSABLE_SCREENING
 from .chain import ChainStore
 
 REPO = Path(__file__).resolve().parent.parent
@@ -168,6 +173,29 @@ class Source:
 
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         return None
+
+    def decided_subjects(self, kind: str) -> Optional[Dict[str, str]]:
+        """Each decided subject and when it was last decided, or None for cannot know.
+
+        None and the empty mapping are different answers and the queue draws them
+        differently. A source with no warehouse behind it returns None, because
+        answering "none of these are decided" would put a claim on the screen
+        that nothing checked.
+
+        The timestamp and not just the subject, because "has a verdict" and "has
+        a verdict about what is on screen now" are different questions once a
+        case can be revised.
+        """
+        return None
+
+    def versions(self) -> list:
+        """The version registry, for checking what a verdict cited against it.
+
+        Empty means cannot say, not none, and `citation_check` reads it that way.
+        A source with no registry behind it must never be the reason a citation
+        is drawn as unknown to the registry.
+        """
+        return []
 
 
 class FixtureSource(Source):
@@ -315,10 +343,21 @@ class LiveSource(Source):
         out["attestation"] = self.attestation(version)
         return out
 
+    # Named columns, never `*`. The six after `approved` were added to the table
+    # by infra/32_analyst_identity.sh: the policy the analyst cited, whether they
+    # cited it at all, and the machine advisory as it was displayed beside their
+    # verdict box. A row written before that migration carries NULL in all six,
+    # which is a different answer from a verdict that cited nothing, and the page
+    # draws the two differently.
     DECISION_COLUMNS = (
-        "decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', ts) AS ts,"
+        "decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', ts) AS ts,"
         " kind, analyst, subject, disposition, rationale, ma_verdict, ma_band,"
-        " ma_prompt_injection_score, ma_jailbreak_score, approved")
+        " ma_prompt_injection_score, ma_jailbreak_score, approved,"
+        " cited_policy_id, cited_version, citation_source,"
+        " advisory_recommendation, advisory_rule, advisory_confidence, advisory_source")
+
+    def versions(self) -> list:
+        return self._store().versions()
 
     def decision(self, kind: str, subject: str) -> Optional[dict]:
         """The review row the Copilot wrote against this exact subject.
@@ -336,6 +375,37 @@ class LiveSource(Source):
             self.project, self.tokens.get(NOTARY),
             params={"kind": kind, "subject": subject})
         return rows[0] if rows else None
+
+    def decided_subjects(self, kind: str) -> Optional[Dict[str, str]]:
+        """One query for the whole queue, rather than one per row.
+
+        A queue that could not tell a decided case from a waiting one would list
+        every finding ever published as work, which is the state this store was
+        built to replace. The decision itself is still not copied anywhere: this
+        asks which subjects have a row and keeps no part of the row.
+
+        Grouped rather than filtered by a list of subjects, because
+        `caseharden/bq.py` takes scalar named parameters only, and building an
+        `IN` list into the SQL text is the interpolation that module exists to
+        avoid. The distinct subjects here are the findings that have been
+        reviewed, which is the same order of magnitude as the cases on disk.
+        """
+        rows = bq.query(
+            f"SELECT subject,"
+            f" FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', latest.ts) AS ts,"
+            f" latest.disposition AS disposition,"
+            f" latest.ma_verdict AS ma_verdict"
+            f" FROM (SELECT subject, ARRAY_AGG(t ORDER BY t.ts DESC LIMIT 1)[OFFSET(0)]"
+            f" AS latest FROM `{bq.qualified_table(self.project, 'review', 'decisions')}`"
+            f" AS t WHERE kind = @kind GROUP BY subject)",
+            self.project, self.tokens.get(NOTARY), params={"kind": kind})
+        # The same format `DECISION_COLUMNS` produces, because `_predates`
+        # compares these as strings and only a shared fixed-width UTC shape makes
+        # that safe.
+        # The latest row per subject rather than only its timestamp: whether a
+        # verdict closes a case depends on what it says and on whether its
+        # screening cleared, and both are on the row.
+        return {r["subject"]: r for r in rows}
 
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         """A row about this job filed under a subject the driver will never find.
@@ -398,6 +468,201 @@ def read_finding(path: Path = LIVE_FINDING) -> dict:
                 "error": f"{type(exc).__name__}: {exc}"[:200]}
 
 
+STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _stamp(value) -> Optional[str]:
+    """The value if it is a real instant in the one format both sides use, else None.
+
+    `STAMP_RE` alone counts digits and punctuation, so `2026-99-99T99:99:99Z`
+    matched it and `active_at` answered a definite version for a window that
+    never happened. An adversarial pass found that. Parsing is what rules out an
+    impossible date, and the pattern is kept in front of it so the format itself
+    is still the thing being required rather than whatever `strptime` would also
+    accept.
+
+    Comparison stays lexicographic afterwards. That is valid only because every
+    stamp reaching here is this exact fixed-width UTC format, which is what this
+    function is now guaranteeing rather than assuming.
+    """
+    if not (isinstance(value, str) and STAMP_RE.match(value)):
+        return None
+    try:
+        datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return value
+
+
+INSTANT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$")
+
+
+def _instant(value) -> Optional[datetime.datetime]:
+    """One UTC stamp as a moment, at whatever precision it was written with.
+
+    Parsed rather than compared as text, and the two are not the same answer
+    once precision is mixed. `2026-08-30T10:00:00.100000Z` sorts BEFORE
+    `2026-08-30T10:00:00Z` as a string, because `.` is below `Z`, so the older
+    of the two would read as the newer for exactly the records where the
+    difference matters.
+
+    Both shapes are accepted because both exist: rows written before the
+    timestamps carried microseconds still have to be readable, and a comparison
+    that refused them would answer "cannot tell" for the entire history.
+    """
+    if not (isinstance(value, str) and INSTANT_RE.match(value)):
+        return None
+    for shape in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.datetime.strptime(value, shape)
+        except ValueError:
+            continue
+    return None
+
+
+def _predates(revised_at, decision_ts) -> Optional[bool]:
+    """True when the verdict on show was recorded before the evidence changed.
+
+    A case that is revised keeps its id and its verdict lookup, so the pane can
+    end up showing revision 1's rows beside a review row filed against revision
+    0. Nothing in either record says so, and a month later the pair reads as one
+    consistent decision about the evidence above it.
+
+    Both sides are parsed to a moment. They were compared as strings while both
+    were second-granularity, and a verdict at 10:00:00.100 with a revision at
+    10:00:00.900 then formatted identically and answered "not stale" about
+    evidence that had changed after the review. The timestamps now carry
+    microseconds at both sources, and `_instant` still reads the second-only
+    shape so the records written before that stay comparable.
+
+    Anything it cannot read answers None. A wrong `false` here is the reading
+    that hides the mismatch, so not knowing has to be sayable.
+    """
+    revised = _instant(revised_at)
+    decided = _instant(decision_ts)
+    if revised is None or decided is None:
+        return None
+    return decided < revised
+
+
+DEFAULT_LINE = "conduct-policy"
+
+
+def active_at(versions: list, when, policy_id: str = DEFAULT_LINE) -> Optional[str]:
+    """The version of one policy line that had been promoted most recently at `when`.
+
+    This is the "version active during the finding window" the citation is
+    supposed to name, and this function is here because **this is the only
+    process that can compute it.** It needs two facts in the same place: the
+    finding's window bounds, which arrive from the case store or the live
+    finding file, and each version's promotion time, which lives in
+    `policy.versions` and is read here under `notary-sa`. The Analyst Copilot,
+    which writes the row, has neither. It is handed a job id string and holds
+    `analyst-sa`, which has no read on the registry at all, so it stores what
+    the analyst named and marks a row that named nothing as naming nothing.
+
+    A read-time check rather than a write-time default, and that ordering is a
+    property rather than a compromise: the registry gains versions after a
+    verdict is filed, and answering now answers against the registry as it
+    stands.
+
+    Scoped to one policy line because "active" is per line: `policy.versions`
+    carries a `policy_id` and registration deactivates only within its own
+    lineage. A row written before that column existed carries NULL and belongs
+    to `conduct-policy`, which is the convention `ChainStore.register` already
+    holds.
+
+    Compared as strings, safe only because both sides are the same fixed-width
+    UTC format: `infra/110_run_loop.py` writes `window_start` with
+    `strftime("%Y-%m-%dT%H:%M:%SZ")` and `ChainStore.versions` formats
+    `promoted_at` into the same shape. Both are checked rather than assumed and
+    anything else answers None, because a wrong answer here would tell an
+    analyst their citation is wrong when nothing checked it.
+    """
+    if _stamp(when) is None:
+        return None
+    promoted = [v for v in versions
+                if (v.get("policy_id") or DEFAULT_LINE) == policy_id
+                and _stamp(v.get("promoted_at")) is not None
+                and v["promoted_at"] <= when]
+    if not promoted:
+        return None
+    latest = max(v["promoted_at"] for v in promoted)
+    at_latest = [v for v in promoted if v["promoted_at"] == latest]
+    # A tie is not a version. `promoted_at` is formatted to the second, so two
+    # promotions in the same line inside one second are indistinguishable here,
+    # and THREATS.md entry 11 records that concurrent registry writes are
+    # possible. Naming whichever row the query returned first would be the
+    # console deciding what was in force by list order. An adversarial pass
+    # produced the tie and got a definite answer back.
+    if len(at_latest) != 1:
+        return None
+    return str(at_latest[0].get("version") or "") or None
+
+
+def citation_check(row: Optional[dict], versions: list, window_start=None) -> Optional[dict]:
+    """What the recorded citation says, checked against the registry that knows.
+
+    The Copilot validates a citation's shape and stops there, because
+    `analyst-sa` cannot read `policy.versions`. The check that the cited version
+    exists belongs to an identity that can see the registry, and that is this
+    console, holding `notary-sa`. Nothing here is a gate: the row is already
+    written, and this only decides what the page says about it.
+
+    Five answers, and they are five because collapsing any pair would put a claim
+    on screen that nothing checked:
+
+      `PREDATES-COLUMNS`  both citation fields are NULL, so the row was written
+                          before infra/32_analyst_identity.sh added them. Not the
+                          same as a verdict that cited nothing.
+      `UNCITED`           the row records `citation_source = 'NONE'`. The analyst
+                          named no policy and the Copilot invented none.
+      `REGISTRY-UNKNOWN`  a version is cited and no registry rows were readable,
+                          so this cannot say whether it exists. An empty list is
+                          cannot-say, never none.
+      `UNREGISTERED`      a version is cited and the registry has no such row in
+                          that line. The citation names nothing.
+      `REGISTERED`        the registry has it. `active_at_window_start` then says
+                          which version was actually in force when the conduct
+                          under review happened, and `matches_window` whether the
+                          analyst cited that one. False is not an error: an
+                          analyst may deliberately cite a later version they are
+                          arguing from. It is the difference that is worth
+                          showing, not a verdict on it.
+    """
+    if not row:
+        return None
+    source = row.get("citation_source")
+    version = row.get("cited_version")
+    line = row.get("cited_policy_id") or None
+    if not version:
+        if source is None:
+            return {"state": "PREDATES-COLUMNS", "policy_id": None, "version": None}
+        return {"state": "UNCITED", "source": source, "policy_id": None, "version": None}
+    out = {"source": source, "policy_id": line, "version": version}
+    if not versions:
+        return dict(out, state="REGISTRY-UNKNOWN")
+    # A citation that names no line is matched on the version alone, and the line
+    # it resolves to is reported back. Assuming `conduct-policy` for a bare
+    # version would report a real `payments-policy` version as naming nothing,
+    # which is a false alarm about the one field this pane exists to draw.
+    # Version names are unique across lines by a check in `ChainStore.register`,
+    # and THREATS.md entry 11 records the read-before-write race in that check,
+    # so a duplicate is possible and the first match is taken rather than claimed
+    # to be the only one.
+    known = [v for v in versions
+             if str(v.get("version")) == str(version)
+             and (not line or (v.get("policy_id") or DEFAULT_LINE) == line)]
+    if not known:
+        return dict(out, state="UNREGISTERED")
+    resolved = line or (known[0].get("policy_id") or DEFAULT_LINE)
+    in_force = active_at(versions, window_start, resolved)
+    return dict(out, state="REGISTERED", policy_id=resolved,
+                promoted_at=known[0].get("promoted_at"),
+                active_at_window_start=in_force,
+                matches_window=None if in_force is None else in_force == str(version))
+
+
 def job_id_of(finding: dict) -> Optional[str]:
     """The job id under review, or None when the file carries no usable one.
 
@@ -440,6 +705,10 @@ class Workbench:
                  chat=None):
         self.source = source
         self.finding_path = finding_path
+        # Beside the live finding, because the driver writes both under its
+        # `--out` directory and pointing the console at one finding while it
+        # listed another run's cases is a confusion with no reason to exist.
+        self.cases_dir = finding_path.parent / cases.CASES_DIRNAME
         # Injected so the tests can drive every route without a deployed fleet.
         self._chat = chat
         # Which job id each chat session has already named, for the guard in
@@ -449,6 +718,28 @@ class Workbench:
 
     def state(self, version: Optional[str]) -> dict:
         return self.source.state(version)
+
+    def _citation(self, decision: Optional[dict], window_start=None) -> Optional[dict]:
+        """The registry's read of what a decision row cited.
+
+        The registry is fetched only when a version is actually cited, which is
+        why this is not a query on every poll. A row that cites nothing needs no
+        registry to say so, and today that is every row: the columns are new and
+        the fleet has written none since. What the console will not do is spend a
+        BigQuery job per poll working out the citation that could have been
+        there — that answer changes nothing and costs a query on the exact
+        stretch where the console is already polling for a verdict.
+        """
+        if not decision:
+            return None
+        try:
+            versions = self.source.versions() if decision.get("cited_version") else []
+        except Exception as exc:  # noqa: BLE001 - cannot say is a state, not a blank
+            return {"state": "REGISTRY-UNKNOWN",
+                    "version": decision.get("cited_version"),
+                    "policy_id": decision.get("cited_policy_id") or DEFAULT_LINE,
+                    "error": f"{type(exc).__name__}: {exc}"[:300]}
+        return citation_check(decision, versions, window_start)
 
     def finding(self) -> dict:
         out = read_finding(self.finding_path)
@@ -461,20 +752,103 @@ class Workbench:
             except Exception as exc:  # noqa: BLE001
                 out["decision"] = None
                 out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            out["citation"] = self._citation(
+                out.get("decision"), (out.get("finding") or {}).get("window_start"))
         return out
 
-    def _named_the_job(self, session: str, job_id: str, text: str) -> bool:
-        """True when this session names the job now, or named it on an earlier turn.
+    def cases(self) -> dict:
+        """Every case the store holds, each marked decided, waiting or unknown.
 
-        Latched per session AND per job id. Per session alone would be wrong: the
-        driver overwrites the finding file when the next run answers, and a
-        session left open across that boundary is looking at a different job, so
-        a bare "yes" in it would confirm a verdict on the wrong one.
+        The store records no disposition, and this does not add one: a
+        disposition kept beside the finding would be a second copy of a row
+        `review.decisions` owns, free to disagree with it. What travels here is
+        one bit, derived at read time from a single query, and nothing is
+        written back.
+
+        Six values, not two. A warehouse this console could not reach makes
+        every case `unknown`, and a queue that showed those as waiting would
+        send an analyst to re-review a case that was closed yesterday.
+
+        `stale` is the fourth, and it is the one a queue cannot do without. A
+        case that was decided at ten and revised at eleven carries a verdict
+        about evidence nobody has read. Reporting that as `yes` is how an
+        analyst skips an unreviewed revision, and the detail route knowing
+        better does not help someone who never opens it.
+
+        `blocked` and `escalated` are the other two, and both are cases with a
+        verdict on record that nothing has finished with. A blocked rationale is
+        a review the driver refuses to act on; an escalated one is the analyst
+        saying it was not their call. Each was reported as decided, which is how
+        a case leaves the only queue anyone watches with the work still owed.
         """
-        if names_the_job(text, job_id):
-            return True
-        with self._named_lock:
-            return self._named.get(session) == job_id
+        listed = cases.list_cases(self.cases_dir)
+        decided: Optional[Dict[str, str]] = None
+        try:
+            decided = self.source.decided_subjects("VERDICT")
+        except Exception as exc:  # noqa: BLE001
+            listed["decided_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        for row in listed["cases"]:
+            if "error" in row:
+                continue
+            row["decided"] = self._decided_state(row, decided)
+        return listed
+
+    @staticmethod
+    def _decided_state(row: dict, decided: Optional[Dict[str, str]]) -> str:
+        """One queue row's review state, from the store's fact and the warehouse's.
+
+        `stale` needs both timestamps to be readable. When either is not, the
+        answer is the weaker `yes`: the case is decided, and this cannot say
+        whether the decision is about what is on screen. Saying `stale` on a
+        comparison that did not happen would be the same invention in the other
+        direction.
+        """
+        if decided is None:
+            return "unknown"
+        latest = decided.get(row.get("job_id"))
+        if latest is None:
+            return "no"
+        if str(latest.get("ma_verdict") or "").upper() in UNUSABLE_SCREENING:
+            # A verdict the driver will not act on. `refuse_unscreened` in
+            # infra/110_run_loop.py stops the drafting path on exactly these, so
+            # a queue calling the case done sends the analyst past a review that
+            # cannot proceed.
+            return "blocked"
+        if verdicts.member(latest.get("disposition")) == "escalate":
+            # Recorded, and deliberately not resolved: the analyst said this was
+            # not their call. Reporting it as decided is how a case leaves the
+            # only queue anyone watches with the decision still owed.
+            return "escalated"
+        if _predates(row.get("revised_at"), latest.get("ts")):
+            return "stale"
+        return "yes"
+
+    def case(self, case_id: str) -> Optional[dict]:
+        """One case, with its evidence and the verdict recorded against its job.
+
+        Same lookup `finding()` makes, against the case's own job id rather than
+        whichever finding the driver published last. That is the difference the
+        store exists for: a case stays answerable after the next run replaces
+        the live file.
+        """
+        found = cases.read_case(self.cases_dir, case_id)
+        if found is None:
+            return None
+        out = {"case": _trim(found)}
+        job_id = found.get("job_id")
+        if isinstance(job_id, str) and job_id:
+            try:
+                out["decision"] = self.source.decision("VERDICT", job_id)
+                if not out["decision"]:
+                    out["near_miss"] = self.source.near_miss("VERDICT", job_id)
+            except Exception as exc:  # noqa: BLE001
+                out["decision"] = None
+                out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        out["verdict_predates_revision"] = _predates(
+            found.get("revised_at"), (out.get("decision") or {}).get("ts"))
+        out["citation"] = self._citation(
+            out.get("decision"), (found.get("finding") or {}).get("window_start"))
+        return out
 
     def _latch(self, session: str, job_id: str) -> None:
         """Remember that this session may go on talking about this job.
@@ -516,16 +890,75 @@ class Workbench:
             raise Refused(
                 "this workbench is running against a fixture. There is no fleet "
                 "to talk to and no review row to write.")
-        job_id = job_id_of(read_finding(self.finding_path))
-        if job_id and not self._named_the_job(session, job_id, text):
-            raise Refused(
-                f"the message does not name the finding under review. The Notary "
-                f"reads the row whose subject is exactly {job_id!r}; a verdict "
-                f"filed against anything else is stored and never found.")
+        known = self.reviewable_subjects()
+        if known:
+            named = self._subject_for(session, text, known)
+            if named is None:
+                raise Refused(
+                    "the message does not name a case this desk holds. A verdict "
+                    "is stored against a subject, and the only subjects anything "
+                    "will look for are the open cases: "
+                    + ", ".join(sorted(known)[:8])
+                    + (" and others" if len(known) > 8 else "")
+                    + ". A verdict filed against anything else is stored and "
+                      "never found.")
         reply = self._chat(text, session)
-        if job_id:
-            self._latch(session, job_id)
+        if known and named:
+            self._latch(session, named)
         return {"reply": reply}
+
+    def reviewable_subjects(self) -> set:
+        """Every job id a verdict may be filed against from this desk.
+
+        The live finding and every readable case in the store. It was the live
+        finding alone, because there was one case: the driver polls for a row
+        whose subject equals that job id, so anything else left an analyst
+        waiting fifteen minutes with nothing to say why, and the guard existed to
+        stop that.
+
+        With a queue that reasoning changed shape. The other cases are detector
+        jobs that found real conduct in the same window, and filing a verdict on
+        one is a deliberate act on a case that exists, not a typo. What the guard
+        still refuses is a subject nothing knows about, which is the failure it
+        was written for.
+
+        A verdict on a case the run is not waiting on advances nothing: the
+        driver's poll is bounded to its own job id and its own start time, and
+        the Notary requires the bundle's verdict row to carry the finding's job
+        id. It records a decision and closes that row in the queue, which is what
+        the three terminal dispositions are for.
+        """
+        subjects = set()
+        live = job_id_of(read_finding(self.finding_path))
+        if live:
+            subjects.add(live)
+        for row in cases.list_cases(self.cases_dir).get("cases", []):
+            job_id = row.get("job_id")
+            # The error check is redundant and kept: `list_cases` gives an
+            # unreadable case a row carrying only its id, the error and the path,
+            # so there is no job id on it to admit. A mutation deleting this test
+            # survives the suite for that reason rather than for want of a test.
+            # It stays because it says what the loop means, and because a future
+            # broken-row shape that did carry a job id would otherwise make an
+            # unreadable case reviewable.
+            if not row.get("error") and isinstance(job_id, str) and job_id:
+                subjects.add(job_id)
+        return subjects
+
+    def _subject_for(self, session: str, text: str, known: set) -> Optional[str]:
+        """Which open case this turn is about, or None.
+
+        A turn that names one is about that one. A turn that names none is the
+        confirmation the Copilot asks for — "yes" names no job id — and is read
+        as being about whatever this session named last, provided that case is
+        still open.
+        """
+        named = next((j for j in sorted(known) if names_the_job(text, j)), None)
+        if named:
+            return named
+        with self._named_lock:
+            latched = self._named.get(session)
+        return latched if latched in known else None
 
 
 class Refused(Exception):
@@ -609,13 +1042,18 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
                 return self._json(403, {"error": wrong})
             parts = urllib.parse.urlsplit(self.path)
             path = parts.path.rstrip("/") or "/"
-            query = urllib.parse.parse_qs(parts.query)
+            # Blank values kept, so `?id=` is an id this store could not have
+            # written rather than a parameter that was never sent. Without this
+            # it was dropped, and a request for one case answered with the whole
+            # queue. Every reader below turns an empty string back into "not
+            # asked for" where that is what it means.
+            query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
             if path == "/":
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             if path == "/healthz":
                 return self._json(200, {"ok": True, "mode": workbench.source.mode})
             if path == "/api/state":
-                version = (query.get("version") or [None])[0]
+                version = (query.get("version") or [None])[0] or None
                 if version and not version.replace("-", "").replace("_", "").isalnum():
                     return self._json(400, {"error": "not a usable version name"})
                 try:
@@ -629,6 +1067,27 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
                                                             "promotions": "FROZEN"}})
             if path == "/api/finding":
                 return self._json(200, workbench.finding())
+            if path == "/api/cases":
+                case_id = (query.get("id") or [None])[0]
+                try:
+                    if case_id is None:
+                        return self._json(200, workbench.cases())
+                    # Checked here as well as in `read_case`, so the shape of
+                    # the id is refused at the edge rather than answered as a
+                    # missing case. It reaches a path join either way.
+                    if not cases.CASE_ID_RE.match(case_id):
+                        return self._json(400, {"error": "not a case id"})
+                    found = workbench.case(case_id)
+                    if found is None:
+                        return self._json(404, {"error": "no such case"})
+                    return self._json(200, found)
+                except Exception as exc:  # noqa: BLE001
+                    # Contained like `/api/state`, and for the same reason: this
+                    # reads a directory somebody else writes, and a pane that
+                    # says why it is empty beats a dropped connection.
+                    return self._json(200, {"cases": [], "total": 0,
+                                            "unreadable": 0, "truncated": False,
+                                            "error": f"{type(exc).__name__}: {exc}"[:300]})
             return self._json(404, {"error": "no such path"})
 
         def do_POST(self) -> None:  # noqa: N802

@@ -41,7 +41,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "generator"))
 
-from caseharden import workbench  # noqa: E402
+from caseharden import cases, workbench  # noqa: E402
 from caseharden.chain import KINDS  # noqa: E402
 
 FIXTURE = REPO / "fixtures" / "v5"
@@ -1114,8 +1114,12 @@ def test_a_delivery_claim_is_coupled_to_a_row_the_send_produced():
     of delivery that is not guarded by the freshness comparison.
     """
     page = workbench.PAGE.read_text()
-    assert "const decisionBefore = box.decision" in page, "the baseline is gone"
-    assert "fresh: S(row.decision_id) !== decisionBefore" in page
+    # Read when the box is drawn rather than at boot, since the box now follows
+    # the queue selection and a decision id from the live case says nothing about
+    # another one.
+    assert "composeBox.decision ? S(composeBox.decision.decision_id)" in page, \
+        "the baseline is gone"
+    assert "fresh: S(row.decision_id) !== decisionBeforeSend()" in page
     for claim in ("A verdict is on this case now.",
                   "Recorded. A verdict row is there now."):
         assert "back.fresh" in _before(page, claim), \
@@ -1129,8 +1133,12 @@ def test_a_delivery_claim_is_coupled_to_a_row_the_send_produced():
     # did not, which is how the already-fixed defect came back on a new path.
     assert "later.present !== true || later.error" in page, \
         "a failed or absent finding read classifies as an absence again"
-    assert 'S((later.finding || {}).job_id || "") !== BOOT_JOB' in page, \
+    assert 'S((later.finding || {}).job_id || "") !== composeJob' in page, \
         "a readback about a different case counts as an answer about this one"
+    # And the readback asks the route that knows about the case filed on.
+    # /api/finding only ever answers about the live one.
+    assert 'composeIsLive\n      ? await get("/api/finding")' in page, \
+        "a send on a case other than the live one cannot be confirmed"
 
 
 def test_a_payload_field_that_should_be_a_list_is_named_when_it_is_not():
@@ -1162,3 +1170,654 @@ def test_the_unknown_state_is_not_attributed_to_the_policy_server():
         "the attribution is no longer behind the reached check"
     assert "UNREACHABLE is this page's word for not knowing" in page
     assert "att.error" in page, "the reason the request failed is dropped again"
+
+
+# --------------------------------------------------------------------------
+# The case routes
+# --------------------------------------------------------------------------
+
+def _open_case(tmp_path, **over):
+    payload = {"job_id": JOB, "family": "injected_turn", "sessions_total": 27,
+               "rows": [{"session_id": "s_1"}]}
+    payload.update(over)
+    return cases.open_case(tmp_path / cases.CASES_DIRNAME, payload)
+
+
+def test_the_queue_route_lists_what_the_store_holds(served, tmp_path):
+    """`served` writes the live finding into tmp_path, so cases sit beside it."""
+    opened = _open_case(tmp_path)
+    status, _, raw = _request(served, "GET", "/api/cases")
+    assert status == 200
+    listed = json.loads(raw)
+    assert listed["total"] == 1
+    row = listed["cases"][0]
+    assert row["case_id"] == opened["case_id"] and row["job_id"] == JOB
+    assert "decision" not in row, "a disposition here would be a second copy of the row"
+
+
+def test_a_case_id_the_store_could_not_have_written_is_a_400(served):
+    for bad in ("..%2F..%2Fetc%2Fpasswd", "zzzz", "a" * 40):
+        status, _, _ = _request(served, "GET", f"/api/cases?id={bad}")
+        assert status == 400, bad
+
+
+def test_a_well_formed_id_with_no_case_is_a_404(served):
+    status, _, _ = _request(served, "GET", "/api/cases?id=" + "0" * 16)
+    assert status == 404
+
+
+def test_one_case_answers_with_its_own_evidence(served, tmp_path):
+    opened = _open_case(tmp_path)
+    status, _, raw = _request(served, "GET", f"/api/cases?id={opened['case_id']}")
+    assert status == 200
+    got = json.loads(raw)
+    assert got["case"]["job_id"] == JOB
+    assert got["case"]["finding"]["rows"] == [{"session_id": "s_1"}]
+
+
+class _Stub(workbench.Source):
+    """A source with a warehouse behind it, without a project to reach."""
+
+    mode = "stub"
+
+    def __init__(self, decided=None, row=None):
+        self._decided = decided
+        self._row = row
+
+    def decided_subjects(self, kind):
+        if isinstance(self._decided, Exception):
+            raise self._decided
+        return self._decided
+
+    def decision(self, kind, subject):
+        return self._row
+
+
+def _verdict_row(ts="2026-08-30T10:00:00.000000Z", disposition="confirmed abuse",
+                 ma_verdict="CLEAN"):
+    """One row shaped like what decided_subjects selects."""
+    return {"ts": ts, "disposition": disposition, "ma_verdict": ma_verdict}
+
+
+def _queue_bench(tmp_path, source):
+    return workbench.Workbench(source, finding_path=tmp_path / "finding-live.json")
+
+
+def test_a_decided_case_and_a_waiting_one_are_told_apart(tmp_path):
+    _open_case(tmp_path)
+    _open_case(tmp_path, job_id="europe-west3:job_waiting")
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(ts="2026-08-30T10:00:00Z")})).cases()
+    by_job = {row["job_id"]: row["decided"] for row in listed["cases"]}
+    assert by_job == {JOB: "yes", "europe-west3:job_waiting": "no"}
+
+
+def test_a_source_that_cannot_know_says_unknown_and_not_waiting(tmp_path):
+    """A fixture has no review table, and 'no' would be a claim nothing checked."""
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(decided=None)).cases()
+    assert listed["cases"][0]["decided"] == "unknown"
+
+
+def test_a_warehouse_that_errors_says_unknown_and_says_why(tmp_path):
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(decided=RuntimeError("403 on review.decisions"))).cases()
+    assert listed["cases"][0]["decided"] == "unknown"
+    assert "403 on review.decisions" in listed["decided_error"]
+
+
+def test_the_queue_still_carries_no_disposition(tmp_path):
+    _open_case(tmp_path)
+    row = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(ts="2026-08-30T10:00:00Z")})).cases()["cases"][0]
+    assert set(row) & {"disposition", "rationale", "analyst", "approved"} == set()
+
+
+def test_a_verdict_older_than_the_revision_is_flagged(tmp_path):
+    """Revision 1's rows beside a review row filed against revision 0."""
+    _open_case(tmp_path)
+    opened = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    assert opened["revisions"] == 1
+    bench = _queue_bench(tmp_path, _Stub(row={"ts": "2020-01-01T00:00:00Z"}))
+    assert bench.case(opened["case_id"])["verdict_predates_revision"] is True
+
+
+def test_a_verdict_after_the_revision_is_not_flagged(tmp_path):
+    _open_case(tmp_path)
+    opened = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    bench = _queue_bench(tmp_path, _Stub(row={"ts": "2099-01-01T00:00:00Z"}))
+    assert bench.case(opened["case_id"])["verdict_predates_revision"] is False
+
+
+def test_a_case_never_revised_makes_no_claim_either_way(tmp_path):
+    opened = _open_case(tmp_path)
+    bench = _queue_bench(tmp_path, _Stub(row={"ts": "2020-01-01T00:00:00Z"}))
+    assert bench.case(opened["case_id"])["verdict_predates_revision"] is None
+
+
+@pytest.mark.parametrize("revised,ts", [
+    ("2026-08-30T10:00:00Z", "30 Aug 2026"),
+    ("2026-08-30 10:00:00 UTC", "2026-08-30T10:00:00Z"),
+    ("2026-08-30T10:00:00Z", None),
+    (None, "2026-08-30T10:00:00Z"),
+    ("2026-08-30T10:00:00Z", 1756540800),
+])
+def test_a_timestamp_in_another_shape_is_not_compared(revised, ts):
+    """A string compare across two formats answers confidently and wrongly."""
+    assert workbench._predates(revised, ts) is None
+
+
+def test_a_blank_case_id_is_not_the_whole_queue(served, tmp_path):
+    """`?id=` asked for one case; parse_qs dropped it and the route sent all of them."""
+    _open_case(tmp_path)
+    status, _, raw = _request(served, "GET", "/api/cases?id=")
+    assert status == 400, raw
+
+
+def test_a_case_id_with_a_trailing_newline_is_refused_at_the_edge(served):
+    status, _, _ = _request(served, "GET", "/api/cases?id=" + "0" * 16 + "%0A")
+    assert status == 400
+
+
+def test_a_blank_version_still_means_the_active_one(served):
+    """keep_blank_values must not turn `?version=` into a lookup for ''."""
+    status, _, raw = _request(served, "GET", "/api/state?version=")
+    assert status == 200
+    assert json.loads(raw)["version"] == "v5"
+
+
+def test_a_store_that_cannot_be_read_does_not_drop_the_connection(tmp_path, monkeypatch):
+    """`/api/state` contains its own failures; this route reads a directory too."""
+    monkeypatch.setattr(workbench.cases, "list_cases",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no such device")))
+    bench = _queue_bench(tmp_path, _Stub(decided=None))
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), workbench.handler_for(bench))
+    except (PermissionError, OSError) as exc:
+        pytest.skip(f"cannot bind a loopback socket here: {exc}")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, _, raw = _request(server.server_address, "GET", "/api/cases")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 200
+    assert "no such device" in json.loads(raw)["error"]
+
+
+# --------------------------------------------------------------------------
+# The citation, checked where the identity to check it exists
+# --------------------------------------------------------------------------
+#
+# The Analyst Copilot writes the citation and cannot validate it: it holds
+# `analyst-sa`, which has WRITER on `review` and no read on `policy`, where the
+# version registry lives. This console holds `notary-sa` and already reads that
+# registry for its own pane, so the existence check happens here. Nothing below
+# is a gate. The row is written before any of it runs; what it decides is what
+# the page says about a row that already exists.
+
+VERSIONS = [
+    {"version": "v4", "policy_id": "conduct-policy", "promoted_at": "2026-08-20T09:00:00Z"},
+    {"version": "v5", "policy_id": None, "promoted_at": "2026-08-25T15:50:00Z"},
+    {"version": "v6", "policy_id": "conduct-policy", "promoted_at": "2026-08-28T11:00:00Z"},
+    {"version": "p1", "policy_id": "payments-policy", "promoted_at": "2026-08-21T08:00:00Z"},
+]
+
+
+def _cited(**over):
+    row = {"kind": "VERDICT", "subject": JOB, "decision_id": "vd_9", "ts": "now",
+           "disposition": "confirmed abuse", "citation_source": "ANALYST",
+           "cited_policy_id": "conduct-policy", "cited_version": "v5"}
+    row.update(over)
+    return row
+
+
+def test_the_version_in_force_is_the_last_one_promoted_before_the_window():
+    """v6 exists and was promoted after the window opened, so it was not in force."""
+    assert workbench.active_at(VERSIONS, "2026-08-26T00:00:00Z") == "v5"
+    assert workbench.active_at(VERSIONS, "2026-08-21T00:00:00Z") == "v4"
+
+
+def test_a_null_policy_id_belongs_to_the_conduct_line():
+    """`ChainStore.register` already holds that convention; this must not disagree."""
+    assert workbench.active_at(VERSIONS, "2026-08-26T00:00:00Z", "conduct-policy") == "v5"
+
+
+def test_active_is_per_policy_line():
+    """Two lines exist. A conduct version is not what was in force for payments."""
+    assert workbench.active_at(VERSIONS, "2026-08-26T00:00:00Z", "payments-policy") == "p1"
+
+
+def test_a_window_before_every_promotion_has_no_version_in_force():
+    assert workbench.active_at(VERSIONS, "2020-01-01T00:00:00Z") is None
+
+
+@pytest.mark.parametrize("when", [None, "", "yesterday", "2026-08-26", 1787774304])
+def test_a_timestamp_that_is_not_the_fixed_format_answers_not_knowing(when):
+    """A wrong answer here tells an analyst their citation is wrong with nothing checked."""
+    assert workbench.active_at(VERSIONS, when) is None
+
+
+def test_a_row_written_before_the_columns_is_not_a_verdict_that_cited_nothing():
+    row = {"decision_id": "vd_old", "citation_source": None, "cited_version": None}
+    assert workbench.citation_check(row, VERSIONS)["state"] == "PREDATES-COLUMNS"
+
+
+def test_a_verdict_that_cited_nothing_says_so():
+    row = _cited(citation_source="NONE", cited_policy_id=None, cited_version=None)
+    assert workbench.citation_check(row, VERSIONS)["state"] == "UNCITED"
+
+
+def test_a_cited_version_the_registry_holds_is_reported_with_its_promotion():
+    out = workbench.citation_check(_cited(), VERSIONS, "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["promoted_at"] == "2026-08-25T15:50:00Z"
+    assert out["active_at_window_start"] == "v5"
+    assert out["matches_window"] is True
+
+
+def test_citing_a_version_promoted_after_the_window_is_shown_not_judged():
+    """Not an error. An analyst may be arguing from a later version deliberately."""
+    out = workbench.citation_check(_cited(cited_version="v6"), VERSIONS,
+                                   "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["matches_window"] is False
+    assert out["active_at_window_start"] == "v5"
+
+
+def test_a_version_the_registry_does_not_hold_names_nothing():
+    out = workbench.citation_check(_cited(cited_version="v99"), VERSIONS)
+    assert out["state"] == "UNREGISTERED"
+
+
+def test_a_version_cited_under_the_wrong_line_names_nothing():
+    """`p1` is a payments version. Cited as conduct, it names no row in that line."""
+    out = workbench.citation_check(_cited(cited_version="p1"), VERSIONS)
+    assert out["state"] == "UNREGISTERED"
+
+
+def test_an_unreadable_registry_is_cannot_say_and_never_none():
+    """An empty list is a registry this console could not read, not a version that is missing."""
+    out = workbench.citation_check(_cited(), [])
+    assert out["state"] == "REGISTRY-UNKNOWN"
+
+
+class _RowsWithRegistry(_Rows):
+    """A review table and a version registry, counting the reads of each."""
+
+    def __init__(self, rows, versions):
+        super().__init__(rows)
+        self._versions = versions
+        self.registry_reads = 0
+
+    def versions(self):
+        self.registry_reads += 1
+        return self._versions
+
+
+def test_the_finding_pane_carries_the_registry_read_of_the_citation(tmp_path):
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB, "window_start": "2026-08-26T00:00:00Z"}))
+    source = _RowsWithRegistry([_cited(subject=JOB)], VERSIONS)
+    out = workbench.Workbench(source, finding_path=path).finding()
+    assert out["citation"]["state"] == "REGISTERED"
+    assert out["citation"]["matches_window"] is True
+
+
+def test_an_uncited_verdict_costs_no_registry_query(tmp_path):
+    """The console polls this route. A row that cites nothing needs no registry to say so."""
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB}))
+    row = _cited(subject=JOB, citation_source="NONE", cited_policy_id=None,
+                 cited_version=None)
+    source = _RowsWithRegistry([row], VERSIONS)
+    out = workbench.Workbench(source, finding_path=path).finding()
+    assert out["citation"]["state"] == "UNCITED"
+    assert source.registry_reads == 0
+
+
+def test_a_registry_read_that_throws_is_cannot_say(tmp_path):
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB}))
+
+    class _Broken(_Rows):
+        def versions(self):
+            raise RuntimeError("403 on policy.versions")
+
+    out = workbench.Workbench(_Broken([_cited(subject=JOB)]),
+                              finding_path=path).finding()
+    assert out["citation"]["state"] == "REGISTRY-UNKNOWN"
+    assert "403" in out["citation"]["error"]
+
+
+def test_the_console_selects_the_columns_the_migration_added():
+    """The SELECT and the table drift apart silently; a missing column is a NULL on screen."""
+    for column in ("cited_policy_id", "cited_version", "citation_source",
+                   "advisory_recommendation", "advisory_rule", "advisory_confidence"):
+        assert column in workbench.LiveSource.DECISION_COLUMNS
+    assert "*" not in workbench.LiveSource.DECISION_COLUMNS
+
+
+def test_a_bare_version_resolves_to_the_line_the_registry_holds_it_in():
+    """`p1` cited with no line is a payments version, not a missing conduct one.
+
+    Assuming `conduct-policy` for a bare citation would report a real version as
+    naming nothing, which is a false alarm about the one field this pane draws.
+    """
+    out = workbench.citation_check(_cited(cited_policy_id=None, cited_version="p1"),
+                                   VERSIONS, "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["policy_id"] == "payments-policy"
+    assert out["active_at_window_start"] == "p1"
+
+
+@pytest.mark.parametrize("when", ["2026-99-99T99:99:99Z", "2026-02-30T00:00:00Z",
+                                  "2026-13-01T00:00:00Z", "2026-08-25T25:00:00Z"])
+def test_an_impossible_instant_is_not_a_window(when):
+    """The pattern counts digits. It matched a date that never happened, and
+    `active_at` answered a definite version for it."""
+    assert workbench.active_at(VERSIONS, when) is None
+
+
+def test_two_versions_promoted_in_the_same_second_are_not_one_answer():
+    """`promoted_at` is formatted to the second, so a tie is not resolvable here.
+
+    Returning whichever row came back first would be the console deciding what was
+    in force by list order.
+    """
+    tied = [{"version": "v4", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"},
+            {"version": "v5", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"}]
+    assert workbench.active_at(tied, "2026-08-26T00:00:00Z") is None
+
+
+def test_a_tie_leaves_the_citation_uncompared_rather_than_wrong():
+    tied = [{"version": "v5", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"},
+            {"version": "v6", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"}]
+    out = workbench.citation_check(_cited(), tied, "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["matches_window"] is None
+
+
+def test_a_promotion_stamp_that_is_not_a_real_instant_is_ignored():
+    """A registry row with a broken timestamp must not become the answer."""
+    rows = [{"version": "v4", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-20T09:00:00Z"},
+            {"version": "vx", "policy_id": "conduct-policy",
+             "promoted_at": "2026-99-99T00:00:00Z"}]
+    assert workbench.active_at(rows, "2026-12-01T00:00:00Z") == "v4"
+
+def test_a_case_revised_after_its_verdict_is_stale_not_decided(tmp_path):
+    """A verdict about evidence nobody has read must not read as done.
+
+    The detail route knows this; the queue is where an analyst decides what to
+    open, so a queue that says `yes` is how an unreviewed revision gets skipped.
+    """
+    _open_case(tmp_path)
+    revised = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    assert revised["revisions"] == 1
+    listed = _queue_bench(
+        tmp_path, _Stub(decided={JOB: _verdict_row(ts="2020-01-01T00:00:00Z")})).cases()
+    assert listed["cases"][0]["decided"] == "stale"
+
+
+def test_a_verdict_after_the_revision_is_decided(tmp_path):
+    _open_case(tmp_path)
+    _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    listed = _queue_bench(
+        tmp_path, _Stub(decided={JOB: _verdict_row(ts="2099-01-01T00:00:00Z")})).cases()
+    assert listed["cases"][0]["decided"] == "yes"
+
+
+def test_an_uncomparable_pair_of_timestamps_is_decided_not_stale(tmp_path):
+    """Saying `stale` on a comparison that did not happen is its own invention."""
+    _open_case(tmp_path)
+    _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(ts="30 Aug 2026")})).cases()
+    assert listed["cases"][0]["decided"] == "yes"
+
+
+
+def test_a_sub_second_revision_after_the_verdict_is_stale():
+    """The exact case second-granularity stamps could not tell apart.
+
+    Both sides formatted to `...T10:00:00Z`, compared equal, and the queue said
+    the case was decided about evidence that changed 800ms after the review.
+    """
+    assert workbench._predates("2026-08-30T10:00:00.900000Z",
+                               "2026-08-30T10:00:00.100000Z") is True
+    assert workbench._predates("2026-08-30T10:00:00.100000Z",
+                               "2026-08-30T10:00:00.900000Z") is False
+
+
+def test_a_stamp_written_before_the_microseconds_is_still_comparable():
+    """Refusing the old shape would answer 'cannot tell' for the whole history."""
+    assert workbench._predates("2026-08-30T10:00:01.000000Z",
+                               "2026-08-30T10:00:00Z") is True
+    assert workbench._predates("2026-08-30T10:00:00Z",
+                               "2026-08-30T10:00:01.000000Z") is False
+
+
+def test_mixed_precision_is_not_compared_as_text():
+    """`.` sorts below `Z`, so the string compare inverted this pair."""
+    revised, decided = "2026-08-30T10:00:00Z", "2026-08-30T10:00:00.100000Z"
+    assert decided < revised, "the string ordering that made this worth fixing"
+    assert workbench._predates(revised, decided) is False
+
+
+@pytest.mark.parametrize("bad", ["2026-08-30T10:00:00.1234567Z", "2026-13-01T00:00:00Z",
+                                 "2026-08-30 10:00:00Z", "2026-08-30T10:00:00"])
+def test_an_instant_it_cannot_read_answers_nothing(bad):
+    assert workbench._instant(bad) is None
+
+
+@pytest.mark.parametrize("screening", ["BLOCK", "SCREENING_FAILED", "NOT_SCREENED", "", None])
+def test_a_verdict_the_driver_will_not_act_on_is_not_a_finished_review(tmp_path, screening):
+    """`refuse_unscreened` stops the drafting path on exactly these.
+
+    A rationale that quotes the hostile text it is a verdict about is the
+    ordinary way a screening blocks, so this is not an exotic state.
+    """
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(
+        decided={JOB: _verdict_row(ma_verdict=screening)})).cases()
+    assert listed["cases"][0]["decided"] == "blocked"
+
+
+def test_an_escalated_case_does_not_leave_the_queue(tmp_path):
+    """The analyst said it was not their call, so the decision is still owed."""
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(
+        decided={JOB: _verdict_row(disposition="escalate")})).cases()
+    assert listed["cases"][0]["decided"] == "escalated"
+
+
+@pytest.mark.parametrize("disposition", ["benign", "insufficient evidence",
+                                         "confirmed abuse"])
+def test_the_other_dispositions_close_the_case(tmp_path, disposition):
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(
+        decided={JOB: _verdict_row(disposition=disposition)})).cases()
+    assert listed["cases"][0]["decided"] == "yes"
+
+
+def test_the_queue_and_the_driver_read_one_screening_list():
+    """Two copies of this list drift, and the drift is silent on both sides."""
+    from caseharden import verdicts as v
+
+    assert workbench.UNUSABLE_SCREENING is v.UNUSABLE_SCREENING
+    driver = (REPO / "infra" / "110_run_loop.py").read_text()
+    assert "UNUSABLE_SCREENING = verdicts.UNUSABLE_SCREENING" in driver, \
+        "the driver defines its own copy again"
+
+
+def test_a_blocked_verdict_outranks_a_stale_one(tmp_path):
+    """Both are true; the one that stops the driver is the one to show."""
+    _open_case(tmp_path)
+    _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(
+        ts="2020-01-01T00:00:00Z", ma_verdict="BLOCK")})).cases()
+    assert listed["cases"][0]["decided"] == "blocked"
+
+
+# --------------------------------------------------------------------------
+# The queue, asserted against the page rather than against a promise
+# --------------------------------------------------------------------------
+
+def test_the_page_reads_the_case_store():
+    """The rail listed check families parsed out of the Foreman's report prose.
+
+    That list was one run's summary of itself: it could not show a case from an
+    earlier run, could not say whether any of them had been decided, and vanished
+    when the report did not parse.
+    """
+    page = workbench.PAGE.read_text()
+    assert 'get("/api/cases")' in page, "the page does not load the queue"
+    assert '"/api/cases?id=" + encodeURIComponent(id)' in page, \
+        "a case other than the live one has no evidence to draw"
+
+
+def test_every_review_state_the_server_sends_is_styled():
+    """Same rule as the nine link kinds: a state that reaches the browser is drawn.
+
+    An unstyled state renders as bare text in a row of pills, which reads as a
+    rendering fault rather than as the state it is.
+    """
+    page = workbench.PAGE.read_text()
+    for state in ("yes", "no", "stale", "blocked", "escalated", "unknown"):
+        assert f".state.s-{state}{{" in page, f"the {state!r} review state has no style"
+        assert f'"{state}":' in page, f"the {state!r} review state has no plain words"
+
+
+def test_the_page_offers_exactly_the_dispositions_the_copilot_records():
+    """Two were offered and four are recorded, so two answers could not be given.
+
+    The Copilot refuses any phrasing outside the taxonomy, so an analyst who
+    wrote one of the missing two by hand had the verdict refused as they filed
+    it.
+    """
+    from caseharden import verdicts
+
+    page = workbench.PAGE.read_text()
+    offered = set(re.findall(r'mk\("([^"]+)"', page))
+    assert offered == set(verdicts.MEMBERS), (
+        f"the page offers {sorted(offered)} and caseharden/verdicts.py records "
+        f"{sorted(verdicts.MEMBERS)}")
+
+
+def test_the_citation_is_grouped_by_policy_line():
+    """"In force during this window" is answered per line, so the groups are the lines."""
+    page = workbench.PAGE.read_text()
+    assert 'document.createElement("optgroup")' in page
+    assert 'group.label = line' in page
+    assert 'o.dataset.line = line' in page, \
+        "the drafted message reads the line off the option, not out of its label"
+    assert "citedNow()" in page
+
+
+def test_every_case_can_be_ruled_on_and_says_what_that_does():
+    """Three of four detectors could find real conduct and none of it be ruled on.
+
+    The composer was bound to the live finding and the server agreed: `chat`
+    refused any message not naming the finding under review. The box now follows
+    the selection and drafts against that case's own job id, and says beside
+    itself when the case is not the one the run is blocked on, because a verdict
+    there is a real record that does not release the run.
+    """
+    page = workbench.PAGE.read_text()
+    assert "composeJob = S(F.job_id)" in page, "the box is not bound to the selection"
+    assert "do not shorten it: \" + composeJob" in page, \
+        "the drafted message still names the live case"
+    assert "if (!composeIsLive) {" in page, \
+        "nothing tells the analyst a verdict here does not release the run"
+    assert "notThisCase" not in page, \
+        "the refusal that said another case files against nothing is back"
+
+
+def test_the_page_does_not_claim_to_lack_evidence_it_holds():
+    """Every case now arrives with its own rows, so the old refusal would be false."""
+    page = workbench.PAGE.read_text()
+    assert "but not its cited rows" not in page
+
+
+# --------------------------------------------------------------------------
+# Which cases a verdict may be filed against
+# --------------------------------------------------------------------------
+
+OTHER_JOB = "europe-west3:job_Rk2mVpQx7Ln"
+
+
+def _desk(tmp_path, *findings, live=None):
+    """A workbench over a store holding these cases, with `live` on the desk."""
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps(live if live is not None else {}))
+    for found in findings:
+        cases.open_case(tmp_path / cases.CASES_DIRNAME, found)
+    said = []
+    return said, workbench.Workbench(
+        workbench.FixtureSource(FIXTURE), finding_path=path,
+        chat=lambda text, session: said.append((text, session)) or "ok")
+
+
+def _finding(job, family="cross-tenant"):
+    return {"job_id": job, "family": family, "sessions_total": 1,
+            "window_start": "2026-08-27T09:00:00Z", "window_end": "2026-08-30T09:00:00Z",
+            "rows": [{"session_id": "s_1"}]}
+
+
+def test_a_verdict_may_be_filed_on_a_case_the_run_is_not_waiting_on(tmp_path):
+    """The gap the queue exposed: four detectors find conduct, one can be ruled on.
+
+    `chat` read the live finding's job id and refused anything else, so the other
+    cases were readable and unreviewable.
+    """
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+    assert said, "the message never reached the Copilot"
+
+
+def test_the_case_the_run_is_waiting_on_is_still_accepted(tmp_path):
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {JOB}. Disposition: confirmed abuse.", "s1")
+    assert said
+
+
+def test_a_subject_no_case_holds_is_still_refused(tmp_path):
+    """The failure the guard was written for, and the one it still catches."""
+    _, bench = _desk(tmp_path, _finding(JOB), live=_finding(JOB, "injected-turn"))
+    with pytest.raises(workbench.Refused) as raised:
+        bench.chat("Record my verdict on europe-west3:job_doesNotExist.", "s1")
+    assert "does not name a case this desk holds" in str(raised.value)
+
+
+def test_the_confirmation_turn_follows_the_case_it_named(tmp_path):
+    """The Copilot echoes the arguments and asks; the answer is "yes"."""
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+    bench.chat("Yes. Store it exactly as you listed.", "s1")
+    assert len(said) == 2
+
+
+def test_a_session_latched_to_a_case_that_is_gone_is_refused(tmp_path):
+    """A latch is not authority of its own once the case leaves the store."""
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+    (tmp_path / cases.CASES_DIRNAME / f"{cases.case_id(OTHER_JOB)}.json").unlink()
+    with pytest.raises(workbench.Refused):
+        bench.chat("Yes. Store it exactly as you listed.", "s1")
+    assert len(said) == 1
+
+
+def test_an_unreadable_case_is_not_a_subject(tmp_path):
+    """It is shown in the queue so it cannot hide; it is not a thing to rule on."""
+    _, bench = _desk(tmp_path, _finding(JOB), live=_finding(JOB, "injected-turn"))
+    broken = tmp_path / cases.CASES_DIRNAME / (cases.case_id(OTHER_JOB) + ".json")
+    broken.write_text('{"case_id": "x", "job_id": "' + OTHER_JOB + '", "fin')
+    assert OTHER_JOB not in bench.reviewable_subjects()
+    with pytest.raises(workbench.Refused):
+        bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")

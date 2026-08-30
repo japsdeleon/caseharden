@@ -115,6 +115,35 @@
   .mailrow .tag{font-size:11px;color:var(--accent);font-weight:700;margin-top:5px}
   .railnote{padding:11px 14px;font-size:12.5px;color:var(--dim);background:var(--rail);border-top:1px solid var(--line)}
 
+  /* ---------- the queue ---------- */
+  .qwrap{overflow-x:auto}
+  table.q{border-collapse:collapse;width:100%;font-size:13px;font-family:var(--sans)}
+  table.q th{background:var(--rail);color:var(--dim);font-size:11.5px;font-weight:700;
+    letter-spacing:.04em;text-transform:uppercase;text-align:left;padding:9px 14px;
+    border-bottom:1px solid var(--line);white-space:nowrap;position:static}
+  table.q td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top;white-space:normal}
+  table.q tr:last-child td{border-bottom:0}
+  table.q tbody tr{cursor:pointer}
+  table.q tbody tr:hover{background:#f4f8fd}
+  table.q tbody tr[aria-selected="true"]{background:var(--accent-soft);box-shadow:inset 4px 0 0 var(--accent)}
+  table.q tbody tr.broken{background:var(--bad-soft)}
+  .fam{font-weight:700}
+  .cid{font-family:var(--mono);font-size:11.5px;color:var(--faint);display:block;margin-top:2px}
+  .age{white-space:nowrap}
+  .age .abs{display:block;font-size:11.5px;color:var(--faint);font-family:var(--mono)}
+  .num{font-variant-numeric:tabular-nums}
+  /* One class per review state, the way the link kinds are done above: a state
+     that reaches the browser can never draw as unstyled text. */
+  .state{display:inline-block;font-size:11.5px;font-weight:700;letter-spacing:.03em;
+    padding:4px 9px;border-radius:999px;white-space:nowrap;border:1px solid transparent}
+  .state.s-yes{background:var(--good-soft);color:var(--good);border-color:#bfe3ca}
+  .state.s-no{background:var(--accent-soft);color:#0d4a99;border-color:#bcd6f5}
+  .state.s-stale{background:var(--warn-soft);color:var(--warn);border-color:#f0d9a8}
+  .state.s-blocked{background:var(--bad-soft);color:var(--bad);border-color:#f3c9c4}
+  .state.s-escalated{background:#f2ecfb;color:#5b32a3;border-color:#dcccf3}
+  .state.s-unknown{background:#eef1f5;color:var(--faint);border-color:var(--line2)}
+  .why{font-size:11.5px;color:var(--dim);margin-top:4px;max-width:36ch}
+
   /* ---------- case pane ---------- */
   .case h1{font-size:24px;letter-spacing:-.01em}
   .lede{font-size:16px;color:#25333f;margin-top:8px}
@@ -141,6 +170,11 @@
   .goodbox{background:var(--good-soft);border:1px solid #bfe3ca;border-radius:9px;padding:11px 14px;color:var(--good);font-size:13.5px}
 
   /* ---------- verdict ---------- */
+  label.fld{display:block;font-size:12px;font-weight:700;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--dim);margin:0 0 5px}
+  select{width:100%;padding:9px 10px;border:1px solid var(--line2);border-radius:9px;
+    font:14px var(--sans);background:#fcfdfe;color:var(--ink)}
+  select:focus{outline:2px solid var(--accent);outline-offset:1px}
   .choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
   .choice{
     text-align:left;cursor:pointer;font:inherit;color:inherit;padding:14px 16px;
@@ -245,16 +279,32 @@
     </div>
   </div>
 
+  <!-- ---------------- the queue: every case the store holds ---------------- -->
+  <div class="wrap">
+    <div class="card" style="margin-top:18px">
+      <div class="card-h">
+        <span id="scanhead">Cases open</span>
+        <span class="sub" id="queuesort">sorted by age, oldest first</span>
+        <span class="grow"></span>
+        <span class="sub" id="queuecount"></span>
+      </div>
+      <div class="qwrap" id="queuewrap">
+        <table class="q">
+          <thead><tr>
+            <th>Finding</th><th>Opened</th><th class="num">Sessions</th>
+            <th>Evidence</th><th>Review</th>
+          </tr></thead>
+          <tbody id="mail"></tbody>
+        </table>
+      </div>
+      <div class="railnote" id="railnote"></div>
+    </div>
+  </div>
+
   <div class="wrap app">
 
-    <!-- ---------------- left rail: the inbox ---------------- -->
+    <!-- ---------------- left rail ---------------- -->
     <div class="rail">
-      <div class="card">
-        <div class="card-h" id="scanhead">This morning&rsquo;s scan</div>
-        <div id="mail"></div>
-        <div class="railnote" id="railnote"></div>
-      </div>
-
       <div class="card">
         <div class="card-h">Plain words</div>
         <div class="card-b">
@@ -307,14 +357,20 @@ function stateFailure(state) {
 
 (async function load(){
   try {
-    const [state, finding] = await Promise.all([
+    const [state, finding, cases] = await Promise.all([
       /* The server still accepts ?version=; nothing on this page sets one. */
       get("/api/state"),
       get("/api/finding"),
+      /* The queue. Every case the store holds, with its review state derived at
+         read time. Before this the rail listed check families parsed out of the
+         Foreman's report prose, which is one run's summary of itself: it could
+         not show a case from an earlier run, could not say whether any of them
+         had been decided, and vanished entirely when the report did not parse. */
+      get("/api/cases"),
     ]);
     const failed = stateFailure(state);
     if (failed) throw new Error(failed);
-    WB = { state: state, finding: finding };
+    WB = { state: state, finding: finding, cases: cases };
   } catch (exc) {
     const box = document.getElementById("fatal");
     box.style.display = "";
@@ -422,10 +478,19 @@ function windowSpan(f){
   const h = Math.round((b - a) / 3600000);
   return h + " hour" + (h === 1 ? "" : "s");
 }
+/* Days added and minutes pluralised. A queue sorted by age shows these on every
+   row, so "1 minutes" and "50 hours" were both on screen; the caller adds "ago". */
 function ago(seconds){
+  const unit = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+  const days = Math.floor(seconds / 86400);
+  if (days >= 1) {
+    const h = Math.round((seconds % 86400) / 3600);
+    return unit(days, "day") + (h ? " " + unit(h, "hour") : "");
+  }
   const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
-  if (h >= 1) return h + " hour" + (h === 1 ? "" : "s") + (m ? " " + m + " minutes" : "");
-  return Math.round(seconds / 60) + " minutes";
+  if (h >= 1) return unit(h, "hour") + (m ? " " + unit(m, "minute") : "");
+  const mins = Math.round(seconds / 60);
+  return mins >= 1 ? unit(mins, "minute") : "under a minute";
 }
 function when(ts){                       /* "1.787774304E9" -> readable UTC */
   const n = Number(ts);
@@ -467,6 +532,30 @@ function parseFamilies(report){
 }
 const FAMS = parseFamilies(REPORT);
 
+/* The queue. `/api/cases` is the list; the report parsed above is commentary
+   attached to it by family, and stays labelled as the report's own words.
+   The list is never derived from the prose: a case the store holds is a case
+   whether or not any report mentions it. */
+const QUEUE   = WB.cases || {};
+const CASES   = Array.isArray(QUEUE.cases) ? QUEUE.cases : [];
+const readable = CASES.filter(c => !c.error);
+
+/* Commentary for one family, if this run's report happens to carry it. */
+function familyNote(family){
+  return FAMS.find(f => f.family === family) || { note: "", ids: "", count: null };
+}
+
+/* What each review state says, in the words the queue shows. Six, and only one
+   of them means the review is finished. */
+const STATE_PLAIN = {
+  "yes":       ["decided", "A verdict is on record for the evidence now on screen."],
+  "no":        ["waiting", "No verdict has been recorded for this case."],
+  "stale":     ["stale", "Reviewed, then the evidence was replaced. The verdict is about rows that are gone."],
+  "blocked":   ["screening blocked", "A verdict exists but its screening did not clear, so the run will not draft on it."],
+  "escalated": ["escalated", "The analyst said the call was not theirs. Still owed a decision."],
+  "unknown":   ["unknown", "The review table could not be read on this poll, so nothing was checked."]
+};
+
 /* Plain-English name for each family. The counts and ids stay as the report gave them. */
 const FAM_PLAIN = {
   "cross-tenant":         ["One customer's work touching another's", "An agent used a tool on a customer other than the one it was working for."],
@@ -475,10 +564,28 @@ const FAM_PLAIN = {
   "privilege-sequencing": ["Acting before checking", "The agent changed something it had never read first. Order of operations, not permission."]
 };
 
-/* Which family is the case actually waiting for a verdict? Matched by job id,
-   never assumed. */
-const openFam = FAMS.find(f => f.job_id === F.job_id) || null;
-let selected  = openFam ? openFam.family : (FAMS[0] ? FAMS[0].family : null);
+/* Which case is this run asking about? Matched by job id, never assumed. The
+   live finding is one row of the queue and not a separate kind of thing: it is
+   the one the driver is blocked on, and every other case is equally real. */
+const liveCase = readable.find(c => c.job_id === S(F.job_id)) || null;
+let selected   = liveCase ? liveCase.case_id
+                          : (readable[0] ? readable[0].case_id : null);
+
+/* The selected case, as the pane below wants it. `note` and `ids` are the
+   report's own prose and are absent for a case from an earlier run, which is
+   correct: this run's report has nothing to say about it. Everything else comes
+   off the store. */
+function currentCase(){
+  const c = readable.find(x => x.case_id === selected);
+  if (!c) return null;
+  const said = familyNote(c.family);
+  return {
+    case_id: c.case_id, family: c.family, job_id: c.job_id,
+    count: c.sessions_total, note: said.note, ids: said.ids,
+    decided: c.decided, revisions: c.revisions, opened_at: c.opened_at,
+    revised_at: c.revised_at, window_start: c.window_start, window_end: c.window_end
+  };
+}
 
 const chainFinding = links.find(l => l.kind === "FINDING");
 const chainJob = chainFinding ? S(chainFinding.payload && chainFinding.payload.job_id) : "";
@@ -627,39 +734,176 @@ function renderLinkDetail(){
 function renderMail(){
   const host = $("mail");
   host.textContent = "";
-  /* The count is the parsed report's, not the fixture's four. */
-  $("scanhead").textContent = "This morning\u2019s scan"
-    + (FAMS.length ? " \u2014 " + FAMS.length + (FAMS.length === 1 ? " check" : " checks") : "");
+  $("scanhead").textContent = "Cases open";
+  $("queuecount").textContent = CASES.length
+    ? (String(CASES.length) + " of " + S(QUEUE.total)
+       + (QUEUE.unreadable ? " \u00b7 " + QUEUE.unreadable + " unreadable" : " \u00b7 none unreadable"))
+    : "";
 
-  if (!FAMS.length) {
-    host.appendChild(el("div", "railnote",
-      "The scan report could not be read, so no list of checks is shown. Nothing is invented here."));
+  if (!CASES.length) {
+    $("queuewrap").style.display = "none";
+    $("railnote").textContent =
+      "No case is open. The store holds one per detector job that found something, "
+      + "and nothing has been published to it yet.";
     return;
   }
-  FAMS.forEach(f => {
-    const plain = FAM_PLAIN[f.family] || [f.family, ""];
-    const b = el("button", "mailrow" + (f.count === 0 ? " quiet" : ""));
-    b.type = "button";
-    b.setAttribute("aria-pressed", String(f.family === selected));
-    const top = el("div", "top");
-    top.appendChild(el("span", "subject", plain[0]));
-    const c = el("span", "count" + (f.count === 0 ? " zero" : ""), f.count);
-    top.appendChild(c);
-    b.appendChild(top);
-    b.appendChild(el("div", "prev", f.count === 0 ? "Nothing found" : plain[1]));
-    if (openFam && f.family === openFam.family) b.appendChild(el("div", "tag", "WAITING FOR YOUR VERDICT"));
-    b.addEventListener("click", () => { selected = f.family; renderMail(); renderCase(); window.scrollTo({top:0}); });
-    host.appendChild(b);
+  $("queuewrap").style.display = "";
+
+  /* Oldest first, which is not the order the store lists in. `/api/cases`
+     returns newest first, because it is a listing of a store; this is a triage
+     queue, and the case that has been waiting longest is the one to work. The
+     unreadable rows stay where the server put them, at the top, because a case
+     this console will not serve is not waiting on anyone's attention in the same
+     sense and has no age to sort by. */
+  const broken = CASES.filter(c => c.error);
+  const ordered = CASES.filter(c => !c.error)
+    .slice()
+    .sort((a, b) => S(a.opened_at).localeCompare(S(b.opened_at)));
+
+  broken.concat(ordered).forEach(c => {
+    const tr = document.createElement("tr");
+
+    /* A case whose file will not parse is still a row. Dropping it would remove
+       a case from the queue silently, which is the one failure a governance
+       console cannot have. */
+    if (c.error) {
+      tr.className = "broken";
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.appendChild(say("span", null, [
+        el("b", null, "Unreadable case " + S(c.case_id) + ". "),
+        "The file is on disk and this console will not serve it: it did not parse, or its "
+        + "recorded hash does not describe the finding stored with it. It is shown here "
+        + "rather than dropped."
+      ]));
+      tr.appendChild(td);
+      host.appendChild(tr);
+      return;
+    }
+
+    tr.setAttribute("aria-selected", String(c.case_id === selected));
+    const plain = FAM_PLAIN[c.family] || [c.family, ""];
+
+    const first = document.createElement("td");
+    first.appendChild(el("span", "fam", plain[0]));
+    first.appendChild(el("span", "cid", S(c.case_id) + " \u00b7 " + S(c.job_id).split(":").pop()));
+    if (liveCase && c.case_id === liveCase.case_id) {
+      first.appendChild(el("div", "tag", "WAITING FOR YOUR VERDICT"));
+    }
+    tr.appendChild(first);
+
+    const age = document.createElement("td");
+    age.className = "age";
+    age.appendChild(document.createTextNode(sinceStamp(c.opened_at)));
+    age.appendChild(el("span", "abs", S(c.opened_at)));
+    tr.appendChild(age);
+
+    const n = el("td", "num", S(c.sessions_total));
+    tr.appendChild(n);
+
+    tr.appendChild(el("td", null, c.revisions
+      ? ("revised " + (c.revisions === 1 ? "once" : c.revisions + " times")
+         + ", last " + sinceStamp(c.revised_at))
+      : "unchanged since opened"));
+
+    const review = document.createElement("td");
+    const said = STATE_PLAIN[c.decided] || ["unknown", "This console does not recognise the state the server sent."];
+    review.appendChild(el("span", "state s-" + S(c.decided || "unknown"), said[0]));
+    review.appendChild(el("div", "why", said[1]));
+    tr.appendChild(review);
+
+    tr.addEventListener("click", async () => {
+      selected = c.case_id;
+      renderMail(); renderCase(); window.scrollTo({ top: 0 });
+      await ensureDetail(c.case_id);
+      renderCase();
+    });
+    host.appendChild(tr);
   });
 
-  const total = FAMS.reduce((a, f) => a + f.count, 0);
   const note = $("railnote");
   note.textContent = "";
-  note.appendChild(say("span", null, [
-    String(FAMS.length), " ", gloss("detector", "detectors"), " scanned the same ", windowSpan(F), " of what the ",
-    gloss("fleet"), " did. ", el("b", null, String(total)), " events flagged in total. ",
-    "A detector only looks. It cannot block anything."
-  ]));
+  const quiet = FAMS.filter(f => f.count === 0);
+  const parts = [
+    String(readable.length), " ", readable.length === 1 ? "case" : "cases",
+    " in the store, one per ", gloss("detector"), " job that found something. ",
+    "Age is when the case was opened, not when its file was last written. "
+  ];
+  if (quiet.length) {
+    parts.push("A further ", el("b", null, String(quiet.length)),
+               quiet.length === 1 ? " detector" : " detectors",
+               " scanned the same window and found nothing, so there is no case for "
+               + (quiet.length === 1 ? "it" : "them") + ". That is a result, not a gap.");
+  }
+  note.appendChild(say("span", null, parts));
+  if (QUEUE.decided_error) {
+    note.appendChild(el("div", "warnbox",
+      "Every review state above reads \u201Cunknown\u201D: the review table could not be "
+      + "read on this poll, so nothing was checked. " + S(QUEUE.decided_error)));
+  }
+  if (QUEUE.truncated) {
+    note.appendChild(el("div", "warnbox",
+      "This page stops at " + S(QUEUE.limit) + " cases and the store holds " + S(QUEUE.total)
+      + ". The ones left out are the least recently written, which is not the same as the "
+      + "newest, so a case may be missing from a list sorted by age."));
+  }
+}
+
+/* "2 days ago" from one of the fixed UTC stamps the store writes. Absent or
+   unreadable answers plainly rather than guessing a duration. */
+function sinceStamp(stamp){
+  const ms = Date.parse(S(stamp));
+  if (!stamp || Number.isNaN(ms)) return "unknown";
+  return ago(Math.max(0, Math.round((Date.now() - ms) / 1000))) + " ago";
+}
+
+/* One case's evidence, decision and citation. The live case already arrived with
+   the page as /api/finding; every other case is read from /api/cases?id= when it
+   is first selected and kept, because a case's stored evidence does not change
+   while the page is open unless the driver republishes it.
+
+   This exists because the pane below draws rows, a job id and a verdict. Drawing
+   the live finding's rows under another case's heading would attribute one
+   detector's evidence to another, which is the same misattribution the store's
+   own identity checks exist to stop. */
+const DETAIL = {};
+let detailError = null;
+
+/* The case the compose box is filing against. Set by renderCase before it draws
+   the card, because the box used to be bound to the live finding and there was
+   only ever one case to file on. `caseharden/workbench.py` accepts a verdict on
+   any case the store holds, so the box follows the selection and the message it
+   drafts carries that case's job id. */
+let composeJob = "";
+let composeBox = {};
+let composeIsLive = true;
+
+async function ensureDetail(id){
+  if (!id || (liveCase && id === liveCase.case_id)) return;
+  if (DETAIL[id]) return;
+  try {
+    DETAIL[id] = await get("/api/cases?id=" + encodeURIComponent(id));
+    detailError = null;
+  } catch (exc) {
+    detailError = String(exc);
+  }
+}
+
+/* The pane's view of whichever case is selected, shaped like /api/finding so the
+   pane does not care which route it came from. */
+function paneBox(){
+  if (!liveCase || selected === (liveCase && liveCase.case_id)) return box;
+  const d = DETAIL[selected];
+  if (!d) return { present: false, loading: true };
+  return {
+    present: true,
+    finding: (d["case"] || {}).finding || {},
+    decision: d.decision,
+    decision_error: d.decision_error,
+    near_miss: d.near_miss,
+    citation: d.citation,
+    verdict_predates_revision: d.verdict_predates_revision
+  };
 }
 
 // ---------------------------------------------------------------- the case
@@ -667,7 +911,19 @@ function renderMail(){
 function renderCase(){
   const host = $("case");
   host.textContent = "";
-  const fam = FAMS.find(f => f.family === selected);
+  const fam = currentCase();
+  /* Shadowed on purpose. Everything below was written against the live finding
+     and is unchanged; what it draws is now whichever case is selected. */
+  const box = paneBox();
+  const F = box.finding || {};
+  if (box.loading) {
+    host.appendChild(el("h1", null, "Opening the case"));
+    host.appendChild(el("p", "lede", detailError
+      ? "This case could not be read from the store."
+      : "Reading its evidence from the case store."));
+    if (detailError) host.appendChild(el("div", "badbox", detailError));
+    return;
+  }
 
   /* A failed read and an empty desk are different pictures. The server answers
      200 with present:false AND an error when the finding file is half-written or
@@ -693,7 +949,7 @@ function renderCase(){
     return;
   }
 
-  const isOpen = openFam && fam.family === openFam.family;
+  const isOpen = liveCase && fam.case_id === liveCase.case_id;
   const plain = FAM_PLAIN[fam.family] || [fam.family, ""];
 
   // ---- headline. Only the open case knows which detector answered; the other
@@ -704,19 +960,10 @@ function renderCase(){
   host.appendChild(el("h1", null,
     fam.count === 0 ? plain[0] + " — nothing found" : fam.count + " flagged: " + plain[0].toLowerCase()));
 
-  // ---- empty folder
-  if (fam.count === 0) {
-    host.appendChild(el("p", "lede", plain[1]));
-    host.appendChild(el("div", "goodbox",
-      "This check ran and came back with nothing. That is a result, not a gap: the query id below "
-      + "lets anyone re-run the same search and get the same empty answer."));
-    const c = el("div", "card"); c.appendChild(el("div", "card-h", "What the detector said"));
-    const cb = el("div", "card-b");
-    cb.appendChild(facts([["in its own words", fam.note], ["query receipt (job id)", mono(fam.job_id)]]));
-    c.appendChild(cb); host.appendChild(c);
-    host.appendChild(notThisCase());
-    return;
-  }
+  /* No empty-folder branch. A case exists only for a detector job that returned
+     rows, so a case with nothing in it is not a state the store can produce. The
+     detectors that found nothing are counted under the queue instead, where they
+     read as a result rather than as a missing row. */
 
   // ---- summary
   host.appendChild(say("p", "lede", [
@@ -726,22 +973,13 @@ function renderCase(){
     fam.note
   ]));
 
-  if (!isOpen) {
-    host.appendChild(el("div", "warnbox",
-      "This desk has this check's summary, but not its cited rows. The cited rows on this desk "
-      + "belong to the case that is waiting for a verdict, which is a different check. "
-      + "This one has its own query id, so its rows can be pulled from the database directly."));
-    const c = el("div", "card"); c.appendChild(el("div", "card-h", "What the detector said"));
-    const cb = el("div", "card-b");
-    cb.appendChild(facts([
-      ["in its own words", fam.note],
-      ["identifiers named", fam.ids],
-      ["query receipt (job id)", mono(fam.job_id)]
-    ]));
-    c.appendChild(cb); host.appendChild(c);
-    host.appendChild(notThisCase());
-    return;
-  }
+  /* No "summary but not the rows" branch any more. It was true while the only
+     evidence on this desk was the live finding's: showing those rows under
+     another check's heading would have attributed one detector's evidence to
+     another, so the pane refused and said so. Every case now arrives with its
+     own cited rows from /api/cases?id=, so the refusal would be the page
+     withholding evidence it is holding. The composer follows the case too, and
+     says beside itself when the case is not the one the run is waiting on. */
 
   // ---- the open case: what you are being asked
   const ask = el("div", "askbox");
@@ -859,6 +1097,8 @@ function renderCase(){
     c4b.appendChild(el("p", "note", S(box.decision_error)));
   } else if (box.decision) {
     c4b.appendChild(el("div", "goodbox", "A verdict is already recorded: " + S(box.decision.decision_id)));
+    citedPolicy(c4b, box.decision, box.citation);
+    advisoryShown(c4b, box.decision);
   } else if (box.near_miss) {
     c4b.appendChild(el("div", "badbox",
       "A verdict exists, but it was filed against a different id: " + S(box.near_miss.subject)
@@ -870,19 +1110,124 @@ function renderCase(){
   c4.appendChild(c4b);
   host.appendChild(c4);
 
+  /* Every case gets a composer, filing against its own job id. It used to be
+     the live case only, and the server agreed: `chat` refused any message that
+     did not name the finding under review, so three of four detectors could find
+     real conduct and none of it could be ruled on. What a verdict on a case the
+     run is not waiting on does NOT do is advance that run, and the card says so
+     rather than leaving it to be discovered. */
+  composeJob = S(F.job_id);
+  composeBox = box;
+  composeIsLive = !!isOpen;
   host.appendChild(verdictCard());
   host.appendChild(afterCard());
   host.appendChild(attestCard());
 }
 
-function notThisCase(){
-  const d = el("div", "note");
-  d.appendChild(say("span", null, [
-    "No ", gloss("verdict"), " is being asked for on this check. The case waiting for you is ",
-    el("b", null, openFam ? (FAM_PLAIN[openFam.family] || [openFam.family])[0].toLowerCase() : "elsewhere"),
-    " — pick it in the list on the left. A verdict must name one exact case, and naming the wrong one files it against nothing."
-  ]));
-  return d;
+/* Which policy the recorded verdict was applying, and whether the registry knows
+   it. Both halves come off the server: `box.decision` is the stored row and
+   `box.citation` is the server's read of it against `policy.versions`. Nothing
+   here checks anything. The identity that can read that registry is notary-sa,
+   held by caseharden/workbench.py, and a check this page ran on its own would be
+   a page telling the analyst what it decided by itself. */
+function citedPolicy(host, row, cit){
+  const c = cit || {};
+  const state = S(c.state);
+  /* The line comes from the server's answer, not from the row: a citation that
+     named only a version resolves to whichever line the registry holds it in,
+     and printing "conduct-policy@" in front of a payments version would be this
+     page inventing the half the analyst did not write. */
+  const version = S(row.cited_version);
+  const cited = version && (S(c.policy_id) ? S(c.policy_id) + "@" + version : version);
+  if (state === "PREDATES-COLUMNS") {
+    host.appendChild(el("p", "note",
+      "This row was written before the record had anywhere to put the policy being applied. "
+      + "It does not say which one it was, and that is different from a verdict that cited none."));
+    return;
+  }
+  if (state === "UNCITED") {
+    host.appendChild(el("div", "badbox",
+      "It cites no policy version. Nothing on the row says which policy line the analyst was "
+      + "applying or which version of it, so a month from now the verdict cannot be explained "
+      + "from the record alone."));
+    return;
+  }
+  if (state === "UNREGISTERED") {
+    host.appendChild(say("div", "badbox", [
+      "It cites ", mono(cited), ", and the version registry holds no such version in that line. "
+      + "The citation names nothing."]));
+    return;
+  }
+  if (state === "REGISTRY-UNKNOWN") {
+    host.appendChild(say("p", "note", [
+      "It cites ", mono(cited), ". The version registry could not be read, so this page cannot "
+      + "say whether that version exists. It is not saying it does not."]));
+    return;
+  }
+  if (state !== "REGISTERED") return;
+  host.appendChild(say("p", null, [
+    "It was recorded against ", mono(cited), ", which the registry holds, promoted ",
+    el("b", null, S(c.promoted_at) || "at an unrecorded time"), "."]));
+  /* The one comparison worth drawing: the conduct under review happened inside a
+     window, and a version was in force during it. Citing a different one is not
+     an error — an analyst may be arguing from a later version deliberately — so
+     this states the difference and does not rule on it. */
+  if (c.matches_window === false) {
+    host.appendChild(say("div", "warnbox", [
+      "The version in force when this conduct happened was ",
+      mono(S(c.active_at_window_start)),
+      ", not the one cited. That may be deliberate. It is stated because the record does not."]));
+  } else if (c.matches_window === null || c.matches_window === undefined) {
+    host.appendChild(el("p", "note",
+      "Which version was in force during the scanned window could not be worked out from the "
+      + "finding's timestamps and the registry, so the citation is not compared against it."));
+  }
+}
+
+/* What the machine had on screen beside the verdict box when it was written.
+   Stored as displayed and never recomputed here: a recommendation this page
+   derived now would say nothing about what the analyst was looking at then. */
+function advisoryShown(host, row){
+  if (!S(row.advisory_recommendation) && !S(row.advisory_rule)
+      && (row.advisory_confidence === null || row.advisory_confidence === undefined)) {
+    /* Same distinction the citation pane makes one card up: a row written before
+       these columns existed had nowhere to record an advisory, and saying none
+       was recorded is a claim about a row that could not have carried one. */
+    host.appendChild(el("p", "note",
+      S(row.advisory_source)
+        ? ("No machine advisory was recorded with this verdict. Nothing in this fleet produces one "
+           + "yet: the paragraphs above are the report's own argument, with no recommendation, no "
+           + "rule and no confidence attached.")
+        : ("This row predates the advisory columns, so whether an advisory was on screen when the "
+           + "verdict was recorded is not something the record can say either way.")));
+    return;
+  }
+  /* Who said so, before what was said. `advisory_source` is 'SURFACE' on every
+     row this fleet can write: nothing here emits a recommendation, so the three
+     columns hold what the recording surface passed on, and the surface is a
+     model relaying typed text. This pane said "The machine advised X, as it was
+     displayed beside this verdict", which the record cannot support and which an
+     analyst could use to attribute their own call to a recommendation that never
+     existed. 'RECOMMENDER' is the value a component that produces one would
+     carry, and only then does the stronger sentence become true. */
+  const source = S(row.advisory_source);
+  const attributed = source === "RECOMMENDER";
+  const bits = [attributed ? "The machine advised " : "The recording surface reported an advisory of ",
+                el("b", null, S(row.advisory_recommendation))];
+  if (S(row.advisory_rule)) bits.push(" on rule ", mono(S(row.advisory_rule)));
+  if (row.advisory_confidence !== null && row.advisory_confidence !== undefined) {
+    bits.push(" at confidence ", el("b", null, S(row.advisory_confidence)));
+  }
+  bits.push(attributed ? ", as it was displayed beside this verdict."
+                       : ", as it says was displayed beside this verdict.");
+  host.appendChild(say("p", null, bits));
+  if (!attributed) {
+    host.appendChild(el("p", "note",
+      "Recorded as " + (source || "an unlabelled source") + ". Nothing in this fleet produces a "
+      + "recommendation, so this was passed in by the surface that wrote the verdict rather than "
+      + "emitted by a recommender. It says what the analyst reported seeing; it is not "
+      + "independent evidence that anything was on screen."));
+  }
 }
 
 // ---------------------------------------------------------------- verdict
@@ -892,7 +1237,7 @@ function verdictCard(){
   c.appendChild(el("div", "card-h", "Your verdict"));
   const b = el("div", "card-b stack");
 
-  if (box.decision_error) {
+  if (composeBox.decision_error) {
     /* Freeze the forward action, keep everything else readable. Same shape as an
        UNKNOWN attestation: enforcement unchanged, promotion frozen. Offering a
        compose box here invites a second verdict on top of one that may exist. */
@@ -909,6 +1254,18 @@ function verdictCard(){
     el("b", null, "Read it, change any of it, add your reasons"), " — then send. What you see in the box is exactly what gets sent."
   ]));
 
+  /* What a verdict here does, and does not do. The run is blocked on one case,
+     and a verdict on any other is a real record that does not release it. Saying
+     so beside the box beats letting an analyst work out from a run that never
+     resumed that they answered the wrong question. */
+  if (!composeIsLive) {
+    b.appendChild(el("div", "warnbox",
+      "This is not the case the run is waiting on. A verdict here is recorded against "
+      + "this case and closes it on the queue, and it does not release the run, which "
+      + "is polling for a verdict on "
+      + (liveCase ? S(liveCase.job_id) : "another case") + "."));
+  }
+
   const choices = el("div", "choices");
   const mk = (key, big, sm) => {
     const btn = el("button", "choice");
@@ -920,11 +1277,26 @@ function verdictCard(){
     choices.appendChild(btn);
     return btn;
   };
+  /* Four, and the same four `caseharden/verdicts.py` records. The page offered
+     two, so an analyst who meant either of the other two had to write the words
+     themselves — and the Copilot refuses any phrasing outside the taxonomy, so
+     that verdict was refused at the moment it was filed. Only the first drafts a
+     policy; the other three end the run with the verdict standing. */
   mk("confirmed abuse", "Yes — this is abuse",
-     "The flagged activity is real misuse. Say why, so the next step has your reasoning.");
+     "Real misuse, and the fleet should deny it. This is the only answer a policy version is drafted from.");
   mk("benign", "No — this is normal",
-     "The check fired on legitimate activity. Say why, so the same pattern is not chased again.");
+     "The check fired on legitimate activity and no rule is needed. Say why, so the same pattern is not chased again.");
+  mk("insufficient evidence", "I cannot tell",
+     "The record does not support a call either way. The run closes; nothing is drafted from it.");
+  mk("escalate", "Not my call",
+     "This is not the reviewing analyst's decision to make. The case stays on the queue as still owed.");
   b.appendChild(choices);
+
+  /* Which policy the verdict is applying, grouped by line. "In force during this
+     window" is answered per line, so switching lines asks a different question
+     with a different answer. Any line may be cited: which policy governs a
+     finding is the review, and nothing here maps a check family to a line. */
+  b.appendChild(citePicker());
 
   const ta = el("textarea");
   ta.id = "msg";
@@ -966,6 +1338,94 @@ function verdictCard(){
   return c;
 }
 
+/* The policy the verdict is applying, offered from the registry the server sent.
+
+   Grouped by line because "the version in force during this window" is answered
+   per line: two lines exist and each has its own lineage, so switching the group
+   asks a different question. Any line may be cited. Nothing in this system maps
+   a check family to a policy line — a family groups detector evidence, a line
+   groups enforcement lineage — so which policy governs a finding is the review,
+   not something this page decides.
+
+   The "in force" marker is this page's own arithmetic over the promotion times
+   in `/api/state`, and it is a suggestion. The check that goes on the record is
+   the server's, run against the citation after it is stored, and shown in the
+   pane above once a verdict exists. */
+function citePicker(){
+  const wrap = el("div");
+  wrap.appendChild(el("label", "fld", "Cites policy"));
+
+  const sel = el("select");
+  sel.id = "cite";
+  sel.setAttribute("aria-label", "The policy version this verdict applies");
+
+  const versions = Array.isArray(state.versions) ? state.versions : [];
+  const lines = {};
+  versions.forEach(v => {
+    const line = S(v.policy_id) || "conduct-policy";
+    (lines[line] = lines[line] || []).push(v);
+  });
+
+  const windowStart = Date.parse(S(F.window_start));
+  Object.keys(lines).sort().forEach(line => {
+    const rows = lines[line].slice().sort(
+      (a, b) => Date.parse(S(b.promoted_at)) - Date.parse(S(a.promoted_at)));
+    /* The most recent promotion at or before the window opened. Absent when the
+       line had nothing in force yet, which is a real answer and not a default. */
+    const inForce = Number.isNaN(windowStart) ? null
+      : (rows.find(v => Date.parse(S(v.promoted_at)) <= windowStart) || null);
+    const group = document.createElement("optgroup");
+    group.label = line;
+    rows.forEach(v => {
+      const o = document.createElement("option");
+      o.dataset.line = line;
+      o.dataset.v = S(v.version);
+      o.textContent = line + "@" + S(v.version)
+        + (inForce && v.version === inForce.version ? " — in force when this conduct happened"
+           : Number.isNaN(windowStart) ? ""
+           : (Date.parse(S(v.promoted_at)) > windowStart ? " — promoted after the window"
+                                                         : " — superseded before the window"));
+      group.appendChild(o);
+    });
+    sel.appendChild(group);
+  });
+
+  const none = document.createElement("optgroup");
+  none.label = "cite nothing";
+  const o = document.createElement("option");
+  o.dataset.line = ""; o.dataset.v = "";
+  o.textContent = "none — I am not applying a policy";
+  none.appendChild(o);
+  sel.appendChild(none);
+
+  /* Preselect the version in force for the default line, if there is one. The
+     analyst confirms or changes it; nothing is filled in from whatever happens
+     to be active now, which is a different version once anything is promoted. */
+  const preferred = [...sel.options].find(x => x.textContent.indexOf("in force when") !== -1);
+  if (preferred) preferred.selected = true;
+
+  sel.addEventListener("change", () => {
+    const pressed = document.querySelector('.choice[aria-pressed="true"]');
+    if (pressed) fill(pressed.dataset.key);
+  });
+  wrap.appendChild(sel);
+  wrap.appendChild(el("p", "note", versions.length
+    ? "Grouped by policy line. The marked version is the one this page works out was in "
+      + "force when the conduct happened, from the promotion times the server sent; the "
+      + "check that reaches the record is the server's, shown once the verdict is stored."
+    : "The version registry could not be read, so no version is offered. File the verdict "
+      + "without a citation rather than guessing one."));
+  return wrap;
+}
+
+/* What the picker currently names, as `line@version`, or null for none. */
+function citedNow(){
+  const sel = $("cite");
+  if (!sel) return null;
+  const o = sel.options[sel.selectedIndex];
+  return (o && o.dataset.line) ? (o.dataset.line + "@" + o.dataset.v) : null;
+}
+
 function fill(key){
   const ta = $("msg");
   if (!ta) return;
@@ -974,10 +1434,18 @@ function fill(key){
   /* The subject is spelled out as an instruction, not merely mentioned: the
      Copilot chooses what it passes on, and a sentence that only contains the id
      can still be stored in a shortened form. */
+  /* The citation travels as its own sentence, and the "none" case says so rather
+     than being left out. A verdict that cites nothing is a real answer; a verdict
+     whose message simply never mentioned a policy is indistinguishable from one
+     where the analyst forgot, and the row cannot tell them apart later either. */
+  const cited = citedNow();
   ta.value =
     "Record my verdict on this finding. Use exactly this string as the finding "
-    + "argument, including the location prefix, and do not shorten it: " + S(F.job_id)
-    + "\nDisposition: " + key + ". Rationale: ";
+    + "argument, including the location prefix, and do not shorten it: " + composeJob
+    + "\nDisposition: " + key + "."
+    + (cited ? "\nCites policy: " + cited + "."
+             : "\nI am not citing a policy version for this verdict.")
+    + "\nRationale: ";
   ta.focus();
   ta.setSelectionRange(ta.value.length, ta.value.length);
   checkSubject();
@@ -986,16 +1454,16 @@ function fill(key){
 function checkSubject(){
   const ta = $("msg"), out = $("subjcheck");
   if (!ta || !out) return;
-  const ok = S(F.job_id) && ta.value.includes(S(F.job_id));
+  const ok = composeJob && ta.value.includes(composeJob);
   out.className = "subjcheck " + (ok ? "ok" : "no");
   out.textContent = "";
   if (ok) {
     out.appendChild(document.createTextNode("Good. The message names this case exactly: "));
-    out.appendChild(mono(S(F.job_id)));
+    out.appendChild(mono(composeJob));
   } else {
     out.appendChild(document.createTextNode(
       "The message does not yet contain this case's id, exactly as written, prefix and all: "));
-    out.appendChild(mono(S(F.job_id)));
+    out.appendChild(mono(composeJob));
     out.appendChild(document.createTextNode(
       ". Shortened or missing, the record is filed against nothing and the case stays open."));
   }
@@ -1005,7 +1473,12 @@ document.addEventListener("input", e => { if (e.target && e.target.id === "msg")
 /* What the record already held before anything was sent from this page. A row
    that was there at boot is not evidence that a later send landed, and both
    readback branches below used to treat any row as proof of the send in hand. */
-const decisionBefore = box.decision ? S(box.decision.decision_id) : null;
+/* The verdict already on the case being filed on, before this send. Read at the
+   moment the box is drawn rather than at boot, because the box now follows the
+   selection and a decision id from the live case says nothing about another. */
+function decisionBeforeSend(){
+  return composeBox && composeBox.decision ? S(composeBox.decision.decision_id) : null;
+}
 
 /* Read the record back and answer the one question both branches below ask: is
    there a verdict row that was not already there before this send?
@@ -1020,7 +1493,14 @@ const decisionBefore = box.decision ? S(box.decision.decision_id) : null;
 async function readBackDecision(){
   let later = null;
   try {
-    later = await get("/api/finding");
+    /* The route that knows about the case actually filed on. /api/finding only
+       ever answers about the live one, so a send on any other case read back as
+       "the lookup did not complete" and the analyst was told to check by hand. */
+    later = composeIsLive
+      ? await get("/api/finding")
+      : await get("/api/cases?id=" + encodeURIComponent(selected))
+          .then(d => d && ({ present: true, finding: (d["case"] || {}).finding || {},
+                             decision: d.decision, decision_error: d.decision_error }));
   } catch (exc) {
     return { known: false };
   }
@@ -1031,10 +1511,10 @@ async function readBackDecision(){
      path, on a path that did not exist when that fix was made. */
   if (!later || later.present !== true || later.error || later.decision_error) return { known: false };
   /* A readback about a different case says nothing about this send. */
-  if (S((later.finding || {}).job_id || "") !== BOOT_JOB) return { known: false };
+  if (S((later.finding || {}).job_id || "") !== composeJob) return { known: false };
   const row = later.decision || null;
   if (!row) return { known: true, row: null };
-  return { known: true, row: row, fresh: S(row.decision_id) !== decisionBefore };
+  return { known: true, row: row, fresh: S(row.decision_id) !== decisionBeforeSend() };
 }
 
 async function trySend(){

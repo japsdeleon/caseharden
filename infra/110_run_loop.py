@@ -18,6 +18,12 @@ The order below is the order in plan section 4:
   7  the analyst's approval, written by the Copilot
   8  the promotion, the seal, the certificate, and a fresh verification
 
+Step 3 can be the last step. Three of the four dispositions in
+`caseharden/verdicts.py` are terminal: the finding needs no rule, or nobody can
+tell from the record yet, or the call belongs to someone else. The run closes on
+those and drafts nothing, which is an outcome and not a failure. Only
+`confirmed abuse` continues into step 4.
+
 What the Proposer is told between attempts matters. A gate rejection is fed
 back as its failing leg and the benign numbers only. The holdout figures are
 never passed to it, because a Proposer that learns the exam's contents through
@@ -50,7 +56,7 @@ from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from agents.common import armor
-from caseharden import bq, copilot_client, creds
+from caseharden import bq, cases, copilot_client, creds, verdicts
 from caseharden.dsl import Policy, canonical_json, load, parse
 from caseharden.examiner import gate, score_bq
 from caseharden.interpreter import structurally_monotonic
@@ -169,8 +175,54 @@ def incident(args) -> dict:
 JOB_RE = re.compile(r"(?:(europe-west3|[a-z]+-[a-z]+\d):)?(job_[A-Za-z0-9_\-]{8,})")
 
 
-def investigate(args, incident_row: dict) -> dict:
-    head("2. The fan-out, and the finding it produced")
+def build_finding(job: dict, family: str, window_start: str, window_end: str,
+                  incident_session: str, report: str, context: str) -> dict:
+    """One detector job, as the finding a case is opened for.
+
+    Split out of `investigate` when the loop stopped discarding the jobs it did
+    not pick. Every field here was already computed for the chosen job; the only
+    change is that it is computed per job rather than once.
+    """
+    rows = job["rows"]
+    sessions = sorted({str(r.get("session_id")) for r in rows if r.get("session_id")})
+    traces = sorted({t for r in rows for t in (r.get("trace_ids") or []) if t}
+                    | {r["trace_id"] for r in rows if r.get("trace_id")})
+    return {
+        "family": family,
+        "window_start": window_start,
+        "window_end": window_end,
+        "detector": f"{family}@day5",
+        "job_id": job["job_id"],
+        "table": bq.qualified_table(PROJECT, LIVE_DATASET),
+        "sessions": sessions[:200],
+        "sessions_total": len(sessions),
+        "trace_ids": traces[:200],
+        "rows": rows[:20],
+        "cites_incident_session": any(
+            str(r.get("session_id")) == incident_session for r in rows),
+        "report": report[:4000],
+        "context_id": context,
+    }
+
+
+def investigate(args, incident_row: dict):
+    """Every detector job that found something, and the one this run asks about.
+
+    Returns `(live, findings)`. `live` is the finding the run puts to a human;
+    `findings` is one per detector job that returned rows, `live` among them.
+
+    The loop used to build a finding for the chosen job and drop the rest on the
+    floor. Up to three other detectors could each have found real conduct in the
+    same window, and nothing anywhere recorded that they had: no case, no row, no
+    trace beyond a printed line. The fleet's output was as narrow as the one
+    question the run happened to ask.
+
+    Each of those is now a case. It does not widen what this run asks about,
+    which is still one finding and one verdict, and it does not draft anything
+    from them. It means the queue holds what the fleet found rather than what one
+    run selected out of it, and a human decides which of them is worth a policy.
+    """
+    head("2. The fan-out, and the findings it produced")
     context = "loop-investigation-" + uuid.uuid4().hex[:8]
     # The window the detectors actually scanned, closed the moment they answer.
     # Not "up to whenever the chain gets written": live conduct keeps arriving,
@@ -216,33 +268,29 @@ def investigate(args, incident_row: dict) -> dict:
                    if any(str(r.get("session_id")) == incident_row["session_id"]
                           for r in f["rows"])),
                   max(with_rows, key=lambda f: len(f["rows"])))
-    cites_incident = any(str(r.get("session_id")) == incident_row["session_id"]
-                         for r in chosen["rows"])
-    family = family_of(chosen["job_id"], token)
-    print(f"\n  taking {chosen['job_id'].split(':')[-1][:28]} as the finding: "
-          f"{len(chosen['rows'])} row(s), family {family}, "
-          f"{'cites this incident' if cites_incident else 'does not cite this incident'}")
 
-    sessions = sorted({str(r.get("session_id")) for r in chosen["rows"]
-                       if r.get("session_id")})
-    traces = sorted({t for r in chosen["rows"] for t in (r.get("trace_ids") or [])
-                     if t} | {r["trace_id"] for r in chosen["rows"]
-                              if r.get("trace_id")})
-    return {
-        "family": family,
-        "window_start": window_start,
-        "window_end": now(),
-        "detector": f"{family}@day5",
-        "job_id": chosen["job_id"],
-        "table": bq.qualified_table(PROJECT, LIVE_DATASET),
-        "sessions": sessions[:200],
-        "sessions_total": len(sessions),
-        "trace_ids": traces[:200],
-        "rows": chosen["rows"][:20],
-        "cites_incident_session": cites_incident,
-        "report": report[:4000],
-        "context_id": context,
-    }
+    # One window for all of them. The detectors scanned the same period, and a
+    # per-finding end stamp would put a different window on cases that came out
+    # of one fan-out.
+    window_end = now()
+    built = []
+    for job in with_rows:
+        family = family_of(job["job_id"], token)
+        found = build_finding(job, family, window_start, window_end,
+                              incident_row["session_id"], report, context)
+        built.append(found)
+        mark = "  <- the finding this run asks about" if job is chosen else ""
+        print(f"  {job['job_id'].split(':')[-1][:28]:30} {len(job['rows']):3} row(s)  "
+              f"{family}{mark}")
+
+    live = built[with_rows.index(chosen)]
+    print(f"\n  taking {live['job_id'].split(':')[-1][:28]} as the finding: "
+          f"{len(live['rows'])} row(s), family {live['family']}, "
+          f"{'cites this incident' if live['cites_incident_session'] else 'does not cite this incident'}")
+    if len(built) > 1:
+        print(f"  the other {len(built) - 1} are opened as cases and left for a "
+              f"human; nothing is drafted from them")
+    return live, built
 
 
 def family_of(job_id: str, token: str) -> str:
@@ -293,11 +341,14 @@ def copilot(text: str, session: str, user: str = "analyst") -> str:
 # are the two places a screened text is used rather than merely stored: the
 # analyst's rationale goes into the Proposer's prompt, and the Proposer's
 # rationale goes to the analyst and into the chain.
-UNUSABLE_SCREENING = ("BLOCK", "SCREENING_FAILED", "NOT_SCREENED", None, "")
+# Defined in caseharden/verdicts.py, beside the taxonomy, because the console
+# reads it too and a queue whose idea of unusable screening differs from the
+# driver's shows cases as reviewed that the driver will not act on.
+UNUSABLE_SCREENING = verdicts.UNUSABLE_SCREENING
 
 
 def refuse_unscreened(where: str, verdict: Optional[str], detail: str = "") -> None:
-    if str(verdict or "").upper() in ("BLOCK", "SCREENING_FAILED", "NOT_SCREENED", ""):
+    if str(verdict or "").upper() in UNUSABLE_SCREENING:
         raise SystemExit(
             f"REFUSED. Model Armor returned {verdict!r} on {where}. That text is "
             f"not passed on and nothing was written to the chain. {detail}".strip())
@@ -342,9 +393,21 @@ def record_through_copilot(text: str, kind: str, subject: str, session: str,
 def decisions(kind: str, subject: str, since: str) -> list:
     token = bq.access_token(NOTARY)
     return bq.query(
-        f"SELECT decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', ts) AS ts,"
+        # Every column the bundle carries, because the Notary matches the bundle
+        # against this row and a column this poll does not select reaches the
+        # bundle as None. That is a mismatch against a row that holds a value,
+        # so a promotion citing a policy would have been refused for a
+        # disagreement created here rather than by anything an analyst did.
+        #
+        # Microseconds, matching what the Copilot now writes: two verdicts on
+        # one subject in the same second tie under `ORDER BY ts DESC LIMIT 1`,
+        # and BigQuery does not define the order among ties.
+        f"SELECT decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', ts) AS ts,"
         f" kind, analyst, subject, disposition, rationale, ma_verdict, ma_band,"
-        f" ma_prompt_injection_score, ma_jailbreak_score, approved"
+        f" ma_prompt_injection_score, ma_jailbreak_score, approved,"
+        f" cited_policy_id, cited_version, citation_source,"
+        f" advisory_recommendation, advisory_rule, advisory_confidence,"
+        f" advisory_source"
         f" FROM `{bq.qualified_table(PROJECT, 'review', 'decisions')}`"
         f" WHERE kind = @kind AND subject = @subject AND ts >= TIMESTAMP(@since)"
         f" ORDER BY ts DESC LIMIT 1",
@@ -517,8 +580,8 @@ def draft_loop(args, active: Policy, finding: dict, verdict: dict) -> dict:
 LIVE_FINDING = "finding-live.json"
 
 
-def publish_finding(out: Path, finding: dict) -> None:
-    """Put the finding where the workbench can read it, before the wait starts.
+def publish_finding(out: Path, live: dict, findings: list) -> None:
+    """Put the findings where the workbench can read them, before the wait starts.
 
     Between here and step 3 this program does nothing but poll `review.decisions`
     for a row a human has not typed yet. Nothing has reached `chain.links` at
@@ -526,33 +589,53 @@ def publish_finding(out: Path, finding: dict) -> None:
     for work to show would have no source for the only part of the run a person
     is in. This file is that source.
 
-    Written whole and moved into place. The workbench polls it every few seconds
-    and a partial read of a half-written file is a race that costs an analyst a
-    blank pane at the exact moment they are being recorded.
+    Two kinds of write, and they are not the same thing. `finding-live.json` is
+    what this run is asking a person about, and the next run replaces it. A case
+    is a finding under a name that outlives the run, so a console can list what
+    is open rather than only what is current. See `caseharden/cases.py` for why
+    the case store holds no decision.
 
-    The scratch name is unique per call. A fixed one was shared by every run:
-    two drivers alive at once, which is what a re-run after a failed take looks
-    like, wrote the same scratch file and the second `replace` died with
-    FileNotFoundError because the first had already moved it away. An adversarial
-    pass reproduced that 100 times out of 100 paired runs.
+    One live finding, and a case for every detector job that found something.
+    The run still asks about one and drafts from one; the others are conduct the
+    fleet found in the same window and nobody has looked at, which used to be
+    discarded in `investigate` without leaving a record anywhere. Opening them
+    does not ask a human for four verdicts. It stops the queue being a list of
+    what one run selected.
 
-    Pid alone was not enough, and the same reproduction said so: it separates two
-    processes and not two threads. The random suffix is what actually makes the
-    name unique, and `replace` is atomic, so the loser of a race is overwritten
-    rather than crashed.
+    A case that will not open refuses the run, like every other stage here. An
+    earlier version printed the failure and carried on, reasoning that the store
+    is an index and the record is the detector's re-runnable job. The reasoning
+    had a hole: `out` being writable does not make `out/cases` writable, and the
+    failure that actually happens is `out/cases` already existing as a regular
+    file. The live write succeeds, the run waits for its human, promotes, and
+    the finding is unaddressable for the queue this store exists to feed.
+    Refusing costs the fan-out and nothing else, because this is still before
+    the wait and nothing has reached the chain.
     """
     target = out / LIVE_FINDING
-    scratch = target.parent / f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part"
-    try:
-        scratch.write_text(json.dumps(finding, indent=2, default=str) + "\n")
-        scratch.replace(target)
-    finally:
-        # A failed write leaves a uniquely named file behind, and every retry
-        # leaves another. After a successful replace there is nothing here to
-        # remove, which is why this is missing_ok.
-        scratch.unlink(missing_ok=True)
+    cases.atomic_write_json(target, live)
     print(f"\n  wrote {target}")
-    print(f"  the workbench reads it from there: "
+    opened = []
+    try:
+        for found in findings:
+            opened.append((found, cases.open_case(out / cases.CASES_DIRNAME, found)))
+    # RecursionError alongside the other two: `json.dumps` raises it rather than
+    # a ValueError on deeply nested input, which is the same shape the console's
+    # readers already guard against.
+    except (OSError, ValueError, RecursionError) as exc:
+        raise SystemExit(
+            f"the case store would not take this finding "
+            f"({type(exc).__name__}: {str(exc)[:200]}). {target} is written and "
+            f"the detector's job is re-runnable, so clear "
+            f"{out / cases.CASES_DIRNAME} and run again; nothing has reached "
+            f"the chain.") from None
+    for found, case in opened:
+        here = " <- under review" if found["job_id"] == live["job_id"] else ""
+        print(f"  case {case['case_id']} {found['family']:<22} "
+              f"opened {case['opened_at']}"
+              + (f", revision {case['revisions']}" if case["revisions"] else "")
+              + here)
+    print(f"  the workbench reads them from there: "
           f"python3 -m caseharden.workbench")
 
 
@@ -592,8 +675,8 @@ def main(argv=None) -> int:
     started = now()
     incident_row = ({"session_id": "(skipped)", "window_start": started}
                     if args.skip_incident else incident(args))
-    finding = investigate(args, incident_row)
-    publish_finding(out, finding)
+    finding, findings = investigate(args, incident_row)
+    publish_finding(out, finding, findings)
 
     head("3. The analyst's verdict, screened and recorded by the Copilot")
     subject = finding["job_id"]
@@ -609,9 +692,49 @@ def main(argv=None) -> int:
     print(f"\n  {verdict_row['disposition']} by {verdict_row['analyst']} "
           f"({verdict_row['decision_id']}), Model Armor "
           f"{verdict_row['ma_verdict']} / {verdict_row['ma_band']}")
-    # The verdict's text is about to become part of a prompt to the Proposer. A
-    # screening result the next step does not branch on is decoration, and an
-    # analyst's keyboard is an untrusted input like any other.
+    # What the verdict means, and whether anything is drafted from it. Until
+    # this branch existed the answer was always yes: the two lines above checked
+    # that Model Armor had screened the row and the next one called draft_loop,
+    # so a verdict of "insufficient evidence" produced a candidate policy
+    # version exactly as "confirmed abuse" did. The four dispositions and the
+    # reason the set is closed are in caseharden/verdicts.py.
+    called = verdicts.member(verdict_row["disposition"])
+    if called is None:
+        # Not "benign", and not "no verdict yet". A row this program cannot
+        # read, which is the answer `unknown` gives about attestation: the
+        # check did not conclude, so the forward action is frozen. Waiting is
+        # what happens when nobody has answered; this is somebody having
+        # answered in words nothing can act on.
+        raise SystemExit(
+            f"REFUSED. Decision {verdict_row['decision_id']} carries the "
+            f"disposition {verdict_row['disposition']!r}, which is not one of "
+            f"{', '.join(repr(m) for m in verdicts.MEMBERS)}. It is not read as "
+            f"the nearest of them: rows written before the taxonomy existed say "
+            f"what they say, and deciding here what one meant would be this "
+            f"program conducting the review. The row stays in review.decisions "
+            f"unchanged. Record a verdict through the Copilot to continue.")
+
+    if called != verdicts.DRAFTS:
+        head(f"The loop closes here: {called}")
+        print(f"  {verdicts.MEANING[called].capitalize()}.")
+        print(f"  Decision {verdict_row['decision_id']} by "
+              f"{verdict_row['analyst']} is the record of this review and is "
+              f"already written to review.decisions. The console shows the case "
+              f"as decided from that row; nothing further is written for it.")
+        print(f"  No candidate was drafted and no chain link exists for "
+              f"{args.version}, which is still free for a later run. A policy "
+              f"version has to be justified by a finding of abuse, and "
+              f"{called!r} is not one.")
+        return 0
+
+    # Screening is checked here and not before the branch above, because this is
+    # where the reason for it starts to apply: the analyst's text becomes part of
+    # a prompt to the Proposer on this path and on no other. Checked first, a
+    # blocked rationale on a `benign` verdict exited non-zero over a case the
+    # analyst had closed, and a rationale quoting the hostile text it is a
+    # verdict about is the ordinary way that happens. The row keeps its
+    # screening result either way; what changes is that a closed review reads as
+    # closed.
     refuse_unscreened("the analyst's verdict", verdict_row["ma_verdict"],
                       f"Decision {verdict_row['decision_id']} stays in "
                       f"review.decisions with its screening result.")
@@ -653,6 +776,24 @@ def main(argv=None) -> int:
             "rationale": verdict_row["rationale"],
             "decision_id": verdict_row["decision_id"],
             "recorded_at": verdict_row["ts"],
+            # The policy the analyst was applying. Written to review.decisions
+            # and, until this line, nowhere else: analyst-sa holds WRITER on
+            # that dataset, which carries DML, so the one field saying which
+            # policy a verdict was about could be rewritten after the Notary had
+            # sealed the link that relied on it. THREATS.md section 5 protects
+            # the rationale from exactly that by matching the bundle against the
+            # row; the citation now travels the same way.
+            "cited_policy_id": verdict_row.get("cited_policy_id"),
+            "cited_version": verdict_row.get("cited_version"),
+            "citation_source": verdict_row.get("citation_source"),
+            # The advisory travels for the same reason: its purpose is to make
+            # the machine's influence on the human auditable, and an influence
+            # record the chain never sealed can be rewritten afterwards by the
+            # identity that wrote it.
+            "advisory_recommendation": verdict_row.get("advisory_recommendation"),
+            "advisory_rule": verdict_row.get("advisory_rule"),
+            "advisory_confidence": verdict_row.get("advisory_confidence"),
+            "advisory_source": verdict_row.get("advisory_source"),
             "model_armor": {
                 "direction": "inbound, the analyst's own text",
                 "verdict": verdict_row["ma_verdict"],

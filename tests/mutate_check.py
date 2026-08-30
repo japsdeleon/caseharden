@@ -282,12 +282,12 @@ CASES = [
  # visibly after it has stopped working: a verdict filed against the wrong
  # subject still stores and still screens, and a console that answers any Host
  # still serves the analyst correctly.
- ("workbench.py", "        if job_id and not self._named_the_job(session, job_id, text):",
-  "        if False:",
-  "a verdict may be filed against a subject the Notary will never look for"),
- ("workbench.py", "            return self._named.get(session) == job_id",
-  "            return session in self._named",
-  "a session latched to one finding confirms a verdict on the next one"),
+ ("workbench.py", "            named = self._subject_for(session, text, known)\n            if named is None:",
+  "            named = self._subject_for(session, text, known)\n            if False:",
+  "a verdict may be filed against a subject nothing will ever look for"),
+ ("workbench.py", "        return latched if latched in known else None",
+  "        return latched",
+  "a session latched to a case that has since closed confirms a verdict on it"),
  ("workbench.py", '    edge = r"[A-Za-z0-9_-]"\n    return bool(re.search(f"(?<!{edge}){re.escape(job_id)}(?!{edge})", text))',
   "    return job_id in text",
   "a longer job id containing this one passes as this one"),

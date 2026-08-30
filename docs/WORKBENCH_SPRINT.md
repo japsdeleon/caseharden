@@ -53,6 +53,14 @@ when it was written; the repo was already at 185 before this sprint.
    `investigate()`; the workbench tails that file for the evidence pane and the
    pre-filled verdict subject. Subject must equal the driver's `job_id` exactly
    or `wait_for` stalls 900s.
+
+   **Superseded in part.** The reasoning about the chain held and still does.
+   The gap it left is that one overwritten file gives a queue nothing to
+   enumerate. `caseharden/cases.py` now writes each finding as an addressable
+   case beside the live file, with a stable id, a content hash and an open
+   timestamp that survives the next run, and the workbench serves them at
+   `/api/cases`. The chain is still not the source, and the case store still
+   holds no decision: `review.decisions` owns that row.
 5. **Verdict = thin chat through the Copilot session** (decision: build it, not
    the stock-chat fallback), with a hard gate: the ADK session flow
    (session PUT → `/run` POST with foreman-sa id token, per
