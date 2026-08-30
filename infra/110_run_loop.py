@@ -532,31 +532,33 @@ def publish_finding(out: Path, finding: dict) -> None:
     can list what is open rather than only what is current. See
     `caseharden/cases.py` for why the case store holds no decision.
 
-    The case store is an index, not the record: the record is the detector's
-    BigQuery job, which is re-runnable. A store that will not write is a queue
-    missing a row, and stopping the run over it would trade the finding for the
-    index. So it is reported and the run goes on.
-
-    That is a stated exception to this module's "every stage refuses rather than
-    continuing" rule, and it is narrow. It buys nothing back for a doubtful
-    input: `cases.open_case` refuses a finding with no job id, and a case file
-    it cannot use it replaces rather than trusts. What it covers is the store
-    being unwritable, which for a directory inside `--out` means the live
-    finding above did not write either and the run has already failed.
+    A case that will not open refuses the run, like every other stage here. An
+    earlier version printed the failure and carried on, reasoning that the store
+    is an index and the record is the detector's re-runnable job. The reasoning
+    had a hole: `out` being writable does not make `out/cases` writable, and the
+    failure that actually happens is `out/cases` already existing as a regular
+    file. The live write succeeds, the run waits for its human, promotes, and
+    the finding is unaddressable for the queue this store exists to feed.
+    Refusing costs the fan-out and nothing else, because this is still before
+    the wait and nothing has reached the chain.
     """
     target = out / LIVE_FINDING
     cases.atomic_write_json(target, finding)
     print(f"\n  wrote {target}")
     try:
         case = cases.open_case(out / cases.CASES_DIRNAME, finding)
-        print(f"  case {case['case_id']} opened {case['opened_at']}"
-              + (f", revision {case['revisions']}" if case["revisions"] else ""))
     # RecursionError alongside the other two: `json.dumps` raises it rather than
     # a ValueError on deeply nested input, which is the same shape the console's
     # readers already guard against.
     except (OSError, ValueError, RecursionError) as exc:
-        print(f"  the case store did not take it ({type(exc).__name__}: "
-              f"{str(exc)[:120]}); the finding above still stands")
+        raise SystemExit(
+            f"the case store would not take this finding "
+            f"({type(exc).__name__}: {str(exc)[:200]}). {target} is written and "
+            f"the detector's job is re-runnable, so clear "
+            f"{out / cases.CASES_DIRNAME} and run again; nothing has reached "
+            f"the chain.") from None
+    print(f"  case {case['case_id']} opened {case['opened_at']}"
+          + (f", revision {case['revisions']}" if case["revisions"] else ""))
     print(f"  the workbench reads it from there: "
           f"python3 -m caseharden.workbench")
 

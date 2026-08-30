@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+import pytest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -81,23 +83,37 @@ def test_changed_evidence_is_a_revision_of_the_open_case(tmp_path):
 def test_a_new_run_over_the_same_evidence_is_not_a_revision(tmp_path):
     """The driver stamps every finding with a fresh run envelope.
 
-    `context_id` is a uuid4 per run and both window bounds come from the clock,
-    so hashing the whole finding made `revisions` count republications: a case
-    whose conduct rows had not moved was reported as changed evidence.
+    `context_id` correlates one investigation's agent calls and `report` is the
+    Foreman's prose. Both change on every run, so hashing them made `revisions`
+    count republications: a case whose conduct rows had not moved was reported
+    as changed evidence.
     """
     first = finding(context_id="loop-investigation-aaaa",
-                    window_start="2026-08-27T09:00:00Z",
-                    window_end="2026-08-30T09:00:00Z",
                     report="the Foreman said one thing")
     second = finding(context_id="loop-investigation-bbbb",
-                     window_start="2026-08-27T11:00:00Z",
-                     window_end="2026-08-30T11:00:00Z",
                      report="the Foreman said it differently")
     assert cases.content_hash(first) == cases.content_hash(second)
     cases.open_case(tmp_path, first, now="2026-08-30T10:00:00Z")
     again = cases.open_case(tmp_path, second, now="2026-08-30T12:00:00Z")
     assert again["revisions"] == 0
     assert again["revised_at"] is None
+
+
+def test_a_changed_evidence_window_is_a_revision(tmp_path):
+    """The window looks clock-derived and is provenance.
+
+    `investigate()` computes it from the time of the run, which is what made an
+    earlier version of this store treat it as envelope. It is the window the
+    detectors scanned, and it travels into the promotion bundle as exactly that,
+    so a case that kept its first window while the finding carried another would
+    be read as evidence gathered over a period it was not.
+    """
+    cases.open_case(tmp_path, finding(window_end="2026-08-30T09:00:00Z"),
+                    now="2026-08-30T10:00:00Z")
+    moved = cases.open_case(tmp_path, finding(window_end="2026-08-30T11:00:00Z"),
+                            now="2026-08-30T12:00:00Z")
+    assert moved["revisions"] == 1
+    assert moved["opened_at"] == "2026-08-30T10:00:00Z"
 
 
 def test_a_field_the_hash_did_not_cover_is_named_on_the_record(tmp_path):
@@ -287,17 +303,16 @@ def test_a_case_id_field_that_disagrees_with_the_filename_is_refused(tmp_path):
 def test_a_symlink_in_the_store_is_not_served(tmp_path):
     """A link inside the store points wherever it was made to point.
 
-    The target is a case that is valid in every other way: right filename, right
-    `case_id`, a `job_id` that derives to it. That is what makes this a test of
-    the symlink check rather than of the identity check, which refuses a
-    mismatched file wherever it sits. The bytes a governance console reads have
-    to come from the directory it was pointed at.
+    The target is a case this module wrote and would otherwise accept, so the
+    only thing refusing it is the link. Hand-building the target instead left it
+    failing the evidence check, and the test then passed with the symlink guard
+    deleted. The bytes a governance console reads have to come from the
+    directory it was pointed at.
     """
-    cid = cases.case_id(JOB)
-    elsewhere = tmp_path / "elsewhere.json"
-    elsewhere.write_text(json.dumps(
-        {"case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
-         "finding": finding()}))
+    other = tmp_path / "other"
+    cid = cases.open_case(other, finding())["case_id"]
+    elsewhere = other / f"{cid}.json"
+    assert cases.read_case(other, cid) is not None, "the target must be a valid case"
     store = tmp_path / "cases"
     store.mkdir()
     (store / f"{cid}.json").symlink_to(elsewhere)
@@ -306,10 +321,21 @@ def test_a_symlink_in_the_store_is_not_served(tmp_path):
 
 
 def test_a_case_with_an_unusable_revision_count_is_replaced_not_raised(tmp_path):
-    """`int("bad")` reached the driver, which reported the whole store as broken."""
-    cid = cases.case_id(JOB)
-    _write(tmp_path, cid, {"case_id": cid, "job_id": JOB, "revisions": "bad",
-                           "opened_at": {"not": "a stamp"}, "finding": finding()})
+    """`int("bad")` reached the driver, which reported the whole store as broken.
+
+    The case is edited after `open_case` wrote it, and only in fields the
+    content hash does not cover, so it stays a readable case and the bad values
+    genuinely reach the code that carries them forward. Writing the whole file
+    by hand would fail the evidence check instead and never get that far.
+    """
+    cid = cases.open_case(tmp_path, finding(), now="2026-08-29T10:00:00Z")["case_id"]
+    path = tmp_path / f"{cid}.json"
+    stored = json.loads(path.read_text())
+    stored["revisions"] = "bad"
+    stored["opened_at"] = {"not": "a stamp"}
+    path.write_text(json.dumps(stored))
+    assert cases.read_case(tmp_path, cid) is not None, "the edit broke the hash"
+
     case = cases.open_case(tmp_path, finding(sessions_total=31),
                            now="2026-08-30T10:00:00Z")
     assert case["revisions"] == 1
@@ -322,3 +348,122 @@ def test_surrounding_whitespace_is_not_a_second_case(tmp_path):
     case = cases.open_case(tmp_path, finding(job_id=f" {JOB}\n"))
     assert case["job_id"] == JOB
     assert cases.read_case(tmp_path, case["case_id"])["job_id"] == JOB
+
+
+# --------------------------------------------------------------------------
+# The stored hash describes the stored finding
+# --------------------------------------------------------------------------
+
+def _tamper(tmp_path, mutate) -> str:
+    """Open a real case, then edit its stored finding in place."""
+    cid = cases.open_case(tmp_path, finding(), now="2026-08-30T10:00:00Z")["case_id"]
+    path = tmp_path / f"{cid}.json"
+    stored = json.loads(path.read_text())
+    mutate(stored)
+    path.write_text(json.dumps(stored))
+    return cid
+
+
+def test_edited_evidence_under_an_untouched_wrapper_is_refused(tmp_path):
+    """The wrapper was the only thing checked, and it is not where evidence is."""
+    cid = _tamper(tmp_path, lambda c: c["finding"].update(
+        rows=[{"session_id": "s_forged", "turns": "99"}]))
+    assert cases.read_case(tmp_path, cid) is None
+    assert cases.list_cases(tmp_path)["unreadable"] == 1
+
+
+def test_tampered_evidence_does_not_survive_a_republish(tmp_path):
+    """The edit outlived republication, which is what made it worth fixing.
+
+    `open_case` compares the incoming finding against the stored digest. The
+    digest was never checked against the stored finding, so a genuine republish
+    of the real finding matched it, returned early, and handed back the edited
+    case without rewriting it.
+    """
+    cid = _tamper(tmp_path, lambda c: c["finding"].update(rows=[{"session_id": "s_forged"}]))
+    reopened = cases.open_case(tmp_path, finding(), now="2026-08-30T12:00:00Z")
+    assert reopened["case_id"] == cid
+    assert reopened["finding"]["rows"] == [{"session_id": "s_1", "turns": "2"}]
+    assert cases.read_case(tmp_path, cid)["finding"]["rows"] == [
+        {"session_id": "s_1", "turns": "2"}]
+
+
+def test_a_finding_naming_another_job_than_its_wrapper_is_refused(tmp_path):
+    cid = _tamper(tmp_path, lambda c: c["finding"].update(
+        job_id="europe-west3:job_somewhere_else"))
+    assert cases.read_case(tmp_path, cid) is None
+
+
+def test_a_hash_recorded_under_an_older_key_list_still_checks(tmp_path):
+    """A case carries the keys its hash covered, so the list can change later.
+
+    Without this, changing RUN_ENVELOPE would make every case already on disk
+    unreadable, and a queue full of cases marked corrupt is indistinguishable
+    from a store somebody attacked.
+    """
+    cid = cases.case_id(JOB)
+    body = finding()
+    keys = sorted(k for k in body if k != "sessions_total")
+    _write(tmp_path, cid, {
+        "case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
+        "content_hash": cases.content_hash(body, keys), "hashed_keys": keys,
+        "revisions": 0, "finding": body})
+    assert cases.read_case(tmp_path, cid) is not None
+    # And the field that list left out is still not a way in: the recorded list
+    # is what gets recomputed, so removing a key from it changes the digest.
+    _write(tmp_path, cid, {
+        "case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
+        "content_hash": cases.content_hash(body, keys), "hashed_keys": keys[:2],
+        "revisions": 0, "finding": body})
+    assert cases.read_case(tmp_path, cid) is None
+
+
+def test_a_deleted_field_cannot_pass_by_disappearing(tmp_path):
+    cid = _tamper(tmp_path, lambda c: c["finding"].pop("rows"))
+    assert cases.read_case(tmp_path, cid) is None
+
+
+def test_a_store_that_is_a_symlink_is_refused_on_both_sides(tmp_path):
+    """mkdir(exist_ok=True) and replace both follow a linked directory."""
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "cases"
+    linked.symlink_to(real)
+    with pytest.raises(OSError):
+        cases.open_case(linked, finding())
+    assert list(real.iterdir()) == []
+    assert cases.read_case(linked, cases.case_id(JOB)) is None
+    assert "symbolic link" in cases.list_cases(linked)["error"]
+
+
+def test_a_case_read_through_a_linked_store_is_refused(tmp_path):
+    """The file exists and is valid; the directory it was reached through is not.
+
+    Distinct from the write side: `open_case` refusing means nothing was ever
+    written, so a read that returns None proves only that the file is absent.
+    Here the case is genuinely there, behind the link.
+    """
+    real = tmp_path / "real"
+    cid = cases.open_case(real, finding())["case_id"]
+    assert cases.read_case(real, cid) is not None, "the case must be readable directly"
+    linked = tmp_path / "cases"
+    linked.symlink_to(real)
+    assert cases.read_case(linked, cid) is None
+
+
+def test_a_forged_key_list_cannot_hide_a_swapped_job_id(tmp_path):
+    """The last thing standing when the hash itself has been recomputed.
+
+    An editor who drops `job_id` from `hashed_keys` and recomputes the digest
+    over what is left passes the hash check. The finding then names one job
+    while the wrapper names another, and the console would look the verdict up
+    by the wrapper and show the other job's rows.
+    """
+    cid = cases.case_id(JOB)
+    body = finding(job_id="europe-west3:job_somewhere_else")
+    keys = sorted(k for k in body if k != "job_id")
+    _write(tmp_path, cid, {
+        "case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
+        "content_hash": cases.content_hash(body, keys), "hashed_keys": keys,
+        "revisions": 0, "finding": body})
+    assert cases.read_case(tmp_path, cid) is None
