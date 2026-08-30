@@ -551,7 +551,10 @@ def publish_finding(out: Path, finding: dict) -> None:
         case = cases.open_case(out / cases.CASES_DIRNAME, finding)
         print(f"  case {case['case_id']} opened {case['opened_at']}"
               + (f", revision {case['revisions']}" if case["revisions"] else ""))
-    except (OSError, ValueError) as exc:
+    # RecursionError alongside the other two: `json.dumps` raises it rather than
+    # a ValueError on deeply nested input, which is the same shape the console's
+    # readers already guard against.
+    except (OSError, ValueError, RecursionError) as exc:
         print(f"  the case store did not take it ({type(exc).__name__}: "
               f"{str(exc)[:120]}); the finding above still stands")
     print(f"  the workbench reads it from there: "

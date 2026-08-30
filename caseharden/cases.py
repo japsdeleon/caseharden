@@ -25,6 +25,13 @@ would be a second record of the same decision, free to disagree with the first,
 and nothing would say which one governed. Callers that need a disposition look
 it up per case from the warehouse.
 
+Where that property actually lives, because it is not enforced here. This
+module adds no disposition field and its summary emits none, but `open_case`
+writes the finding it is given verbatim, so a caller that put a verdict inside a
+finding would see it on disk. The one caller is `publish_finding`, and it runs
+at `infra/110_run_loop.py` before the verdict is requested, which is what keeps
+a decision out of these files. A second caller would have to keep that order.
+
 This store is an index over findings, not the record of them. The record is the
 detector's BigQuery job, which is re-runnable, and the chain. So a failure to
 write a case is a degraded queue and never a failed run.
@@ -51,7 +58,23 @@ MAX_CASES_LISTED = 200
 
 # What `case_id` produces, and the only thing `read_case` will open. The id is
 # derived, so anything that fails this did not come from here.
-CASE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+#
+# `\Z` and not `$`: `$` also matches before a trailing newline, so
+# `0123456789abcdef\n` passed a check whose whole job is to say the string came
+# from `case_id`. It could not have reached a path outside the store, having no
+# slash in it, but the route answered 404 where it had promised 400.
+CASE_ID_RE = re.compile(r"^[0-9a-f]{16}\Z")
+
+# Which parts of a finding are not evidence. Each of these changes on every run
+# whether or not anything was found: `context_id` is a fresh uuid4 per run,
+# `report` is the Foreman's prose, and both window bounds come from the clock at
+# `investigate()`. Hashing them made `revisions` count republications, so a case
+# whose rows were byte-identical was reported as revised evidence.
+#
+# An exclusion list rather than a list of evidence fields, so a field added to
+# the finding later counts by default. An extra revision is noise on a screen; a
+# missed one is evidence swapped under a case with nothing saying so.
+RUN_ENVELOPE = frozenset({"context_id", "report", "window_start", "window_end"})
 
 
 def _now() -> str:
@@ -80,14 +103,31 @@ def case_id(job_id: str) -> str:
     return hashlib.sha256(job_id.strip().encode("utf-8")).hexdigest()[:16]
 
 
+def hashed_keys(finding: dict) -> List[str]:
+    """The finding's fields that `content_hash` covers, for the record.
+
+    Written into the case so a reader can see what the hash was taken over
+    rather than inferring it from this module's source at some later version.
+    """
+    return sorted(k for k in finding if k not in RUN_ENVELOPE)
+
+
 def content_hash(finding: dict) -> str:
-    """A hash of the finding as published, stable against key order.
+    """A hash of the evidence in a finding, stable against key order.
+
+    Evidence, not the whole finding: see `RUN_ENVELOPE` for what is left out and
+    why. This answers one question, "are these the same rows the analyst was
+    looking at", and the run envelope makes every publication look different.
 
     `sort_keys` because the driver builds this dict literal-first and a future
-    edit that reorders it must not read as changed evidence. `default=str`
-    because the rows come back from BigQuery carrying dates.
+    edit that reorders it must not read as changed evidence. `default=str` is a
+    guard, not a conversion the known path needs: `bq._decode` returns only what
+    the REST encoding carries, which is strings, lists, dicts and None. It is
+    here because `open_case` hashes whatever a caller passes, and an
+    unserialisable value would otherwise raise out of a hash.
     """
-    body = json.dumps(finding, sort_keys=True, separators=(",", ":"), default=str)
+    body = json.dumps({k: finding[k] for k in hashed_keys(finding)},
+                      sort_keys=True, separators=(",", ":"), default=str)
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
@@ -165,6 +205,7 @@ def open_case(cases_dir: Path, finding: dict, now: Optional[str] = None) -> dict
         "family": finding.get("family"),
         "opened_at": _stamp_or(previous, "opened_at", stamp),
         "content_hash": digest,
+        "hashed_keys": hashed_keys(finding),
         "revisions": _count(previous) + (1 if previous else 0),
         "revised_at": stamp if previous else None,
         "finding": finding,
@@ -214,6 +255,13 @@ def read_case(cases_dir: Path, cid: str) -> Optional[dict]:
       evidence to another finding's verdict: the pane would show job A's rows
       beside the review row filed against job B.
     """
+    # Redundant for this function's result, and kept anyway. Removing it changes
+    # no answer, because no string can both leave the directory and derive from
+    # a job id, so the round-trip check below refuses whatever the shape check
+    # would have. It stays because it is what stops a caller-supplied string
+    # reaching a path join at all, and a later edit to the round-trip check
+    # should not be the only thing between the two. A mutation deleting this
+    # line survives the suite; that is the redundancy, not a gap.
     if not isinstance(cid, str) or not CASE_ID_RE.match(cid):
         return None
     path = cases_dir / f"{cid}.json"
@@ -259,14 +307,24 @@ def summarise(case: dict) -> dict:
 
 
 def list_cases(cases_dir: Path, limit: int = MAX_CASES_LISTED) -> dict:
-    """Every case in the store, unreadable ones first.
+    """The most recently written cases in the store, unreadable ones first.
 
     Unreadable first, rather than sorted to the bottom by a missing timestamp: a
     case whose file will not parse is the one an operator has to be told about,
     and the bottom of a long queue is where it would never be seen.
+
+    Two orders, and they are not the same one. Which cases survive the limit is
+    decided by when their file was last written; what is returned is then sorted
+    by when each case was opened. So an old case nobody has touched is the first
+    to fall off, which is the opposite of what a queue sorted on age is for.
+    `truncated` says when that has happened and `total` says by how much,
+    because a page that silently ends at its limit reads as the whole store.
+    Above the limit, the fix is a stored index rather than a different sort:
+    ordering by `opened_at` first would mean parsing every file to choose 200.
     """
     if not cases_dir.is_dir():
-        return {"dir": str(cases_dir), "cases": [], "total": 0, "unreadable": 0}
+        return {"dir": str(cases_dir), "cases": [], "total": 0, "unreadable": 0,
+                "limit": limit, "truncated": False}
 
     paths = sorted(cases_dir.glob("*.json"),
                    key=lambda p: p.stat().st_mtime if p.exists() else 0,
@@ -282,4 +340,5 @@ def list_cases(cases_dir: Path, limit: int = MAX_CASES_LISTED) -> dict:
             rows.append(summarise(case))
     rows.sort(key=lambda r: r.get("opened_at") or "", reverse=True)
     return {"dir": str(cases_dir), "cases": broken + rows,
-            "total": len(paths), "unreadable": len(broken)}
+            "total": len(paths), "unreadable": len(broken),
+            "limit": limit, "truncated": len(paths) > max(0, limit)}

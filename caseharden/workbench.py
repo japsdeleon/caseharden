@@ -719,13 +719,18 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
                 return self._json(403, {"error": wrong})
             parts = urllib.parse.urlsplit(self.path)
             path = parts.path.rstrip("/") or "/"
-            query = urllib.parse.parse_qs(parts.query)
+            # Blank values kept, so `?id=` is an id this store could not have
+            # written rather than a parameter that was never sent. Without this
+            # it was dropped, and a request for one case answered with the whole
+            # queue. Every reader below turns an empty string back into "not
+            # asked for" where that is what it means.
+            query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
             if path == "/":
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             if path == "/healthz":
                 return self._json(200, {"ok": True, "mode": workbench.source.mode})
             if path == "/api/state":
-                version = (query.get("version") or [None])[0]
+                version = (query.get("version") or [None])[0] or None
                 if version and not version.replace("-", "").replace("_", "").isalnum():
                     return self._json(400, {"error": "not a usable version name"})
                 try:
@@ -741,17 +746,25 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
                 return self._json(200, workbench.finding())
             if path == "/api/cases":
                 case_id = (query.get("id") or [None])[0]
-                if case_id is None:
-                    return self._json(200, workbench.cases())
-                # Checked here as well as in `read_case`, so the shape of the id
-                # is refused at the edge rather than answered as a missing case.
-                # It reaches a path join either way.
-                if not cases.CASE_ID_RE.match(case_id):
-                    return self._json(400, {"error": "not a case id"})
-                found = workbench.case(case_id)
-                if found is None:
-                    return self._json(404, {"error": "no such case"})
-                return self._json(200, found)
+                try:
+                    if case_id is None:
+                        return self._json(200, workbench.cases())
+                    # Checked here as well as in `read_case`, so the shape of
+                    # the id is refused at the edge rather than answered as a
+                    # missing case. It reaches a path join either way.
+                    if not cases.CASE_ID_RE.match(case_id):
+                        return self._json(400, {"error": "not a case id"})
+                    found = workbench.case(case_id)
+                    if found is None:
+                        return self._json(404, {"error": "no such case"})
+                    return self._json(200, found)
+                except Exception as exc:  # noqa: BLE001
+                    # Contained like `/api/state`, and for the same reason: this
+                    # reads a directory somebody else writes, and a pane that
+                    # says why it is empty beats a dropped connection.
+                    return self._json(200, {"cases": [], "total": 0,
+                                            "unreadable": 0, "truncated": False,
+                                            "error": f"{type(exc).__name__}: {exc}"[:300]})
             return self._json(404, {"error": "no such path"})
 
         def do_POST(self) -> None:  # noqa: N802

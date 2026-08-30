@@ -1289,3 +1289,41 @@ def test_a_case_never_revised_makes_no_claim_either_way(tmp_path):
 def test_a_timestamp_in_another_shape_is_not_compared(revised, ts):
     """A string compare across two formats answers confidently and wrongly."""
     assert workbench._predates(revised, ts) is None
+
+
+def test_a_blank_case_id_is_not_the_whole_queue(served, tmp_path):
+    """`?id=` asked for one case; parse_qs dropped it and the route sent all of them."""
+    _open_case(tmp_path)
+    status, _, raw = _request(served, "GET", "/api/cases?id=")
+    assert status == 400, raw
+
+
+def test_a_case_id_with_a_trailing_newline_is_refused_at_the_edge(served):
+    status, _, _ = _request(served, "GET", "/api/cases?id=" + "0" * 16 + "%0A")
+    assert status == 400
+
+
+def test_a_blank_version_still_means_the_active_one(served):
+    """keep_blank_values must not turn `?version=` into a lookup for ''."""
+    status, _, raw = _request(served, "GET", "/api/state?version=")
+    assert status == 200
+    assert json.loads(raw)["version"] == "v5"
+
+
+def test_a_store_that_cannot_be_read_does_not_drop_the_connection(tmp_path, monkeypatch):
+    """`/api/state` contains its own failures; this route reads a directory too."""
+    monkeypatch.setattr(workbench.cases, "list_cases",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no such device")))
+    bench = _queue_bench(tmp_path, _Stub(decided=None))
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), workbench.handler_for(bench))
+    except (PermissionError, OSError) as exc:
+        pytest.skip(f"cannot bind a loopback socket here: {exc}")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, _, raw = _request(server.server_address, "GET", "/api/cases")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 200
+    assert "no such device" in json.loads(raw)["error"]

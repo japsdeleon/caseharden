@@ -69,6 +69,49 @@ def test_changed_evidence_is_a_revision_of_the_open_case(tmp_path):
     assert moved["revised_at"] == "2026-08-30T12:00:00Z"
     assert moved["revisions"] == 1
     assert len(list(tmp_path.glob("*.json"))) == 1
+    # Counted, not flagged. One revision proves nothing about the arithmetic: a
+    # counter pinned at 1 passed a test that only ever revised once.
+    again = cases.open_case(tmp_path, finding(sessions_total=44),
+                            now="2026-08-30T13:00:00Z")
+    assert again["revisions"] == 2
+    assert again["revised_at"] == "2026-08-30T13:00:00Z"
+    assert again["opened_at"] == "2026-08-30T10:00:00Z"
+
+
+def test_a_new_run_over_the_same_evidence_is_not_a_revision(tmp_path):
+    """The driver stamps every finding with a fresh run envelope.
+
+    `context_id` is a uuid4 per run and both window bounds come from the clock,
+    so hashing the whole finding made `revisions` count republications: a case
+    whose conduct rows had not moved was reported as changed evidence.
+    """
+    first = finding(context_id="loop-investigation-aaaa",
+                    window_start="2026-08-27T09:00:00Z",
+                    window_end="2026-08-30T09:00:00Z",
+                    report="the Foreman said one thing")
+    second = finding(context_id="loop-investigation-bbbb",
+                     window_start="2026-08-27T11:00:00Z",
+                     window_end="2026-08-30T11:00:00Z",
+                     report="the Foreman said it differently")
+    assert cases.content_hash(first) == cases.content_hash(second)
+    cases.open_case(tmp_path, first, now="2026-08-30T10:00:00Z")
+    again = cases.open_case(tmp_path, second, now="2026-08-30T12:00:00Z")
+    assert again["revisions"] == 0
+    assert again["revised_at"] is None
+
+
+def test_a_field_the_hash_did_not_cover_is_named_on_the_record(tmp_path):
+    case = cases.open_case(tmp_path, finding(context_id="x", report="y"))
+    assert "context_id" not in case["hashed_keys"]
+    assert "report" not in case["hashed_keys"]
+    assert {"job_id", "family", "rows", "sessions_total"} <= set(case["hashed_keys"])
+
+
+def test_a_field_nobody_classified_still_counts_as_evidence(tmp_path):
+    """A finding gains a field; the safe default is that it changes the hash."""
+    plain = finding()
+    assert cases.content_hash(plain) != cases.content_hash(
+        dict(plain, some_future_detector_field="a"))
 
 
 def test_two_jobs_are_two_cases(tmp_path):
@@ -113,8 +156,31 @@ def test_read_case_refuses_an_id_it_did_not_produce(tmp_path):
     cases.open_case(tmp_path, finding())
     # Right length, wrong alphabet, and right alphabet, wrong length: the regex
     # has to hold both ends or a path fragment gets through on one of them.
-    for bad in ("../../etc/passwd", "..", "", "g" * 16, "0123456789abcdeff"):
+    # The trailing newline is in the list because `$` matches before one.
+    for bad in ("../../etc/passwd", "..", "", "g" * 16, "0123456789abcdeff",
+                "0123456789abcdef\n"):
         assert cases.read_case(tmp_path, bad) is None
+        assert not cases.CASE_ID_RE.match(bad), bad
+
+
+def test_a_readable_case_file_outside_the_store_is_never_served(tmp_path):
+    """The property, not one of the two checks that hold it.
+
+    A valid case file is planted where a relative id would reach it. The id
+    shape refuses the id, and the name-derives-from-the-job-id check refuses the
+    file: no string can satisfy both a path that leaves the directory and a
+    16-character hex digest. This fails if either the shape check or the
+    identity check is the only one left, so it is worth more than a test that
+    only names a file which does not exist.
+    """
+    store = tmp_path / "cases"
+    cases.open_case(store, finding())
+    planted = tmp_path / "planted.json"
+    planted.write_text(json.dumps(
+        {"case_id": cases.case_id(JOB), "job_id": JOB, "finding": finding()}))
+    for reach in ("../planted", "..%2Fplanted", "../../planted"):
+        assert cases.read_case(store, reach) is None
+    assert planted.exists(), "the store must not have written over it either"
 
 
 # --------------------------------------------------------------------------
@@ -142,6 +208,24 @@ def test_the_newest_case_is_first(tmp_path):
 def test_a_store_that_does_not_exist_yet_lists_empty(tmp_path):
     listed = cases.list_cases(tmp_path / "nothing")
     assert listed["cases"] == [] and listed["total"] == 0
+    assert listed["truncated"] is False
+
+
+def test_a_page_that_ends_at_its_limit_says_so(tmp_path):
+    """A silently short page reads as the whole store.
+
+    Which cases survive the limit is decided by file mtime and the page is then
+    sorted by `opened_at`, so the case that falls off is not the one at the
+    bottom of what is shown.
+    """
+    for n in range(4):
+        cases.open_case(tmp_path, finding(job_id=f"europe-west3:job_{n}"))
+    listed = cases.list_cases(tmp_path, limit=2)
+    assert len(listed["cases"]) == 2
+    assert listed["total"] == 4
+    assert listed["truncated"] is True
+    assert listed["limit"] == 2
+    assert cases.list_cases(tmp_path, limit=4)["truncated"] is False
 
 
 def test_the_summary_carries_no_decision(tmp_path):
@@ -201,13 +285,22 @@ def test_a_case_id_field_that_disagrees_with_the_filename_is_refused(tmp_path):
 
 
 def test_a_symlink_in_the_store_is_not_served(tmp_path):
-    """A link inside the store points wherever it was made to point."""
-    secret = tmp_path / "elsewhere.json"
-    secret.write_text(json.dumps({"case_id": "x", "job_id": JOB}))
+    """A link inside the store points wherever it was made to point.
+
+    The target is a case that is valid in every other way: right filename, right
+    `case_id`, a `job_id` that derives to it. That is what makes this a test of
+    the symlink check rather than of the identity check, which refuses a
+    mismatched file wherever it sits. The bytes a governance console reads have
+    to come from the directory it was pointed at.
+    """
+    cid = cases.case_id(JOB)
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text(json.dumps(
+        {"case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
+         "finding": finding()}))
     store = tmp_path / "cases"
     store.mkdir()
-    cid = cases.case_id(JOB)
-    (store / f"{cid}.json").symlink_to(secret)
+    (store / f"{cid}.json").symlink_to(elsewhere)
     assert cases.read_case(store, cid) is None
     assert cases.list_cases(store)["unreadable"] == 1
 
