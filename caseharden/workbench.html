@@ -46,6 +46,7 @@
   }
   .chip.live{background:#3a2a10;border-color:#6a4c17;color:#ffd79a}
   .chip.ok{background:#123322;border-color:#1e5236;color:#a8e6c0}
+  .chip.bad{background:#3a1518;border-color:#6e2a2f;color:#ffb4b4}
   .grow{flex:1 1 auto}
 
   /* ---------- progress strip ---------- */
@@ -601,10 +602,16 @@ $("chip-mode").textContent = fixture
 $("chip-mode").className = "chip " + (fixture ? "" : "live");
 $("chip-version").textContent = "policy version " + S(state.version || "—")
   + (state.source && state.source.parent ? " (grew from " + state.source.parent + ")" : "");
+// The server sends promotions alongside the state, and a frozen line is half of
+// what a lost attestation means: enforcement unchanged, nothing may be built on
+// top. The chip said only the state, so the freeze was visible nowhere above the
+// fold. Both values come from the server; neither is inferred here.
 $("chip-attest").textContent = att.offline
   ? "offline re-check: " + S(att.checks_run) + " checks, " + (att.checks_failed || []).length + " failed"
-  : "attestation: " + S(att.state || "unknown");
-$("chip-attest").className = "chip " + ((att.checks_failed || []).length === 0 && att.attested ? "ok" : "");
+  : "attestation: " + S(att.state || "unknown")
+    + (S(att.promotions) === "FROZEN" ? " · promotions FROZEN" : "");
+const attestOk = (att.checks_failed || []).length === 0 && att.attested;
+$("chip-attest").className = "chip " + (attestOk ? "ok" : (att.offline ? "" : "bad"));
 
 // ------------------------------------------------------- the progress strip
 
