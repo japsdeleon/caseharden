@@ -47,6 +47,7 @@ import drive_agent  # noqa: E402  (infra/drive_agent.py, same directory)
 PROJECT = creds.PROJECT
 REGION = creds.REGION
 NOTARY = f"notary-sa@{PROJECT}.iam.gserviceaccount.com"
+CONDUCT_LINE = "conduct-policy"   # the line the fleet enforces; see the pick below
 DETECTOR = f"detector-sa@{PROJECT}.iam.gserviceaccount.com"
 SERVICES = [
     "caseharden-policy",
@@ -176,7 +177,13 @@ mine = [c for c in cards if registry.annotation(c).get("role")]
 detectors = [c for c in mine if registry.annotation(c).get("role") == "detector"]
 
 store = ChainStore(PROJECT, bq.access_token(NOTARY))
-active = [r for r in store.versions() if r["active"] in ("true", True)]
+# "active" is per policy line, and a second line exists since Day 10. Taking the
+# last active row across every line picked payments-policy@v1-pay, which has no
+# sealed certificate and is not what the fleet enforces, so assertions 1, 4 and 6
+# compared the deployment against the wrong version and reported it broken.
+active = [r for r in store.versions()
+          if r["active"] in ("true", True)
+          and (r.get("policy_id") or CONDUCT_LINE) == CONDUCT_LINE]
 version = active[-1]["version"] if active else None
 sealed = chain.sealed_root(active[-1]["certificate_uri"], NOTARY) if active else None
 sealed_root_hash = (sealed or {}).get("root")
