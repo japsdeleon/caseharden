@@ -28,13 +28,17 @@ filing a discrepancy report.
 
 Two guarantees are discharged outside this project's code:
 
-- **The proposing agent never read its own evaluation data.** That is BigQuery access control
+- **The proposing agent never read the sealed exam.** That is BigQuery access control
   producing a real 403, and the access list that produces it is hashed into the chain, so a
-  later grant to the Proposer breaks the chain rather than going unnoticed.
+  later grant to the Proposer breaks the chain rather than going unnoticed. The benign corpus
+  the gate scores beside it is readable by the Proposer by design, and its access list is not
+  hashed.
 - **An edit to the record cannot be hidden.** The chain's root is sealed into a Cloud Storage
   object under a locked retention policy, which refuses a delete from the project owner. The
-  chain table itself is append-only by convention; what the lock guarantees is that a rewritten
-  chain no longer matches the root that was sealed when it was written.
+  chain table itself is append-only by convention. What the lock guarantees is a witness that
+  outlives any rewrite: the root as it stood at promotion cannot be deleted. Comparing a chain
+  against that witness is this project's code rather than Google's, and `verify` today follows
+  a mutable pointer to the certificate instead of the earliest one, which `THREATS.md` records.
 
 Refusals are stored as links in the same chain as approvals, so the record attests to what
 was prevented and not only to what occurred.

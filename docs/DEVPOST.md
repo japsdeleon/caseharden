@@ -6,7 +6,7 @@ Paste-ready. Section headings match Devpost's own fields.
 
 ## Elevator pitch (200 characters)
 
-Governance plane for enterprise agent fleets: guardrails keep authority only while their evidence re-verifies, refusals are recorded beside approvals, and the record's root is delete-proof.
+Governance plane for enterprise agent fleets: guardrails keep authority only while their evidence re-verifies, IAM locks the drafting agent out of the sealed exam, and the root is delete-proof.
 
 *(paste into the form as one line)*
 
@@ -78,6 +78,15 @@ applies a three-leg gate: blocked attacks must go up, the benign pass rate must 
 the new version must only narrow authority. A failed candidate is never promoted; when a later
 attempt passes, the failures are sealed into the same chain beside the approval, and when none
 passes the chain stays untouched.
+
+**Why these are separate agents.** Most agent systems split for tidiness, and tidiness merges
+back without losing anything. Here each boundary is a control. Merge the Proposer into the
+Examiner and the drafter can read the exam it is scored against, because BigQuery's access
+control binds to a principal and two principals need two processes; the 403 sealed into link 5
+is that boundary seen from the inside. Merge the Notary into the Proposer and the agent writing
+the record becomes the agent the record is about. Merge the detectors into the orchestrator and
+a finding no longer carries a job id run under its own identity, so a reviewer re-runs a claim
+instead of a query. The fan-out is delegation; the split is the mechanism.
 
 **The gate holds at 30 of 40, and that is a property of the language rather than a shortfall.**
 The sealed holdout carries ten attack sessions for each of four check families. Three families
