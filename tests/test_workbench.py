@@ -32,6 +32,7 @@ import re
 import sys
 import threading
 import time
+import types
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -1322,6 +1323,23 @@ def test_a_blank_version_still_means_the_active_one(served):
     status, _, raw = _request(served, "GET", "/api/state?version=")
     assert status == 200
     assert json.loads(raw)["version"] == "v5"
+
+
+def test_a_second_policy_line_does_not_steal_the_default_version(monkeypatch):
+    """Both lines carry an active row; the console must open on conduct-policy.
+
+    Taking the last active row across every line picked payments-policy@v1-pay,
+    which the Policy Server does not serve, and the whole console rendered
+    UNREACHABLE with promotions FROZEN off a 404.
+    """
+    source = workbench.LiveSource("devpost-hackathon-506416",
+                                  "http://127.0.0.1:1", workbench.Tokens())
+    rows = [{"version": "v5", "active": "true", "policy_id": "conduct-policy"},
+            {"version": "v1-pay", "active": "true", "policy_id": "payments-policy"}]
+    monkeypatch.setattr(source, "_store", lambda: types.SimpleNamespace(
+        versions=lambda: rows, read=lambda v: []))
+    monkeypatch.setattr(workbench.LiveSource, "attestation", lambda self, v: {"version": v})
+    assert source.state(None)["version"] == "v5"
 
 
 def test_a_store_that_cannot_be_read_does_not_drop_the_connection(tmp_path, monkeypatch):

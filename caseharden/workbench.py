@@ -326,9 +326,16 @@ class LiveSource(Source):
             versions = store.versions()
             out["versions"] = versions
             if not version:
+                # "active" is per policy line, so one active row exists per line.
+                # Taking the last of them across every line picked payments-policy
+                # over conduct-policy and asked the Policy Server for a version it
+                # does not serve, which rendered the console UNREACHABLE/FROZEN.
                 active = [r for r in versions if str(r.get("active")).lower() == "true"]
-                version = active[-1]["version"] if active else (
-                    versions[-1]["version"] if versions else None)
+                on_line = [r for r in active
+                           if (r.get("policy_id") or DEFAULT_LINE) == DEFAULT_LINE]
+                version = (on_line[-1]["version"] if on_line else
+                           active[-1]["version"] if active else
+                           versions[-1]["version"] if versions else None)
         except Exception as exc:  # noqa: BLE001 - a pane reports why it is empty
             out["versions"] = []
             out["errors"]["versions"] = f"{type(exc).__name__}: {exc}"[:300]
