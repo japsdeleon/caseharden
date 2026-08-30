@@ -1651,3 +1651,74 @@ def test_a_blocked_verdict_outranks_a_stale_one(tmp_path):
     listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(
         ts="2020-01-01T00:00:00Z", ma_verdict="BLOCK")})).cases()
     assert listed["cases"][0]["decided"] == "blocked"
+
+
+# --------------------------------------------------------------------------
+# The queue, asserted against the page rather than against a promise
+# --------------------------------------------------------------------------
+
+def test_the_page_reads_the_case_store():
+    """The rail listed check families parsed out of the Foreman's report prose.
+
+    That list was one run's summary of itself: it could not show a case from an
+    earlier run, could not say whether any of them had been decided, and vanished
+    when the report did not parse.
+    """
+    page = workbench.PAGE.read_text()
+    assert 'get("/api/cases")' in page, "the page does not load the queue"
+    assert '"/api/cases?id=" + encodeURIComponent(id)' in page, \
+        "a case other than the live one has no evidence to draw"
+
+
+def test_every_review_state_the_server_sends_is_styled():
+    """Same rule as the nine link kinds: a state that reaches the browser is drawn.
+
+    An unstyled state renders as bare text in a row of pills, which reads as a
+    rendering fault rather than as the state it is.
+    """
+    page = workbench.PAGE.read_text()
+    for state in ("yes", "no", "stale", "blocked", "escalated", "unknown"):
+        assert f".state.s-{state}{{" in page, f"the {state!r} review state has no style"
+        assert f'"{state}":' in page, f"the {state!r} review state has no plain words"
+
+
+def test_the_page_offers_exactly_the_dispositions_the_copilot_records():
+    """Two were offered and four are recorded, so two answers could not be given.
+
+    The Copilot refuses any phrasing outside the taxonomy, so an analyst who
+    wrote one of the missing two by hand had the verdict refused as they filed
+    it.
+    """
+    from caseharden import verdicts
+
+    page = workbench.PAGE.read_text()
+    offered = set(re.findall(r'mk\("([^"]+)"', page))
+    assert offered == set(verdicts.MEMBERS), (
+        f"the page offers {sorted(offered)} and caseharden/verdicts.py records "
+        f"{sorted(verdicts.MEMBERS)}")
+
+
+def test_the_citation_is_grouped_by_policy_line():
+    """"In force during this window" is answered per line, so the groups are the lines."""
+    page = workbench.PAGE.read_text()
+    assert 'document.createElement("optgroup")' in page
+    assert 'group.label = line' in page
+    assert 'o.dataset.line = line' in page, \
+        "the drafted message reads the line off the option, not out of its label"
+    assert "citedNow()" in page
+
+
+def test_the_composer_is_withheld_on_a_case_the_driver_is_not_waiting_on():
+    """`fill` writes the live finding's job id, and the Notary matches it exactly.
+
+    Offering the box on another case drafts a verdict filed against the wrong
+    subject, which stores fine and is never found.
+    """
+    page = workbench.PAGE.read_text()
+    assert "isOpen ? verdictCard() : notThisCase()" in page
+
+
+def test_the_page_does_not_claim_to_lack_evidence_it_holds():
+    """Every case now arrives with its own rows, so the old refusal would be false."""
+    page = workbench.PAGE.read_text()
+    assert "but not its cited rows" not in page
