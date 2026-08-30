@@ -167,3 +167,65 @@ def test_a_corrupt_case_does_not_block_the_next_publish(tmp_path):
     assert case["opened_at"] == "2026-08-30T10:00:00Z"
     assert case["revisions"] == 0
     assert cases.read_case(tmp_path, cid)["job_id"] == JOB
+
+
+# --------------------------------------------------------------------------
+# A file this module did not write
+# --------------------------------------------------------------------------
+
+def _write(tmp_path, cid, case) -> Path:
+    path = tmp_path / f"{cid}.json"
+    path.write_text(json.dumps(case))
+    return path
+
+
+def test_a_case_whose_name_does_not_derive_from_its_job_id_is_refused(tmp_path):
+    """The edit that binds one case's evidence to another finding's verdict.
+
+    `/api/cases?id=` looks the decision up by the stored `job_id` and shows the
+    stored `finding`. Editing one and not the other puts job A's rows beside the
+    review row filed against job B, and the id is a function of the job id, so
+    the mismatch is detectable without a second record.
+    """
+    cid = cases.case_id(JOB)
+    _write(tmp_path, cid, {"case_id": cid, "job_id": "europe-west3:job_other",
+                           "finding": finding()})
+    assert cases.read_case(tmp_path, cid) is None
+    assert cases.list_cases(tmp_path)["unreadable"] == 1
+
+
+def test_a_case_id_field_that_disagrees_with_the_filename_is_refused(tmp_path):
+    cid = cases.case_id(JOB)
+    _write(tmp_path, cid, {"case_id": "0" * 16, "job_id": JOB, "finding": finding()})
+    assert cases.read_case(tmp_path, cid) is None
+
+
+def test_a_symlink_in_the_store_is_not_served(tmp_path):
+    """A link inside the store points wherever it was made to point."""
+    secret = tmp_path / "elsewhere.json"
+    secret.write_text(json.dumps({"case_id": "x", "job_id": JOB}))
+    store = tmp_path / "cases"
+    store.mkdir()
+    cid = cases.case_id(JOB)
+    (store / f"{cid}.json").symlink_to(secret)
+    assert cases.read_case(store, cid) is None
+    assert cases.list_cases(store)["unreadable"] == 1
+
+
+def test_a_case_with_an_unusable_revision_count_is_replaced_not_raised(tmp_path):
+    """`int("bad")` reached the driver, which reported the whole store as broken."""
+    cid = cases.case_id(JOB)
+    _write(tmp_path, cid, {"case_id": cid, "job_id": JOB, "revisions": "bad",
+                           "opened_at": {"not": "a stamp"}, "finding": finding()})
+    case = cases.open_case(tmp_path, finding(sessions_total=31),
+                           now="2026-08-30T10:00:00Z")
+    assert case["revisions"] == 1
+    assert case["opened_at"] == "2026-08-30T10:00:00Z"
+
+
+def test_surrounding_whitespace_is_not_a_second_case(tmp_path):
+    """A stored job id that no `review.decisions` row can match is a dead case."""
+    assert cases.case_id(JOB) == cases.case_id(f"  {JOB} ")
+    case = cases.open_case(tmp_path, finding(job_id=f" {JOB}\n"))
+    assert case["job_id"] == JOB
+    assert cases.read_case(tmp_path, case["case_id"])["job_id"] == JOB

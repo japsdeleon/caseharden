@@ -536,6 +536,13 @@ def publish_finding(out: Path, finding: dict) -> None:
     BigQuery job, which is re-runnable. A store that will not write is a queue
     missing a row, and stopping the run over it would trade the finding for the
     index. So it is reported and the run goes on.
+
+    That is a stated exception to this module's "every stage refuses rather than
+    continuing" rule, and it is narrow. It buys nothing back for a doubtful
+    input: `cases.open_case` refuses a finding with no job id, and a case file
+    it cannot use it replaces rather than trusts. What it covers is the store
+    being unwritable, which for a directory inside `--out` means the live
+    finding above did not write either and the run has already failed.
     """
     target = out / LIVE_FINDING
     cases.atomic_write_json(target, finding)

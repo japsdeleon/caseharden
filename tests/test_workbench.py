@@ -1205,3 +1205,87 @@ def test_one_case_answers_with_its_own_evidence(served, tmp_path):
     got = json.loads(raw)
     assert got["case"]["job_id"] == JOB
     assert got["case"]["finding"]["rows"] == [{"session_id": "s_1"}]
+
+
+class _Stub(workbench.Source):
+    """A source with a warehouse behind it, without a project to reach."""
+
+    mode = "stub"
+
+    def __init__(self, decided=None, row=None):
+        self._decided = decided
+        self._row = row
+
+    def decided_subjects(self, kind):
+        if isinstance(self._decided, Exception):
+            raise self._decided
+        return self._decided
+
+    def decision(self, kind, subject):
+        return self._row
+
+
+def _queue_bench(tmp_path, source):
+    return workbench.Workbench(source, finding_path=tmp_path / "finding-live.json")
+
+
+def test_a_decided_case_and_a_waiting_one_are_told_apart(tmp_path):
+    _open_case(tmp_path)
+    _open_case(tmp_path, job_id="europe-west3:job_waiting")
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB})).cases()
+    by_job = {row["job_id"]: row["decided"] for row in listed["cases"]}
+    assert by_job == {JOB: "yes", "europe-west3:job_waiting": "no"}
+
+
+def test_a_source_that_cannot_know_says_unknown_and_not_waiting(tmp_path):
+    """A fixture has no review table, and 'no' would be a claim nothing checked."""
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(decided=None)).cases()
+    assert listed["cases"][0]["decided"] == "unknown"
+
+
+def test_a_warehouse_that_errors_says_unknown_and_says_why(tmp_path):
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(decided=RuntimeError("403 on review.decisions"))).cases()
+    assert listed["cases"][0]["decided"] == "unknown"
+    assert "403 on review.decisions" in listed["decided_error"]
+
+
+def test_the_queue_still_carries_no_disposition(tmp_path):
+    _open_case(tmp_path)
+    row = _queue_bench(tmp_path, _Stub(decided={JOB})).cases()["cases"][0]
+    assert set(row) & {"disposition", "rationale", "analyst", "approved"} == set()
+
+
+def test_a_verdict_older_than_the_revision_is_flagged(tmp_path):
+    """Revision 1's rows beside a review row filed against revision 0."""
+    _open_case(tmp_path)
+    opened = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    assert opened["revisions"] == 1
+    bench = _queue_bench(tmp_path, _Stub(row={"ts": "2020-01-01T00:00:00Z"}))
+    assert bench.case(opened["case_id"])["verdict_predates_revision"] is True
+
+
+def test_a_verdict_after_the_revision_is_not_flagged(tmp_path):
+    _open_case(tmp_path)
+    opened = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    bench = _queue_bench(tmp_path, _Stub(row={"ts": "2099-01-01T00:00:00Z"}))
+    assert bench.case(opened["case_id"])["verdict_predates_revision"] is False
+
+
+def test_a_case_never_revised_makes_no_claim_either_way(tmp_path):
+    opened = _open_case(tmp_path)
+    bench = _queue_bench(tmp_path, _Stub(row={"ts": "2020-01-01T00:00:00Z"}))
+    assert bench.case(opened["case_id"])["verdict_predates_revision"] is None
+
+
+@pytest.mark.parametrize("revised,ts", [
+    ("2026-08-30T10:00:00Z", "30 Aug 2026"),
+    ("2026-08-30 10:00:00 UTC", "2026-08-30T10:00:00Z"),
+    ("2026-08-30T10:00:00Z", None),
+    (None, "2026-08-30T10:00:00Z"),
+    ("2026-08-30T10:00:00Z", 1756540800),
+])
+def test_a_timestamp_in_another_shape_is_not_compared(revised, ts):
+    """A string compare across two formats answers confidently and wrongly."""
+    assert workbench._predates(revised, ts) is None

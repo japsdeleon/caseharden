@@ -169,6 +169,16 @@ class Source:
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         return None
 
+    def decided_subjects(self, kind: str) -> Optional[set]:
+        """Every subject carrying a decision of this kind, or None for cannot know.
+
+        None and the empty set are different answers and the queue draws them
+        differently. A source with no warehouse behind it returns None, because
+        answering "none of these are decided" would put a claim on the screen
+        that nothing checked.
+        """
+        return None
+
 
 class FixtureSource(Source):
     """An exported fixture, rendered with no credentials and no network.
@@ -337,6 +347,27 @@ class LiveSource(Source):
             params={"kind": kind, "subject": subject})
         return rows[0] if rows else None
 
+    def decided_subjects(self, kind: str) -> Optional[set]:
+        """One query for the whole queue, rather than one per row.
+
+        A queue that could not tell a decided case from a waiting one would list
+        every finding ever published as work, which is the state this store was
+        built to replace. The decision itself is still not copied anywhere: this
+        asks which subjects have a row and keeps no part of the row.
+
+        Grouped rather than filtered by a list of subjects, because
+        `caseharden/bq.py` takes scalar named parameters only, and building an
+        `IN` list into the SQL text is the interpolation that module exists to
+        avoid. The distinct subjects here are the findings that have been
+        reviewed, which is the same order of magnitude as the cases on disk.
+        """
+        rows = bq.query(
+            f"SELECT subject"
+            f" FROM `{bq.qualified_table(self.project, 'review', 'decisions')}`"
+            f" WHERE kind = @kind GROUP BY subject",
+            self.project, self.tokens.get(NOTARY), params={"kind": kind})
+        return {r["subject"] for r in rows}
+
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         """A row about this job filed under a subject the driver will never find.
 
@@ -396,6 +427,30 @@ def read_finding(path: Path = LIVE_FINDING) -> dict:
         # empty beats a dropped connection.
         return {"present": False, "path": str(path),
                 "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _predates(revised_at, decision_ts) -> Optional[bool]:
+    """True when the verdict on show was recorded before the evidence changed.
+
+    A case that is revised keeps its id and its verdict lookup, so the pane can
+    end up showing revision 1's rows beside a review row filed against revision
+    0. Nothing in either record says so, and a month later the pair reads as one
+    consistent decision about the evidence above it.
+
+    Compared as strings, which is safe only because both sides are the same
+    fixed-width UTC format: `_now()` writes it and `DECISION_COLUMNS` formats
+    `ts` into it in the query. The shape is checked rather than assumed, and
+    anything else answers None. A wrong `false` here is the reading that hides
+    the mismatch, so not knowing has to be sayable.
+    """
+    if not (isinstance(revised_at, str) and STAMP_RE.match(revised_at)):
+        return None
+    if not (isinstance(decision_ts, str) and STAMP_RE.match(decision_ts)):
+        return None
+    return decision_ts < revised_at
 
 
 def job_id_of(finding: dict) -> Optional[str]:
@@ -468,14 +523,30 @@ class Workbench:
         return out
 
     def cases(self) -> dict:
-        """What is open, as the store recorded it.
+        """Every case the store holds, each marked decided, waiting or unknown.
 
-        No decision is attached. One lookup per case would put a BigQuery query
-        behind every poll of this route, and a disposition cached here would be
-        a second copy of a row `review.decisions` already owns. The case pane
-        asks for the one case it is showing.
+        The store records no disposition, and this does not add one: a
+        disposition kept beside the finding would be a second copy of a row
+        `review.decisions` owns, free to disagree with it. What travels here is
+        one bit, derived at read time from a single query, and nothing is
+        written back.
+
+        Three values, not two. A warehouse this console could not reach makes
+        every case `unknown`, and a queue that showed those as waiting would
+        send an analyst to re-review a case that was closed yesterday.
         """
-        return cases.list_cases(self.cases_dir)
+        listed = cases.list_cases(self.cases_dir)
+        decided: Optional[set] = None
+        try:
+            decided = self.source.decided_subjects("VERDICT")
+        except Exception as exc:  # noqa: BLE001
+            listed["decided_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        for row in listed["cases"]:
+            if "error" in row:
+                continue
+            row["decided"] = ("unknown" if decided is None
+                              else "yes" if row.get("job_id") in decided else "no")
+        return listed
 
     def case(self, case_id: str) -> Optional[dict]:
         """One case, with its evidence and the verdict recorded against its job.
@@ -498,6 +569,8 @@ class Workbench:
             except Exception as exc:  # noqa: BLE001
                 out["decision"] = None
                 out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        out["verdict_predates_revision"] = _predates(
+            found.get("revised_at"), (out.get("decision") or {}).get("ts"))
         return out
 
     def _named_the_job(self, session: str, job_id: str, text: str) -> bool:

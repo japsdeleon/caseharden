@@ -69,10 +69,15 @@ def case_id(job_id: str) -> str:
 
     Sixteen hex characters, because the collision that matters is between the
     handful of detector jobs a fleet opens, not between arbitrary inputs.
+
+    Hashed after `strip`, and the stripped form is what `open_case` records.
+    Surrounding whitespace made `job_x ` a second case with the same evidence,
+    and its stored job id would then have matched no `review.decisions` row: the
+    driver and the console both compare `subject` for equality.
     """
     if not isinstance(job_id, str) or not job_id.strip():
         raise ValueError("a finding with no job id has nothing to be a case about")
-    return hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(job_id.strip().encode("utf-8")).hexdigest()[:16]
 
 
 def content_hash(finding: dict) -> str:
@@ -129,9 +134,21 @@ def open_case(cases_dir: Path, finding: dict, now: Optional[str] = None) -> dict
     reading for two hours whose evidence was replaced ten minutes ago is a fact
     the console has to be able to show, and an overwrite alone erases it.
 
-    An unreadable existing case is treated as no case. The alternative is
-    refusing to publish because of a file somebody corrupted, which loses the
-    finding to protect the index.
+    An unreadable existing case is treated as no case, and so is one carrying a
+    field this function cannot use. The alternative is refusing to publish
+    because of a file somebody corrupted, which loses the finding to protect the
+    index. `revisions: "bad"` in a file that is otherwise valid JSON raised out
+    of `int()` and reached the driver, which reported the store as unwritable
+    when the store was fine and one file was not.
+
+    Two publishers of the same job id at the same time is a read-then-write
+    race this does not close: both read no case, both write, and the later one
+    keeps its own `opened_at` and leaves `revisions` a count short. The driver
+    allocates a fresh detector job per run, so two publishers of one job id
+    means the same job published twice deliberately, and the cost when it
+    happens is a timestamp off by the gap between the two writes. A lock across
+    processes would buy a correct counter and a component that can wedge; the
+    counter is not worth that.
     """
     stamp = now or _now()
     cid = case_id(finding.get("job_id"))
@@ -144,16 +161,32 @@ def open_case(cases_dir: Path, finding: dict, now: Optional[str] = None) -> dict
 
     case = {
         "case_id": cid,
-        "job_id": finding["job_id"],
+        "job_id": finding["job_id"].strip(),
         "family": finding.get("family"),
-        "opened_at": (previous or {}).get("opened_at") or stamp,
+        "opened_at": _stamp_or(previous, "opened_at", stamp),
         "content_hash": digest,
-        "revisions": int((previous or {}).get("revisions") or 0) + (1 if previous else 0),
+        "revisions": _count(previous) + (1 if previous else 0),
         "revised_at": stamp if previous else None,
         "finding": finding,
     }
     atomic_write_json(target, case)
     return case
+
+
+def _stamp_or(previous: Optional[dict], field: str, fallback: str) -> str:
+    """A timestamp carried forward from the existing case, if it is one.
+
+    A non-string in `opened_at` would be carried into the queue and sorted
+    against real timestamps, which is how one hand-edited file reorders every
+    row around it.
+    """
+    value = (previous or {}).get(field)
+    return value if isinstance(value, str) and value else fallback
+
+
+def _count(previous: Optional[dict]) -> int:
+    value = (previous or {}).get("revisions")
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def read_case(cases_dir: Path, cid: str) -> Optional[dict]:
@@ -166,15 +199,39 @@ def read_case(cases_dir: Path, cid: str) -> Optional[dict]:
     A corrupt file reads as absent here. `list_cases` is where an unreadable
     case is reported, because a queue that quietly drops a case is the one
     failure a governance console cannot have.
+
+    Two more things make a file unreadable, and neither is a parse error:
+
+      a symlink under this directory. The id is checked, so the path is inside
+      the store, but a link inside it points wherever it was made to point and
+      the console would serve that file's contents to a browser. The analyst
+      could read those files anyway; the console reading them on a query
+      parameter is a different thing, and refusing costs one call.
+
+      a case whose name does not derive from its own job id. The id is a
+      function of `job_id`, so a file that fails to round-trip was written by
+      something other than `open_case`. An edited one binds this case's
+      evidence to another finding's verdict: the pane would show job A's rows
+      beside the review row filed against job B.
     """
     if not isinstance(cid, str) or not CASE_ID_RE.match(cid):
         return None
     path = cases_dir / f"{cid}.json"
+    if path.is_symlink():
+        return None
     try:
         case = json.loads(path.read_text())
     except (OSError, ValueError, RecursionError):
         return None
-    return case if isinstance(case, dict) else None
+    if not isinstance(case, dict):
+        return None
+    try:
+        derived = case_id(case.get("job_id"))
+    except ValueError:
+        return None
+    if derived != cid or case.get("case_id") != cid:
+        return None
+    return case
 
 
 def summarise(case: dict) -> dict:
