@@ -565,6 +565,17 @@ class Evidence:
         """
         raise NotImplementedError
 
+    def equivalence(self, policy) -> List[str]:
+        """Where the compiled SQL and the Python evaluator disagree. Empty when
+        they agree.
+
+        The gate scores a policy as BigQuery compiles it; the fleet enforces the
+        same policy through the Python evaluator. A divergence between the two
+        means the promotion measured something the fleet will not enforce, so
+        `seed` asks before it writes a chain.
+        """
+        raise NotImplementedError
+
 
 class BigQueryEvidence(Evidence):
     """Re-derives from the warehouse.
@@ -715,6 +726,11 @@ class BigQueryEvidence(Evidence):
         _, count = monotonic_bq(candidate, current, self.project, self.examiner_token)
         return count
 
+    def equivalence(self, policy) -> List[str]:
+        from .examiner import check_equivalence, local_corpora
+        return check_equivalence(policy, self.project, self.examiner_token,
+                                 local_corpora())
+
 
 class LocalEvidence(Evidence):
     """Re-derives from dicts. The test double, and the offline path for CI."""
@@ -765,3 +781,8 @@ class LocalEvidence(Evidence):
         _, count = monotonic(
             candidate, current, corpora["benign_corpus"] + corpora["holdout_sealed"])
         return count
+
+    def equivalence(self, policy) -> List[str]:
+        # One engine on this path. The local backend IS the Python evaluator, so
+        # there is no second implementation for it to disagree with.
+        return []

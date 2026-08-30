@@ -95,12 +95,14 @@ class FakeEvidence(chain.Evidence):
     an EXAM link that re-derives is re-deriving something.
     """
 
-    def __init__(self, events=None, access=None, corpora=None, error=None, reach=None):
+    def __init__(self, events=None, access=None, corpora=None, error=None, reach=None,
+                 disagreements=None):
         self._events = CITED if events is None else events
         self._access = SEALED_ACCESS if access is None else access
         self._reach = SEALED_REACH if reach is None else reach
         self._corpora = corpora or CORPORA
         self._error = error
+        self._disagreements = disagreements or []
 
     def cited_events(self, dataset, start, end):
         if self._error:
@@ -143,6 +145,9 @@ class FakeEvidence(chain.Evidence):
                              self._corpora["benign_corpus"] + self._corpora["holdout_sealed"])
         return count
 
+    def equivalence(self, policy):
+        return list(self._disagreements)
+
 
 def stored(payload: dict) -> dict:
     """Round-trip through JSON, because that is what BigQuery hands back.
@@ -154,7 +159,7 @@ def stored(payload: dict) -> dict:
 
 
 def make_chain(version="v4", events=None, access=None, candidate=GOOD, current=ACTIVE,
-               reach=None):
+               reach=None, exam=None):
     evidence = FakeEvidence(events, access, reach=reach)
     cited = evidence.cited_events(DATASET, START, END)
     cand, curr = score_local(candidate, CORPORA), score_local(current, CORPORA)
@@ -175,7 +180,7 @@ def make_chain(version="v4", events=None, access=None, candidate=GOOD, current=A
         ("DRAFT", stored({"version": candidate.version, "rule_count": len(candidate.rules)})),
         ("HOLDOUT-DENIED", stored({"principal": "proposer-sa@p", "dataset": "holdout_sealed",
                                    "permission": "bigquery.tables.getData", "http_code": 403})),
-        ("EXAM", stored(notary._exam_payload(candidate, current, cand, curr, verdict))),
+        ("EXAM", stored(exam or notary._exam_payload(candidate, current, cand, curr, verdict))),
         ("APPROVAL", stored({"approver": "a@example", "verdict": verdict.reason,
                              "approves_exam_hash": None})),
     ]))
@@ -351,6 +356,47 @@ def test_the_exam_break_names_the_measurement_that_moved():
 # unknown, which must never be attested
 # --------------------------------------------------------------------------
 
+def test_a_recorded_pass_over_a_losing_candidate_is_re_decided_and_quarantines():
+    """The measurement re-derived and the decision it justified did not.
+
+    The exam link's candidate numbers are truthful, so `_score_delta` clears it.
+    Its parent numbers say the active version caught every sealed attack, which
+    is a gate the candidate loses. Before the gate was re-decided from the link's
+    own contents this chain verified attested.
+    """
+    cand, curr = score_local(GOOD, CORPORA), score_local(ACTIVE, CORPORA)
+    monotone, uncovered = structurally_monotonic(GOOD, ACTIVE)
+    exam = notary._exam_payload(GOOD, ACTIVE, cand, curr,
+                                gate(cand, curr, monotone, uncovered, 0))
+    for label in exam["current_holdout"].values():
+        label["denied_sessions"] = label["sessions"]
+
+    links = make_chain(exam=exam)
+    att = verify("v4", links, FakeEvidence(), certificate(links))
+    assert (att.state, att.break_code) == (QUARANTINED, EXAM_SCORE)
+    assert "the gate does not pass" in att.break_detail
+    assert att.promotions == "FROZEN"
+
+
+def test_an_exam_missing_the_parents_numbers_cannot_be_re_decided_and_is_refused():
+    """Omitting the two keys must not be a way out of the gate re-decision.
+
+    Left optional, `_gate_delta` was opt-out: drop `current_holdout` and a
+    promotion verdict is unverifiable again. CHAIN-SHAPE, and CHAIN-SHAPE is not
+    re-attestable, so an exam nobody can re-decide does not recover either.
+    """
+    cand, curr = score_local(GOOD, CORPORA), score_local(ACTIVE, CORPORA)
+    monotone, uncovered = structurally_monotonic(GOOD, ACTIVE)
+    exam = notary._exam_payload(GOOD, ACTIVE, cand, curr,
+                                gate(cand, curr, monotone, uncovered, 0))
+    del exam["current_holdout"], exam["current_benign"]
+
+    links = make_chain(exam=exam)
+    att = verify("v4", links, FakeEvidence(), certificate(links))
+    assert (att.state, att.break_code) == (QUARANTINED, notary.CHAIN_SHAPE)
+    assert att.break_code in notary.NOT_REATTESTABLE
+
+
 def test_a_backend_failure_is_unknown_and_freezes_promotion():
     """A verify that cannot run is not a verify that passed.
 
@@ -421,6 +467,47 @@ def test_reattest_recovers_a_version_quarantined_by_a_new_column():
     assert after.promotions == "OPEN"
     assert (link.payload["schema_fingerprint"]
             != links[0].payload["schema_fingerprint"])
+
+
+def test_a_restated_exam_is_re_decided_as_well_as_re_scored():
+    """The EVIDENCE-CHANGED path reaches the gate re-decision too.
+
+    From the first re-attestation onward the effective exam lives in the
+    restating link, so a re-decision that only covered a direct EXAM link would
+    stop covering the version exactly when its record got more complicated.
+    """
+    links = make_chain()
+    widened = [dict(e, mcp_server_id="srv_a") for e in CITED]
+    evidence = FakeEvidence(events=widened)
+    _, restated, _ = reattest("v4", links, evidence, certificate(links))
+    assert restated is not None and restated.kind == "EVIDENCE-CHANGED"
+
+    payload = stored(restated.payload)
+    for label in payload["exam"]["current_holdout"].values():
+        label["denied_sessions"] = label["sessions"]
+    forged = chain.build("v4", [(l.kind, l.payload) for l in links]
+                         + [("EVIDENCE-CHANGED", payload)])
+
+    att = verify("v4", forged, evidence, certificate(forged))
+    assert (att.state, att.break_code) == (QUARANTINED, EXAM_SCORE)
+    assert "the gate does not pass" in att.break_detail
+
+
+def test_reattest_refuses_when_the_two_engines_disagree():
+    """Re-attestation seals a new root, so it asks what seed asks.
+
+    Checked only in `seed`, a divergence between the compiled SQL and the Python
+    evaluator could not promote a version but could still restore one.
+    """
+    links = make_chain()
+    widened = [dict(e, mcp_server_id="srv_a") for e in CITED]
+    evidence = FakeEvidence(events=widened,
+                            disagreements=["holdout_sealed: counts differ"])
+    before, link, message = reattest("v4", links, evidence, certificate(links))
+    assert before.break_code == EVENT_WINDOW
+    assert link is None
+    assert message.startswith("REFUSED")
+    assert "do not deny the same turns" in message
 
 
 def test_reattest_refuses_an_edit_under_a_link_that_predates_fingerprints():

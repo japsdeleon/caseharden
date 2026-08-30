@@ -446,7 +446,15 @@ def _shape_of_payload(link: Link) -> None:
     exam = p.get("exam") if link.kind == "EVIDENCE-CHANGED" else (
         p if link.kind == "EXAM" else None)
     if exam is not None:
-        for key in ("candidate", "current", "holdout", "benign"):
+        # The parent's counts are required, not optional. Left skippable, the gate
+        # re-decision in `_gate_delta` became opt-out: omit two keys and a
+        # promotion verdict is unverifiable again. Every chain this project has
+        # written carries them, because `_exam_payload` has emitted them since the
+        # first chain commit, so requiring them costs nothing and closes the
+        # omission. A missing one is CHAIN-SHAPE, which is not re-attestable: an
+        # exam nobody can re-decide does not get to recover.
+        for key in ("candidate", "current", "holdout", "benign",
+                    "current_holdout", "current_benign"):
             if key not in exam:
                 raise KeyError(key)
         parse(exam["candidate"])
@@ -455,8 +463,43 @@ def _shape_of_payload(link: Link) -> None:
 
 def _redo_exam(exam: dict, evidence: Evidence) -> Tuple[Optional[Score], Optional[str]]:
     """Run the Examiner again over the sealed holdout and compare."""
-    measured = evidence.score(parse(exam["candidate"]))
-    return measured, _score_delta(exam, measured)
+    candidate = parse(exam["candidate"])
+    measured = evidence.score(candidate)
+    return measured, _score_delta(exam, measured) or _gate_delta(exam, candidate, measured)
+
+
+def _gate_delta(exam: dict, candidate: Policy, measured: Score) -> Optional[str]:
+    """Re-decide the gate from the link's own contents. Costs no query.
+
+    `_score_delta` reproduces the measurement. It did not reproduce the decision
+    the measurement justified, so a chain recording a pass over a candidate that
+    loses to its parent verified attested: the verdict was a recorded claim in a
+    re-derived link. Both policies and the parent's per-label counts are already
+    in the payload and all three legs are pure functions of them, so the check is
+    free and there was no reason for it to be missing.
+
+    A failing re-decision is an EXAM-SCORE break like any other, which keeps it
+    re-attestable: `reattest` re-runs the same gate against current evidence and
+    is the path that decides whether the version recovers.
+
+    The parent's counts are required by `_shape_of_payload`, so there is no skip
+    branch here: an exam that cannot be re-decided is malformed rather than
+    exempt.
+    """
+    current = parse(exam["current"])
+    parent = Score(current, exam["current_holdout"], exam["current_benign"])
+    monotone, uncovered = structurally_monotonic(candidate, current)
+    # gate() takes `widened` for its prose and never for its verdict, and this
+    # comparison reads the verdict and never the prose. Structural monotonicity
+    # is a claim over every corpus, so when it holds the count is zero by
+    # construction; when it does not, the gate refuses on `monotone` alone.
+    verdict = gate(measured, parent, monotone, uncovered, 0)
+    if verdict.passed:
+        return None
+    failed = ", ".join(name for name, ok, _ in verdict.checks if not ok)
+    return (f"the exam link records {str(exam.get('verdict', ''))!r}; re-decided from "
+            f"the link's own measurements the gate does not pass: {verdict.reason} "
+            f"(failing {failed})")
 
 
 def _exam_detail(measured: Score) -> str:
@@ -480,6 +523,13 @@ def _describe_approval(payload: dict, links: Sequence[Link]) -> Optional[str]:
 
 
 def _recorded_detail(link: Link) -> str:
+    # A genesis chain legitimately carries hand-written links and a live one does
+    # not, and only a reader can tell which this is. So verify names the marker
+    # rather than refusing it.
+    return _detail_of(link) + (" [bootstrap]" if link.payload.get("bootstrap") else "")
+
+
+def _detail_of(link: Link) -> str:
     p = link.payload
     if link.kind == "FINDING":
         total = p.get("sessions_total", len(p.get("sessions", [])))
@@ -558,6 +608,18 @@ def reattest(version: str, links: Sequence[Link], evidence: Evidence,
         return before, None, (
             f"REFUSED. Re-scored against current evidence the gate no longer passes: "
             f"{verdict.reason}. {version} stays quarantined and keeps enforcing.")
+
+    # Re-attestation seals a new root and restores a version's standing, so it is
+    # a chain write and asks what `seed` asks. Checked only there, a divergence
+    # between the compiled SQL and the Python evaluator could not promote a
+    # version but could still restore one.
+    disagreements = evidence.equivalence(candidate)
+    if disagreements:
+        return before, None, (
+            "REFUSED. The compiled SQL and the Python evaluator do not deny the same "
+            "turns, so the re-scored gate measured a policy the fleet will not "
+            "enforce: " + "; ".join(disagreements)[:400] +
+            f". {version} stays quarantined and keeps enforcing.")
 
     entries = evidence.access_list(prior["exam_dataset"])
     payload = _evidence_payload(
@@ -1093,9 +1155,29 @@ def cmd_seed(args) -> int:
     """
     if args.policy_id not in LINE_EXAMS:
         return _refuse_unexamined_line(args.version, args.policy_id)
+    # Read before the refusal below, because the refusal is about what the bundle
+    # CONTAINS. Checking `args.bundle` alone asked whether a path was typed:
+    # `--bundle empty.json` holding `{}` is falsey everywhere downstream, so it
+    # skipped corroboration and took the hand-written path with the refusal never
+    # firing. A file read needs no credentials, so this still runs before
+    # `_tokens`.
+    bundle = json.loads(Path(args.bundle).read_text()) if args.bundle else {}
+    if not bundle and not getattr(args, "bootstrap", False):
+        # With no bundle content the FINDING is this Notary's own SQL and the
+        # VERDICT's analyst is a command-line flag, so the chain would carry a
+        # finding no detector returned and a verdict no human gave. `verify`
+        # shape-checks those kinds and cannot tell the two apart. The path still
+        # exists, because a chain has to be writable before the fleet that fills
+        # it, but it is now taken deliberately rather than by leaving a flag off.
+        print("REFUSED. Without a bundle the Notary writes the FINDING from its own "
+              "query and the VERDICT from --approver, so the chain would record a "
+              "finding no detector returned and a verdict no human gave. Pass "
+              "--bundle to seed from a run that happened, or --bootstrap to take "
+              "the hand-written path deliberately.")
+        print(f"{args.version} was not promoted and nothing was written to the chain.")
+        return 2
     notary_token, evidence, store = _tokens(args.project, args)
     candidate, current = load(args.candidate), load(args.current)
-    bundle = json.loads(Path(args.bundle).read_text()) if args.bundle else {}
     for field in ("dataset", "window_start", "window_end", "approver"):
         if bundle.get(field):
             setattr(args, field.replace("-", "_"), bundle[field])
@@ -1119,6 +1201,12 @@ def cmd_seed(args) -> int:
                                          evidence.exam_reach(),
                                          evidence.schema_columns(args.dataset))
 
+    # `bootstrap` means "the Notary wrote this itself", which is a claim about
+    # provenance. A bundle is input, so it does not get to make that claim.
+    for block in ("finding", "verdict"):
+        if isinstance(bundle.get(block), dict):
+            bundle[block].pop("bootstrap", None)
+
     if bundle.get("finding"):
         # The detector's own answer, with the job id it ran and the trace ids of
         # the conduct rows it cited. Day 4 shipped a FINDING the Notary wrote
@@ -1129,6 +1217,9 @@ def cmd_seed(args) -> int:
         found = _finding_evidence(args.project, notary_token, args.dataset,
                                   args.window_start, args.window_end)
         finding = {
+            # Named in the link itself, so a reader of the chain can tell a
+            # detector's answer from one the Notary wrote for itself.
+            "bootstrap": True,
             "family": "scope-violation",
             "detector": "scope-violation@v1",
             "sql": _FINDING_SQL,
@@ -1142,6 +1233,7 @@ def cmd_seed(args) -> int:
             "table": found["table"],
         }
     verdict_link = bundle.get("verdict") or {
+        "bootstrap": True,
         "analyst": args.approver,
         "disposition": "confirmed abuse",
         "rationale": "tool calls outside the session's declared scope, repeated across tenants",
@@ -1187,6 +1279,24 @@ def cmd_seed(args) -> int:
         print(f"the candidate does not pass the gate ({gate_verdict.reason}); "
               f"nothing was written")
         return 1
+
+    # The gate scores the candidate as BigQuery compiles it. The fleet enforces
+    # the same candidate through the Python evaluator. `check_equivalence` was
+    # written for both engines and then left behind an opt-in flag on the
+    # Examiner's own CLI, so nothing on the promotion path ever asked: a
+    # compiler divergence passed the gate and stayed attested for the version's
+    # life while the fleet denied different turns. Asked here, at the one place
+    # that writes a chain, so `notary seed` and the live loop both go through it.
+    disagreements = evidence.equivalence(candidate)
+    print("engine equivalence: " + ("AGREE" if not disagreements else "DISAGREE"))
+    if disagreements:
+        for problem in disagreements:
+            print(f"  {problem}")
+        print("the compiled SQL and the Python evaluator do not deny the same turns, "
+              "so the gate measured a policy the fleet will not enforce; "
+              "nothing was written")
+        return 1
+
     exam = _exam_payload(candidate, current, cand_score, curr_score, gate_verdict)
 
     # The refused candidates belong to the Examiner's record, because the
@@ -1481,6 +1591,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     s.add_argument("--bundle", default=None,
                    help="JSON from infra/110_run_loop.py: the finding, verdict, "
                         "refused drafts and the Proposer's own 403")
+    s.add_argument("--bootstrap", action="store_true",
+                   help="write the FINDING and VERDICT links from the Notary's own "
+                        "SQL and command-line flags instead of from a bundle. For a "
+                        "project with no fleet yet; the links are marked so verify "
+                        "names them")
     s.add_argument("--policy-id", default="conduct-policy",
                    help="the policy line this promotion belongs to")
     s.set_defaults(func=cmd_seed)

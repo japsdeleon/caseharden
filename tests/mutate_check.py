@@ -294,8 +294,8 @@ CASES = [
  ("workbench.py", "    return job_id if isinstance(job_id, str) and job_id else None",
   "    return job_id",
   "a finding whose job id is not a string crashes the console instead of having no subject"),
- ("workbench.py", '        reply = self._chat(text, session)\n        if job_id:\n            self._latch(session, job_id)',
-  '        if job_id:\n            self._latch(session, job_id)\n        reply = self._chat(text, session)',
+ ("workbench.py", '        reply = self._chat(text, session)\n        if known and named:\n            self._latch(session, named)',
+  '        if known and named:\n            self._latch(session, named)\n        reply = self._chat(text, session)',
   "a session is latched by a turn the Copilot never took"),
  ("workbench.py", "            while len(self._named) > MAX_LATCHED_SESSIONS:",
   "            while False:",
@@ -340,12 +340,12 @@ CASES = [
   '    if False:',
   "promote gates an unexamined line against the wrong exam"),
  ("notary.py",
-  "    if args.policy_id not in LINE_EXAMS:\n"
-  "        return _refuse_unexamined_line(args.version, args.policy_id)\n"
-  "    notary_token, evidence, store = _tokens(args.project, args)",
-  "    if False:\n"
-  "        return _refuse_unexamined_line(args.version, args.policy_id)\n"
-  "    notary_token, evidence, store = _tokens(args.project, args)",
+  "    output, run now, under examiner-sa.\n"
+  '    """\n'
+  "    if args.policy_id not in LINE_EXAMS:",
+  "    output, run now, under examiner-sa.\n"
+  '    """\n'
+  "    if False:",
   "seed writes a chain for a line with no sealed exam"),
  ("notary.py",
   'LINE_EXAMS = {"conduct-policy": "holdout_sealed"}',
