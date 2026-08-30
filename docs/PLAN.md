@@ -290,6 +290,20 @@ One new line exists at promotion: `seed` prints `engine equivalence: AGREE`. The
 cut from captures, so it does not appear; a re-shoot of that terminal would gain it, and it
 reads as a fourth check passing.
 
+**The whole sequence was walked on the live project, 2026-08-30. `docs/DRY_RUN.md` is the
+operator's file for the take**, and it supersedes `docs/REHEARSAL.md`, which was written on
+Day 6 against a seven-link chain. Every command there ran twice, in order, and the second
+run behaved identically, so the demo is a cycle: green, broken by one late row, re-attested
+back to green one link longer. Three things in the beat table above are stale against what
+the walk printed. The break lands on the **last** link, not link 1, because every
+re-attestation supersedes link 1's evidence — the 2:52 caption should read the number off
+the screen. `reattest` now takes **27 seconds**, not the twelve the 3:20 beat allows, because
+the engine-equivalence guard adds BigQuery round trips; start it before the beat opens or cut
+the wait. And the LINE_EXAMS refusal at 3:40 runs live now, so it no longer needs the Day 11
+capture. The walk also found `infra/100_prove_fleet.py` failing three assertions on a correct
+deployment, for the same reason the console did in `8216476`; fixed in `79e2707`, and it is
+`ALL HELD` again.
+
 **From the official rules, read 2026-08-29.** The video must be publicly visible on YouTube
 or Vimeo — unlisted fails the rule. 4:00 maximum, only the first four minutes are evaluated.
 English, or English subtitles. It must show the backend running on Google Cloud on screen
