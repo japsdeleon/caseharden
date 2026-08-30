@@ -12,8 +12,10 @@ its own for the review table: it says a sentence, and the tools below run under
 into the chat window. That is the reason the console can be trusted as little as
 any other caller.
 
-`record_verdict` writes the analyst's disposition on a finding. `approve` writes
-their decision on a candidate version. Both land as rows in `review.decisions`,
+`record_verdict` writes the analyst's disposition on a finding, and that
+disposition is one of the four values in `caseharden/verdicts.py` rather than
+whatever phrasing the model reached for on the call. `approve` writes their
+decision on a candidate version. Both land as rows in `review.decisions`,
 and the Notary reads them when it builds the VERDICT and APPROVAL links. The
 chain therefore records what a person actually typed, at the time they typed it,
 rather than a flag an operator passed on a command line.
@@ -48,7 +50,7 @@ for path in (HERE, os.path.join(HERE, "..", "..")):
 from google.adk.agents import LlmAgent
 
 from agents.common import armor as armor_mod
-from caseharden import bq, creds
+from caseharden import bq, creds, verdicts
 
 creds.guard_ambient()
 
@@ -91,16 +93,57 @@ def _now() -> str:
 def record_verdict(finding: str, disposition: str, rationale: str) -> dict:
     """Record the analyst's verdict on a detector finding.
 
+    The disposition is one of exactly four values and a fifth phrasing is
+    refused rather than stored. `caseharden/verdicts.py` holds the list and
+    records why it is closed: `infra/110_run_loop.py` branches on this value to
+    decide whether a policy is drafted at all, and while the argument was open
+    text every phrasing drafted one, including the two that mean there was
+    nothing here.
+
+    Refused here rather than filtered later, because here is the only place the
+    analyst is still in the conversation. A row stored with a disposition
+    nothing can read is a review the driver refuses minutes afterwards, by which
+    time the person who could have restated it in three words has gone. The
+    refusal is a returned value and not an exception: the model is expected to
+    put the four choices back to the analyst and ask, and a tool that raises
+    gives it an error to narrate instead of a question to ask.
+
+    Nothing is written on a refusal, so nothing downstream sees a half-recorded
+    review. The driver is polling `review.decisions` for a row that has not
+    appeared yet, which is the same state it was in before the analyst spoke, so
+    it simply keeps waiting for the answer they are about to give.
+
+    This is not the rule the rationale follows, and the difference is the point.
+    That text is stored whatever Model Armor says about it, because the record
+    holds what a human typed; see THREATS.md section 5. The disposition is not
+    the analyst's words. It is the control value the machine reads, and there is
+    nothing to preserve in a value nothing can read.
+
     Args:
         finding: What the verdict is about: the investigation id, or the
             BigQuery job id the detector reported.
-        disposition: The analyst's call, for example "confirmed abuse",
-            "false positive", or "needs more evidence".
+        disposition: The analyst's call. Exactly one of "confirmed abuse",
+            "benign", "insufficient evidence", "escalate". Any other value is
+            refused and nothing is stored.
         rationale: The analyst's own words. Screened before it is stored.
 
     Returns:
-        The stored row's id and the Model Armor result for the rationale.
+        The stored row's id and the Model Armor result for the rationale, or,
+        when the disposition was refused, `recorded: False` and the four
+        choices to put back to the analyst.
     """
+    called = verdicts.member(disposition)
+    if called is None:
+        return {
+            "recorded": False,
+            "error": f"{disposition!r} is not one of the four dispositions this "
+                     f"review surface records. Nothing was written.",
+            "choices": list(verdicts.MEMBERS),
+            "meanings": dict(verdicts.MEANING),
+            "next_step": "Ask the analyst which of the four they mean, quoting "
+                         "all four to them. Do not choose one on their behalf "
+                         "and do not retry with a reworded value.",
+        }
     screened = _screen(rationale)
     decision_id = "vd_" + uuid.uuid4().hex[:12]
     _write({
@@ -109,7 +152,10 @@ def record_verdict(finding: str, disposition: str, rationale: str) -> dict:
         "kind": "VERDICT",
         "analyst": ANALYST,
         "subject": finding,
-        "disposition": disposition,
+        # The member, not the argument. Case and spacing are not meaning, and a
+        # table holding "Confirmed Abuse" beside "confirmed abuse" makes a
+        # reader compare phrasings to answer what the analyst decided.
+        "disposition": called,
         "rationale": rationale,
         "ma_verdict": screened.get("ma_verdict"),
         "ma_band": screened.get("ma_band"),
@@ -169,6 +215,17 @@ root_agent = LlmAgent(
         "a disposition on a finding. Use approve when they accept or refuse a "
         "candidate policy version; pass approved=false when they refuse, and "
         "never guess which they meant.\n\n"
+        "A verdict's disposition is one of exactly four values: 'confirmed "
+        "abuse' when the flagged activity is real misuse, 'benign' when the "
+        "check fired on legitimate activity, 'insufficient evidence' when the "
+        "record does not support a call either way, and 'escalate' when this is "
+        "not the analyst's call to make. Only 'confirmed abuse' leads to a new "
+        "policy being drafted, so the four are not interchangeable. If what the "
+        "analyst said does not clearly name one of them, quote all four to them "
+        "and ask which they mean; do not translate their words into one, and do "
+        "not pick the closest. If record_verdict answers recorded=false, "
+        "nothing was stored: say so, put the four choices to the analyst, and "
+        "call it again only with the value they then give you.\n\n"
         "Before calling either tool, show the analyst the exact arguments you "
         "are about to store and wait for them to confirm. These rows are read "
         "by the Notary and written into a provenance chain that cannot be "

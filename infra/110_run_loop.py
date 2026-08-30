@@ -18,6 +18,12 @@ The order below is the order in plan section 4:
   7  the analyst's approval, written by the Copilot
   8  the promotion, the seal, the certificate, and a fresh verification
 
+Step 3 can be the last step. Three of the four dispositions in
+`caseharden/verdicts.py` are terminal: the finding needs no rule, or nobody can
+tell from the record yet, or the call belongs to someone else. The run closes on
+those and drafts nothing, which is an outcome and not a failure. Only
+`confirmed abuse` continues into step 4.
+
 What the Proposer is told between attempts matters. A gate rejection is fed
 back as its failing leg and the benign numbers only. The holdout figures are
 never passed to it, because a Proposer that learns the exam's contents through
@@ -50,7 +56,7 @@ from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from agents.common import armor
-from caseharden import bq, cases, copilot_client, creds
+from caseharden import bq, cases, copilot_client, creds, verdicts
 from caseharden.dsl import Policy, canonical_json, load, parse
 from caseharden.examiner import gate, score_bq
 from caseharden.interpreter import structurally_monotonic
@@ -620,6 +626,41 @@ def main(argv=None) -> int:
     refuse_unscreened("the analyst's verdict", verdict_row["ma_verdict"],
                       f"Decision {verdict_row['decision_id']} stays in "
                       f"review.decisions with its screening result.")
+
+    # What the verdict means, and whether anything is drafted from it. Until
+    # this branch existed the answer was always yes: the two lines above checked
+    # that Model Armor had screened the row and the next one called draft_loop,
+    # so a verdict of "insufficient evidence" produced a candidate policy
+    # version exactly as "confirmed abuse" did. The four dispositions and the
+    # reason the set is closed are in caseharden/verdicts.py.
+    called = verdicts.member(verdict_row["disposition"])
+    if called is None:
+        # Not "benign", and not "no verdict yet". A row this program cannot
+        # read, which is the answer `unknown` gives about attestation: the
+        # check did not conclude, so the forward action is frozen. Waiting is
+        # what happens when nobody has answered; this is somebody having
+        # answered in words nothing can act on.
+        raise SystemExit(
+            f"REFUSED. Decision {verdict_row['decision_id']} carries the "
+            f"disposition {verdict_row['disposition']!r}, which is not one of "
+            f"{', '.join(repr(m) for m in verdicts.MEMBERS)}. It is not read as "
+            f"the nearest of them: rows written before the taxonomy existed say "
+            f"what they say, and deciding here what one meant would be this "
+            f"program conducting the review. The row stays in review.decisions "
+            f"unchanged. Record a verdict through the Copilot to continue.")
+
+    if called != verdicts.DRAFTS:
+        head(f"The loop closes here: {called}")
+        print(f"  {verdicts.MEANING[called].capitalize()}.")
+        print(f"  Decision {verdict_row['decision_id']} by "
+              f"{verdict_row['analyst']} is the record of this review and is "
+              f"already written to review.decisions. The console shows the case "
+              f"as decided from that row; nothing further is written for it.")
+        print(f"  No candidate was drafted and no chain link exists for "
+              f"{args.version}, which is still free for a later run. A policy "
+              f"version has to be justified by a finding of abuse, and "
+              f"{called!r} is not one.")
+        return 0
 
     drafted = draft_loop(args, active, finding, verdict_row)
 

@@ -45,7 +45,13 @@ Conduct is what the fleet did. It is the raw material every claim is derived fro
 | **Benign turn** | A labelled legitimate turn in the holdout that a correct policy must allow. |
 | **Finding** | What a detector returned: a family, a count, and a re-runnable BigQuery job id. | 
 | **Verdict** | A human's disposition on a finding, recorded through the Copilot into `review.decisions`. |
+| **Disposition** | Which of four values a verdict carries. `confirmed abuse`, `benign`, `insufficient evidence`, `escalate`. The Copilot refuses anything else rather than storing it. |
+| **Terminal disposition** | The three that end the loop: `benign`, `insufficient evidence`, `escalate`. Only `confirmed abuse` continues into drafting, because a policy version is justified by the finding it came from. Closing on a terminal verdict is an outcome, not a failure. |
 | **Approval** | A human's decision to promote a specific version, recorded the same way and bound in the chain to the exam it approved. |
+
+Rows written into `review.decisions` before this vocabulary existed carry free text. They are
+not read as the nearest of the four: `infra/110_run_loop.py` refuses such a row and names it,
+the way an `unknown` attestation freezes promotion rather than guessing at a state.
 
 ## The policy
 
@@ -152,4 +158,5 @@ called justified.
 | States, break codes, re-attestation | [`caseharden/notary.py`](caseharden/notary.py) |
 | Gate legs, holdout scoring | [`caseharden/examiner.py`](caseharden/examiner.py) |
 | Attested reason, staleness, screening | [`agents/common/enforcement.py`](agents/common/enforcement.py) |
+| Verdict dispositions, which one drafts | [`caseharden/verdicts.py`](caseharden/verdicts.py) |
 | Offline re-check | [`caseharden/recheck.py`](caseharden/recheck.py) |
