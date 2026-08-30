@@ -286,9 +286,11 @@ dropping a rule is.
 
 One race is known and left open. Version-name uniqueness across lines is a read before a
 write, four BigQuery jobs with no transaction and no primary key, so two concurrent
-`genesis` calls claiming the same name in different lines can both insert. Registry writes
-here are one operator at a keyboard; an adversarial reviewer named the race and the fix
-(a multi-statement transaction) and it is not built.
+`genesis` calls claiming the same name in different lines can both insert. The Day 11
+genesis guard — a line's first version and nothing after it — sits on the same
+read-before-write, so two concurrent geneses for one new line can both pass it. Registry
+writes here are one operator at a keyboard; two adversarial reviewers named the race and
+the fix (a multi-statement transaction) and it is not built.
 
 ---
 

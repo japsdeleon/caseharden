@@ -51,6 +51,14 @@ ATTESTED = "attested"
 QUARANTINED = "quarantined"
 UNKNOWN = "unknown"
 
+# The map from a policy line to the sealed exam that can measure its candidates.
+# A line absent here has no exam, so nothing can gate its promotions.
+# ponytail: today only the KEY is load-bearing — every path below this guard
+# still reads holdout_sealed directly, which is correct while it is the only
+# exam. Sealing a second line's exam means threading this value through
+# scoring, access checks and verification, not just adding an entry.
+LINE_EXAMS = {"conduct-policy": "holdout_sealed"}
+
 # Named on screen when a version is quarantined, so the break is a place in the
 # record rather than an adjective.
 LINK_HASH = "LINK-HASH"            # the chain itself was edited
@@ -994,8 +1002,17 @@ def _refuse_parent(version: str, parent: str, attestation: Optional[Attestation]
     return 5
 
 
+def _refuse_unexamined_line(version: str, policy_id: str) -> int:
+    print(f"REFUSED — {policy_id} has no sealed exam, so the gate cannot measure "
+          f"a candidate against evidence. The line stays at its registered floor.")
+    print(f"{version} was not promoted and nothing was written to the chain.")
+    return 5
+
+
 def cmd_promote(args) -> int:
     """A promotion is refused on an unattested parent. That is the freeze."""
+    if args.policy_id not in LINE_EXAMS:
+        return _refuse_unexamined_line(args.version, args.policy_id)
     _, evidence, store = _tokens(args.project, args)
     candidate = load(args.candidate)
     basis, attestation = parent_basis(store, evidence, args.parent, args.notary_sa,
@@ -1020,6 +1037,19 @@ def cmd_genesis(args) -> int:
     policy = load(args.policy)
     if store.read(args.version):
         print(f"{args.version} has a chain; it is not a genesis version.")
+        return 2
+    # Genesis registers a line's FIRST version and nothing after it. register()
+    # marks its row active and deactivates the line's current one, so a second
+    # genesis would replace an active floor with no exam and no chain — an
+    # adversarial scope review named exactly that path.
+    taken = sorted(r["version"] for r in store.versions()
+                   if (r.get("policy_id") or "conduct-policy") == args.policy_id)
+    if taken:
+        print(f"REFUSED — {args.policy_id} already has {len(taken)} version(s) "
+              f"({', '.join(taken)}), so this is not its genesis. Replacing what "
+              f"is in force is a promotion, and a promotion needs the line's "
+              f"sealed exam.")
+        print(f"{args.version} was not registered and nothing was written.")
         return 2
     store.register(args.version, None, canonical_json(policy), "", "",
                    policy_id=args.policy_id)
@@ -1061,6 +1091,8 @@ def cmd_seed(args) -> int:
     events are re-scanned from BigQuery and the exam is the Examiner's own
     output, run now, under examiner-sa.
     """
+    if args.policy_id not in LINE_EXAMS:
+        return _refuse_unexamined_line(args.version, args.policy_id)
     notary_token, evidence, store = _tokens(args.project, args)
     candidate, current = load(args.candidate), load(args.current)
     bundle = json.loads(Path(args.bundle).read_text()) if args.bundle else {}

@@ -188,8 +188,8 @@ Every number here is measured on the live project, not estimated. Sources in
 | Active version | v5, 9 chain links, root `40cdb5962d49`, attested; each repoint since promotion is in `BUILD_LOG.md` |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
-| Tests | 313 |
-| Mutations broken and caught | 72 of 72 |
+| Tests | 335 |
+| Mutations broken and caught | 84 of 84 |
 | Fleet proof | all 8 sections, 32 assertions ([capture](captures/day7-fleet-proof-all-held.txt)) |
 | Cloud Trace | the conduct row's trace id opens a 60-span DAG in the capture above; one fan-out is a 361-span trace spanning the Foreman and all four detectors ([log](BUILD_LOG.md)) |
 
@@ -272,8 +272,8 @@ bash infra/80_prove_gate.sh          # the gate refuses three ways and passes on
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
 python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
-python3 -m pytest tests -q           # 313 tests, no cloud project needed
-python3 tests/mutate_check.py        # 72 mutations; every one must be caught
+python3 -m pytest tests -q           # 335 tests, no cloud project needed
+python3 tests/mutate_check.py        # 84 mutations; every one must be caught
 ```
 
 Each of those exits non-zero if the guarantee it tests does not hold. The

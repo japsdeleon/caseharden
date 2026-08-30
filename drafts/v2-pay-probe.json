@@ -1,0 +1,33 @@
+{
+  "version": "v2-pay",
+  "rules": [
+    {
+      "id": "large-refund",
+      "action": "deny",
+      "reason": "A refund at or above 500000 cents requires a human. Carried forward from v1-pay unchanged.",
+      "all_of": [
+        {"op": "equals", "field": "tool_name", "value": "issue_refund"},
+        {"op": "at_least", "field": "amount_cents", "value": 500000}
+      ]
+    },
+    {
+      "id": "elevated-refund",
+      "action": "deny",
+      "reason": "A refund at or above 200000 cents sits above every amount in the last 30 days of the training corpus (max 110275) and requires a human.",
+      "all_of": [
+        {"op": "equals", "field": "tool_name", "value": "issue_refund"},
+        {"op": "at_least", "field": "amount_cents", "value": 200000}
+      ]
+    },
+    {
+      "id": "cross-tenant-refund",
+      "action": "deny",
+      "reason": "A refund issued against a tenant other than the session's own.",
+      "all_of": [
+        {"op": "present", "field": "tool_name"},
+        {"op": "tenant_mismatch"},
+        {"op": "equals", "field": "tool_name", "value": "issue_refund"}
+      ]
+    }
+  ]
+}

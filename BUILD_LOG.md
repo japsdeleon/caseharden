@@ -2370,3 +2370,56 @@ trailing space.
 Codex ran; the in-house validator did not. Codex could not run the suite itself, its sandbox
 having no writable temporary directory, so its findings are from reading. All four were
 reproduced here before being fixed.
+
+## 2026-08-30 — Day 11
+
+### The Draftsman, and the lifecycle's honest edges
+
+The record could already prove a policy's past justification. Nothing measured present
+relevance, and nothing helped the human draft the next version from evidence instead of
+intuition. Day 11 built the drafting bench: `python -m caseharden.draftsman`, four
+subcommands, capture in `captures/day11-draftsman.txt`.
+
+`rot` reads the registry and groups a window of `conduct_live` denials by rule and by the
+version that enforced them. Live, it found two of v5's four rules DORMANT over 30 days, and
+payments' floor dormant for the honest reason — the line is served, not enforced. DORMANT is
+stated, never acted on: retirement widens authority and stays a human decision. `patterns`
+aggregates a use case's conduct (176 refunds in the training window, quartiles up to
+110275 cents), each number with the BigQuery job id that produced it, and says on screen that
+the training corpus records no decisions rather than inventing a deny share. `overlap` nests
+predicate sets the way the Examiner's structural check does and reported the two verdicts
+that matter: the carry-forward DUPLICATE inside payments, and a cross-tenant draft rule
+COVERED by conduct-policy — the ownership conflict caught before a gate run. `draft` puts
+the rules through the closed DSL vocabulary and prints the exact `notary` command, with
+`--policy-id`, that carries the file into the governed lifecycle. `--narrate` is one labelled
+Gemini call over the deterministic report; it suggested velocity rules the deny-only grammar
+cannot express, which is the constraint working in public.
+
+### Two guards the reviews demanded
+
+A Codex scope review ran before commit, briefed to attack the design. Its sharpest finding:
+`genesis` was ungated, so a second genesis in a line would have silently replaced an active
+floor with no exam and no chain. Genesis now refuses any line that already has a version.
+Its second: `--impersonate examiner-sa` plus `--dataset holdout_sealed` was a bench path to
+the exam. The bench now refuses both outright — the operator's credentials could always mint
+that token; the tool refusing is the statement. Both guards were taken live and refused for
+real in the capture, alongside the exam-guard from the same build: a line with no sealed exam
+(`LINE_EXAMS`, one entry wide, pinned by a test) cannot promote at all.
+
+A second Codex pass reviewed the finished diff and found the rot report crediting one line's
+denials to another line's same-named rule. Attribution now goes through the enforcing
+version's owner, with a shared-id regression test. The same pass named the genesis guard's
+read-before-write race — recorded as open in THREATS.md 11 beside the registry race it
+matches, one operator at a keyboard — and the unthreaded `LINE_EXAMS` value, which is a
+stated ceiling until a second exam exists to route to. The in-house validator verified nine
+of ten acceptance items, caught the capture showing commands without the `--impersonate`
+flag they actually ran with, and caught the overlap probe file missing from the tree. The
+capture now shows the commands verbatim and `drafts/v2-pay-probe.json` is committed.
+
+335 tests. 84 mutations broken on purpose, 84 caught — one Draftsman case survived its first
+sweep because the test asserting an inactive rule's absence used a draft that could never
+have matched it, which proved nothing; the test now pairs the draft with both rows and the
+case is caught. proposer-sa holds no read on the policy registry, so the bench's
+registry-reading commands ran under `--impersonate notary-sa`, stated in the capture; the
+dataset-level grant is the operator's one-command follow-up. Nothing above moved authority:
+the registry closed the day exactly as it opened it, v5 attested at the same root.

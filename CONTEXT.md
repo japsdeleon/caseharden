@@ -24,8 +24,9 @@ The agents. Nine private Cloud Run services, seven of them published to Agent Re
 | **Detector** | One of four read-only agents that scan conduct for one check family. Returns a **finding** and the BigQuery job id that produced it. | Not a rule. A detector observes; it never blocks. |
 | **Check family** | The category a detector covers: `cross-tenant`, `scope-escape`, `injected-turn`, `privilege-sequencing`. | Not a policy rule name. A family groups evidence, not enforcement. |
 | **Foreman** | The agent that discovers the detectors from the **roster** at container start and fans an investigation out to them over A2A. | Not a scheduler and not a supervisor. It names no detector in its source. |
-| **Proposer** | The agent that drafts a **candidate** policy. It can read training conduct and reviewer precedent. It cannot read the **sealed holdout**. | Not the approver, and not the promoter. It only drafts. |
+| **Proposer** | The agent that drafts a **candidate** policy. It can read training conduct, the live conduct window and reviewer precedent. It cannot read the **sealed holdout**. | Not the approver, and not the promoter. It only drafts. |
 | **Analyst Copilot** | The human's window. An unmodified ADK web UI where a person records a **verdict** and an **approval**. | Not a member of the fleet. It serves no agent card and the Foreman never discovers it. |
+| **Draftsman** | The human's drafting bench. A CLI that grounds rule-rot review, use-case research and overlap checks in stored conduct, every number carrying its BigQuery job id. Drafting side of the wall: it reads conduct and the registry, never the sealed exam. | Not the Curator, and not a fleet member. It suggests; it never grants. |
 | **Policy Server** | The service that answers "what is in force, and is it attested". | Not a policy store. It re-derives from the **chain** at serve time. |
 | **Roster** | The Agent Registry listing. Each entry carries the **root** of the policy version it was registered against. | Not a service list. A roster entry states what a worker's authority rests on. |
 
@@ -58,6 +59,7 @@ Conduct is what the fleet did. It is the raw material every claim is derived fro
 | **Active version** | The one version marked active in its **policy line**. What the Policy Server serves for that line. | Not the newest version. A promotion that the gate refuses never becomes active. |
 | **Promotion** | Making a candidate the active version. Requires a passing **gate**, a human **approval**, and a written chain. | Not a deploy. |
 | **Deny-only** | The property that the DSL has no way to express permission. | Not a convention. `caseharden/dsl.py` has no allow node to write. |
+| **Dormant rule** | An active rule the Draftsman's rot report shows denying nothing over the stated window. | Not a retired rule. Retirement widens authority; a dormant rule is stated to a human and keeps enforcing. |
 
 ## The gate
 

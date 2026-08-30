@@ -332,6 +332,49 @@ CASES = [
   "two rows sharing one event id collapse and the changed one is not hashed"),
  ("notary.py", "    if len(seqs) != len(set(seqs)):", "    if False:",
   "a chain with a duplicated sequence is sealed and repointed anyway"),
+ # Day 11. The exam-guard and the Draftsman's report logic.
+ ("notary.py",
+  '    """A promotion is refused on an unattested parent. That is the freeze."""\n'
+  '    if args.policy_id not in LINE_EXAMS:',
+  '    """A promotion is refused on an unattested parent. That is the freeze."""\n'
+  '    if False:',
+  "promote gates an unexamined line against the wrong exam"),
+ ("notary.py",
+  "    if args.policy_id not in LINE_EXAMS:\n"
+  "        return _refuse_unexamined_line(args.version, args.policy_id)\n"
+  "    notary_token, evidence, store = _tokens(args.project, args)",
+  "    if False:\n"
+  "        return _refuse_unexamined_line(args.version, args.policy_id)\n"
+  "    notary_token, evidence, store = _tokens(args.project, args)",
+  "seed writes a chain for a line with no sealed exam"),
+ ("notary.py",
+  'LINE_EXAMS = {"conduct-policy": "holdout_sealed"}',
+  'LINE_EXAMS = {"conduct-policy": "holdout_sealed",\n'
+  '              "payments-policy": "holdout_sealed"}',
+  "a line silently borrows another line's sealed exam"),
+ ("draftsman.py", "                if active_keys == draft_keys:", "                if False:",
+  "a duplicated rule is not reported as a duplicate"),
+ ("draftsman.py", "                elif active_keys <= draft_keys:", "                elif False:",
+  "a redundant draft rule is not reported as covered"),
+ ("draftsman.py", "                elif draft_keys < active_keys:", "                elif False:",
+  "a draft wider than another line's rule raises no ownership question"),
+ ("draftsman.py", '            verdict = "EARNING" if denials else "DORMANT"',
+  '            verdict = "EARNING"', "a rule that denies nothing reads as earning its place"),
+ ("draftsman.py",
+  '        if str(row.get("active")).lower() != "true":\n            continue',
+  '        if False:\n            continue',
+  "inactive registry rows join the overlap and rot reports"),
+ ("draftsman.py",
+  '        print(f"nothing written to {args.out}")\n        return 2',
+  '        print(f"nothing written to {args.out}")\n        return 0',
+  "an invalid draft exits as if it were written"),
+ # The adversarial scope review's fixes must themselves be load-bearing.
+ ("notary.py", "    if taken:", "    if False:",
+  "a second genesis replaces a live floor with no exam and no chain"),
+ ("draftsman.py", '    if sa.startswith("examiner-sa@"):', '    if False:',
+  "the bench runs as the sealed exam's one reader"),
+ ("draftsman.py", '    if args.dataset in ("holdout_sealed", "benign_corpus"):',
+  '    if False:', "the bench reads exam material through patterns"),
 ]
 
 def suite():

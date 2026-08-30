@@ -1,0 +1,117 @@
+Day 11. The Draftsman, and the lifecycle's honest edges. A policy's past
+justification was already verifiable; nothing measured present relevance, and
+nothing helped the human draft the next version from evidence instead of
+intuition. The Draftsman is the drafting bench: rot review, use-case research,
+overlap checks, and a validated draft — every number carrying the BigQuery job
+id that produced it. It suggests; it never grants.
+
+Identity note, stated rather than hidden: proposer-sa holds no read on the
+policy registry, so the registry-reading subcommands below carry
+--impersonate notary-sa — a reader that, like every principal except
+examiner-sa, has no standing on the sealed exam. Granting proposer-sa its own
+dataset-level READER on `policy` is the operator's one-command follow-up.
+
+Which active rules still earn their place, measured on live fleet conduct:
+
+$ python3 -m caseharden.draftsman \
+    --impersonate notary-sa@devpost-hackathon-506416.iam.gserviceaccount.com \
+    rot --window-days 30
+rule rot over the last 30 day(s) of conduct_live denials   job europe-west3:job_m6GCvy3Ynh7--DeihauntMtU4pec
+
+  line              version   rule                                    denials  last fired            verdict
+  conduct-policy    v5        out-of-declared-scope                         0  -                     DORMANT
+  conduct-policy    v5        tool-call-on-injected-turn                   27  2026-08-26T19:58:24Z  EARNING
+  conduct-policy    v5        cross-tenant-tool-call                        0  -                     DORMANT
+  conduct-policy    v5        tool-call-on-suspected-injection-turn         2  2026-08-25T17:32:13Z  EARNING
+  payments-policy   v1-pay    large-refund                                  0  -                     DORMANT
+
+  DORMANT states a rot candidate. Retirement widens authority and stays a human decision.
+  Counts group denials by rule id across the versions that enforced them; a rule id is unique within a policy.
+
+Two of v5's four rules have denied nothing in 30 days — stated, not retired.
+large-refund is dormant for the honest reason: payments-policy is a served
+floor, and enforcement is conduct-policy's alone.
+
+What the payments use case actually looks like, from the drafting corpus:
+
+$ python3 -m caseharden.draftsman patterns --use-case payments --window-days 30 --dataset conduct_train
+payments conduct over the last 30 day(s) in conduct_train
+
+  tool volume   job europe-west3:job_WO2040IxnQEa9UC1b3TBgr0pHZIn
+    issue_refund                    176 call(s)  (no decisions recorded here)
+
+  amount_cents distribution   job europe-west3:job_Jcb_hB7KbJtPUIrpfUhHOkmA797U
+    176 call(s), quartiles [286, 2319, 5273, 12088, 110275], max 110275
+
+  sessions with 3+ refund-ish calls, top 10   job europe-west3:job_wSMnpZTRBM3OoL7Xq7jRZ7iwMMmU
+
+  These numbers are the evidence a human proposes a family taxonomy from. The tool proposes nothing itself.
+
+The training corpus predates enforcement, and the report says so instead of
+inventing a deny share. With --narrate, Gemini reads the report and suggests
+rule shapes — among them velocity rules the deny-only DSL cannot express, and
+a note that the corpus records no decisions. The narration is printed under
+"model narration (a suggestion, not evidence)": the model proposes, the closed
+vocabulary constrains, the gate decides.
+
+A first draft of v2-pay, probed for conflicts before anything is written:
+
+$ python3 -m caseharden.draftsman \
+    --impersonate notary-sa@devpost-hackathon-506416.iam.gserviceaccount.com \
+    overlap --candidate drafts/v2-pay-probe.json
+large-refund vs payments-policy/v1-pay/large-refund: DUPLICATE — the same predicate set already exists in that line
+cross-tenant-refund vs conduct-policy/v5/cross-tenant-tool-call: COVERED — that line already denies everything this draft rule denies; the draft rule is redundant
+
+The DUPLICATE is the carry-forward habit, correct in its own line. The COVERED
+is the conflict this exists to catch: cross-tenant denial is conduct-policy's
+business, and a payments copy would be a second owner for one behaviour. The
+human drops it, and the final draft goes through the closed DSL vocabulary:
+
+$ python3 -m caseharden.draftsman \
+    --impersonate notary-sa@devpost-hackathon-506416.iam.gserviceaccount.com \
+    draft --version v2-pay --line payments-policy \
+    --rules drafts/v2-pay-rules.json --out policies/v2-pay-candidate.json
+overlap against the active registry:
+  large-refund vs payments-policy/v1-pay/large-refund: DUPLICATE — the same predicate set already exists in that line
+
+wrote policies/v2-pay-candidate.json
+  line     payments-policy
+  version  v2-pay
+  rules    2
+  the gate and a human approval still stand between this file and authority
+  next     python3 -m caseharden.notary promote --version v2-pay --parent <parent> --candidate policies/v2-pay-candidate.json --policy-id payments-policy
+
+The draft cannot become authority tonight, and the system says so twice, in
+its own words. An adversarial scope review of this change found that a second
+genesis would have silently replaced the line's active floor; that path now
+refuses:
+
+$ python3 -m caseharden.notary genesis --version v2-pay \
+    --policy policies/v2-pay-candidate.json --policy-id payments-policy
+REFUSED — payments-policy already has 1 version(s) (v1-pay), so this is not its genesis. Replacing what is in force is a promotion, and a promotion needs the line's sealed exam.
+v2-pay was not registered and nothing was written.
+
+$ python3 -m caseharden.notary promote --version v2-pay --parent v1-pay \
+    --candidate policies/v2-pay-candidate.json --policy-id payments-policy
+REFUSED — payments-policy has no sealed exam, so the gate cannot measure a candidate against evidence. The line stays at its registered floor.
+v2-pay was not promoted and nothing was written to the chain.
+
+The bench also refuses its own paths to the exam, found by the same review:
+
+$ python3 -m caseharden.draftsman patterns --use-case payments --window-days 30 --dataset holdout_sealed
+REFUSED — holdout_sealed is exam material, and the drafting bench never reads the exam.
+
+$ python3 -m caseharden.draftsman --impersonate examiner-sa@... rot --window-days 30
+REFUSED — the drafting bench does not run as the sealed exam's one reader. The wall between drafting and the exam is the point.
+
+And nothing above moved what is in force, re-checked live:
+
+$ SELECT version, policy_id, active FROM policy.versions ORDER BY promoted_at
+  v3      conduct-policy   false
+  v4      conduct-policy   false
+  v5      conduct-policy   true
+  v1-pay  payments-policy  true
+
+$ python3 -m caseharden.notary verify --version v5   (tail)
+  root 40cdb5962d490c4c68c5be74805e19c06d3eeab5c6b751765070efe2a2accced
+  ATTESTED   re-derived from raw events in 3.2s
