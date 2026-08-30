@@ -886,8 +886,12 @@ function renderCase(){
 function citedPolicy(host, row, cit){
   const c = cit || {};
   const state = S(c.state);
-  const cited = S(row.cited_version)
-    ? S(row.cited_policy_id || "conduct-policy") + "@" + S(row.cited_version) : "";
+  /* The line comes from the server's answer, not from the row: a citation that
+     named only a version resolves to whichever line the registry holds it in,
+     and printing "conduct-policy@" in front of a payments version would be this
+     page inventing the half the analyst did not write. */
+  const version = S(row.cited_version);
+  const cited = version && (S(c.policy_id) ? S(c.policy_id) + "@" + version : version);
   if (state === "PREDATES-COLUMNS") {
     host.appendChild(el("p", "note",
       "This row was written before the record had anywhere to put the policy being applied. "

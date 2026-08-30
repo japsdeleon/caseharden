@@ -277,11 +277,9 @@ def _own_words_or_refuse(rationale: str, finding: str, disposition: str) -> str:
     """
     text = (rationale or "").strip()
     own = text.replace(finding, " ").strip() if finding else text
-    if own.casefold() == (disposition or "").strip().casefold():
-        raise Refused(
-            "the rationale is the disposition again. The row already carries the "
-            "disposition in its own column; this field is where the reasoning goes. "
-            "Nothing stored.")
+    # Length first, so an empty rationale gets the empty-rationale message. The
+    # other order answered "the rationale is the disposition again" whenever both
+    # were empty, which sends the analyst to fix the wrong field.
     if len(own) < RATIONALE_MIN_CHARS:
         raise Refused(
             f"the rationale carries {len(own)} character(s) of the analyst's own "
@@ -289,6 +287,11 @@ def _own_words_or_refuse(rationale: str, finding: str, disposition: str) -> str:
             f"verdict is read months later by someone who cannot ask what was meant. "
             f"Ask the analyst for their reasons and send it again; do not write or "
             f"extend them yourself. Nothing stored.")
+    if own.casefold() == (disposition or "").strip().casefold():
+        raise Refused(
+            "the rationale is the disposition again. The row already carries the "
+            "disposition in its own column; this field is where the reasoning goes. "
+            "Nothing stored.")
     return own
 
 

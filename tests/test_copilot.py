@@ -146,6 +146,17 @@ def test_the_job_id_alone_is_not_a_rationale(recorded):
     assert recorded["rows"] == []
 
 
+def test_an_empty_rationale_is_refused_as_empty_and_not_as_a_restatement():
+    """Both fields blank met the equality test first and named the wrong field.
+
+    The length check runs before it, so an empty rationale is refused for being
+    empty rather than for restating an empty disposition.
+    """
+    with pytest.raises(agent.Refused) as exc:
+        agent._own_words_or_refuse("", "", "")
+    assert "character(s)" in str(exc.value)
+
+
 def test_the_floor_is_the_longest_disposition_this_tool_documents():
     """Not a round number: 19 characters is "needs more evidence", so 20 is the floor."""
     assert agent.RATIONALE_MIN_CHARS == len("needs more evidence") + 1

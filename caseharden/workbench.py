@@ -553,7 +553,7 @@ def citation_check(row: Optional[dict], versions: list, window_start=None) -> Op
         return None
     source = row.get("citation_source")
     version = row.get("cited_version")
-    line = row.get("cited_policy_id") or DEFAULT_LINE
+    line = row.get("cited_policy_id") or None
     if not version:
         if source is None:
             return {"state": "PREDATES-COLUMNS", "policy_id": None, "version": None}
@@ -561,13 +561,22 @@ def citation_check(row: Optional[dict], versions: list, window_start=None) -> Op
     out = {"source": source, "policy_id": line, "version": version}
     if not versions:
         return dict(out, state="REGISTRY-UNKNOWN")
+    # A citation that names no line is matched on the version alone, and the line
+    # it resolves to is reported back. Assuming `conduct-policy` for a bare
+    # version would report a real `payments-policy` version as naming nothing,
+    # which is a false alarm about the one field this pane exists to draw.
+    # Version names are unique across lines by a check in `ChainStore.register`,
+    # and THREATS.md entry 11 records the read-before-write race in that check,
+    # so a duplicate is possible and the first match is taken rather than claimed
+    # to be the only one.
     known = [v for v in versions
              if str(v.get("version")) == str(version)
-             and (v.get("policy_id") or DEFAULT_LINE) == line]
+             and (not line or (v.get("policy_id") or DEFAULT_LINE) == line)]
     if not known:
         return dict(out, state="UNREGISTERED")
-    in_force = active_at(versions, window_start, line)
-    return dict(out, state="REGISTERED",
+    resolved = line or (known[0].get("policy_id") or DEFAULT_LINE)
+    in_force = active_at(versions, window_start, resolved)
+    return dict(out, state="REGISTERED", policy_id=resolved,
                 promoted_at=known[0].get("promoted_at"),
                 active_at_window_start=in_force,
                 matches_window=None if in_force is None else in_force == str(version))

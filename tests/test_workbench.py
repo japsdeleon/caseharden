@@ -1480,3 +1480,16 @@ def test_the_console_selects_the_columns_the_migration_added():
                    "advisory_recommendation", "advisory_rule", "advisory_confidence"):
         assert column in workbench.LiveSource.DECISION_COLUMNS
     assert "*" not in workbench.LiveSource.DECISION_COLUMNS
+
+
+def test_a_bare_version_resolves_to_the_line_the_registry_holds_it_in():
+    """`p1` cited with no line is a payments version, not a missing conduct one.
+
+    Assuming `conduct-policy` for a bare citation would report a real version as
+    naming nothing, which is a false alarm about the one field this pane draws.
+    """
+    out = workbench.citation_check(_cited(cited_policy_id=None, cited_version="p1"),
+                                   VERSIONS, "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["policy_id"] == "payments-policy"
+    assert out["active_at_window_start"] == "p1"
