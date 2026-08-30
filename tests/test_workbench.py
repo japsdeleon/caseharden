@@ -1225,6 +1225,12 @@ class _Stub(workbench.Source):
         return self._row
 
 
+def _verdict_row(ts="2026-08-30T10:00:00.000000Z", disposition="confirmed abuse",
+                 ma_verdict="CLEAN"):
+    """One row shaped like what decided_subjects selects."""
+    return {"ts": ts, "disposition": disposition, "ma_verdict": ma_verdict}
+
+
 def _queue_bench(tmp_path, source):
     return workbench.Workbench(source, finding_path=tmp_path / "finding-live.json")
 
@@ -1232,7 +1238,7 @@ def _queue_bench(tmp_path, source):
 def test_a_decided_case_and_a_waiting_one_are_told_apart(tmp_path):
     _open_case(tmp_path)
     _open_case(tmp_path, job_id="europe-west3:job_waiting")
-    listed = _queue_bench(tmp_path, _Stub(decided={JOB: "2026-08-30T10:00:00Z"})).cases()
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(ts="2026-08-30T10:00:00Z")})).cases()
     by_job = {row["job_id"]: row["decided"] for row in listed["cases"]}
     assert by_job == {JOB: "yes", "europe-west3:job_waiting": "no"}
 
@@ -1253,7 +1259,7 @@ def test_a_warehouse_that_errors_says_unknown_and_says_why(tmp_path):
 
 def test_the_queue_still_carries_no_disposition(tmp_path):
     _open_case(tmp_path)
-    row = _queue_bench(tmp_path, _Stub(decided={JOB: "2026-08-30T10:00:00Z"})).cases()["cases"][0]
+    row = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(ts="2026-08-30T10:00:00Z")})).cases()["cases"][0]
     assert set(row) & {"disposition", "rationale", "analyst", "approved"} == set()
 
 
@@ -1544,7 +1550,7 @@ def test_a_case_revised_after_its_verdict_is_stale_not_decided(tmp_path):
     revised = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
     assert revised["revisions"] == 1
     listed = _queue_bench(
-        tmp_path, _Stub(decided={JOB: "2020-01-01T00:00:00Z"})).cases()
+        tmp_path, _Stub(decided={JOB: _verdict_row(ts="2020-01-01T00:00:00Z")})).cases()
     assert listed["cases"][0]["decided"] == "stale"
 
 
@@ -1552,7 +1558,7 @@ def test_a_verdict_after_the_revision_is_decided(tmp_path):
     _open_case(tmp_path)
     _open_case(tmp_path, rows=[{"session_id": "s_2"}])
     listed = _queue_bench(
-        tmp_path, _Stub(decided={JOB: "2099-01-01T00:00:00Z"})).cases()
+        tmp_path, _Stub(decided={JOB: _verdict_row(ts="2099-01-01T00:00:00Z")})).cases()
     assert listed["cases"][0]["decided"] == "yes"
 
 
@@ -1560,6 +1566,88 @@ def test_an_uncomparable_pair_of_timestamps_is_decided_not_stale(tmp_path):
     """Saying `stale` on a comparison that did not happen is its own invention."""
     _open_case(tmp_path)
     _open_case(tmp_path, rows=[{"session_id": "s_2"}])
-    listed = _queue_bench(tmp_path, _Stub(decided={JOB: "30 Aug 2026"})).cases()
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(ts="30 Aug 2026")})).cases()
     assert listed["cases"][0]["decided"] == "yes"
 
+
+
+def test_a_sub_second_revision_after_the_verdict_is_stale():
+    """The exact case second-granularity stamps could not tell apart.
+
+    Both sides formatted to `...T10:00:00Z`, compared equal, and the queue said
+    the case was decided about evidence that changed 800ms after the review.
+    """
+    assert workbench._predates("2026-08-30T10:00:00.900000Z",
+                               "2026-08-30T10:00:00.100000Z") is True
+    assert workbench._predates("2026-08-30T10:00:00.100000Z",
+                               "2026-08-30T10:00:00.900000Z") is False
+
+
+def test_a_stamp_written_before_the_microseconds_is_still_comparable():
+    """Refusing the old shape would answer 'cannot tell' for the whole history."""
+    assert workbench._predates("2026-08-30T10:00:01.000000Z",
+                               "2026-08-30T10:00:00Z") is True
+    assert workbench._predates("2026-08-30T10:00:00Z",
+                               "2026-08-30T10:00:01.000000Z") is False
+
+
+def test_mixed_precision_is_not_compared_as_text():
+    """`.` sorts below `Z`, so the string compare inverted this pair."""
+    revised, decided = "2026-08-30T10:00:00Z", "2026-08-30T10:00:00.100000Z"
+    assert decided < revised, "the string ordering that made this worth fixing"
+    assert workbench._predates(revised, decided) is False
+
+
+@pytest.mark.parametrize("bad", ["2026-08-30T10:00:00.1234567Z", "2026-13-01T00:00:00Z",
+                                 "2026-08-30 10:00:00Z", "2026-08-30T10:00:00"])
+def test_an_instant_it_cannot_read_answers_nothing(bad):
+    assert workbench._instant(bad) is None
+
+
+@pytest.mark.parametrize("screening", ["BLOCK", "SCREENING_FAILED", "NOT_SCREENED", "", None])
+def test_a_verdict_the_driver_will_not_act_on_is_not_a_finished_review(tmp_path, screening):
+    """`refuse_unscreened` stops the drafting path on exactly these.
+
+    A rationale that quotes the hostile text it is a verdict about is the
+    ordinary way a screening blocks, so this is not an exotic state.
+    """
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(
+        decided={JOB: _verdict_row(ma_verdict=screening)})).cases()
+    assert listed["cases"][0]["decided"] == "blocked"
+
+
+def test_an_escalated_case_does_not_leave_the_queue(tmp_path):
+    """The analyst said it was not their call, so the decision is still owed."""
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(
+        decided={JOB: _verdict_row(disposition="escalate")})).cases()
+    assert listed["cases"][0]["decided"] == "escalated"
+
+
+@pytest.mark.parametrize("disposition", ["benign", "insufficient evidence",
+                                         "confirmed abuse"])
+def test_the_other_dispositions_close_the_case(tmp_path, disposition):
+    _open_case(tmp_path)
+    listed = _queue_bench(tmp_path, _Stub(
+        decided={JOB: _verdict_row(disposition=disposition)})).cases()
+    assert listed["cases"][0]["decided"] == "yes"
+
+
+def test_the_queue_and_the_driver_read_one_screening_list():
+    """Two copies of this list drift, and the drift is silent on both sides."""
+    from caseharden import verdicts as v
+
+    assert workbench.UNUSABLE_SCREENING is v.UNUSABLE_SCREENING
+    driver = (REPO / "infra" / "110_run_loop.py").read_text()
+    assert "UNUSABLE_SCREENING = verdicts.UNUSABLE_SCREENING" in driver, \
+        "the driver defines its own copy again"
+
+
+def test_a_blocked_verdict_outranks_a_stale_one(tmp_path):
+    """Both are true; the one that stops the driver is the one to show."""
+    _open_case(tmp_path)
+    _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: _verdict_row(
+        ts="2020-01-01T00:00:00Z", ma_verdict="BLOCK")})).cases()
+    assert listed["cases"][0]["decided"] == "blocked"

@@ -62,7 +62,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from . import bq, cases, creds
+from . import bq, cases, creds, verdicts
+# The same list infra/110_run_loop.py refuses on, imported rather than
+# restated: a queue whose idea of unusable screening drifts from the
+# driver's shows cases as done that the driver will not proceed with.
+from .verdicts import UNUSABLE_SCREENING
 from .chain import ChainStore
 
 REPO = Path(__file__).resolve().parent.parent
@@ -346,7 +350,7 @@ class LiveSource(Source):
     # which is a different answer from a verdict that cited nothing, and the page
     # draws the two differently.
     DECISION_COLUMNS = (
-        "decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', ts) AS ts,"
+        "decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', ts) AS ts,"
         " kind, analyst, subject, disposition, rationale, ma_verdict, ma_band,"
         " ma_prompt_injection_score, ma_jailbreak_score, approved,"
         " cited_policy_id, cited_version, citation_source,"
@@ -388,14 +392,20 @@ class LiveSource(Source):
         """
         rows = bq.query(
             f"SELECT subject,"
-            f" FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(ts)) AS ts"
-            f" FROM `{bq.qualified_table(self.project, 'review', 'decisions')}`"
-            f" WHERE kind = @kind GROUP BY subject",
+            f" FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', latest.ts) AS ts,"
+            f" latest.disposition AS disposition,"
+            f" latest.ma_verdict AS ma_verdict"
+            f" FROM (SELECT subject, ARRAY_AGG(t ORDER BY t.ts DESC LIMIT 1)[OFFSET(0)]"
+            f" AS latest FROM `{bq.qualified_table(self.project, 'review', 'decisions')}`"
+            f" AS t WHERE kind = @kind GROUP BY subject)",
             self.project, self.tokens.get(NOTARY), params={"kind": kind})
         # The same format `DECISION_COLUMNS` produces, because `_predates`
         # compares these as strings and only a shared fixed-width UTC shape makes
         # that safe.
-        return {r["subject"]: r["ts"] for r in rows}
+        # The latest row per subject rather than only its timestamp: whether a
+        # verdict closes a case depends on what it says and on whether its
+        # screening cleared, and both are on the row.
+        return {r["subject"]: r for r in rows}
 
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         """A row about this job filed under a subject the driver will never find.
@@ -484,6 +494,32 @@ def _stamp(value) -> Optional[str]:
     return value
 
 
+INSTANT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$")
+
+
+def _instant(value) -> Optional[datetime.datetime]:
+    """One UTC stamp as a moment, at whatever precision it was written with.
+
+    Parsed rather than compared as text, and the two are not the same answer
+    once precision is mixed. `2026-08-30T10:00:00.100000Z` sorts BEFORE
+    `2026-08-30T10:00:00Z` as a string, because `.` is below `Z`, so the older
+    of the two would read as the newer for exactly the records where the
+    difference matters.
+
+    Both shapes are accepted because both exist: rows written before the
+    timestamps carried microseconds still have to be readable, and a comparison
+    that refused them would answer "cannot tell" for the entire history.
+    """
+    if not (isinstance(value, str) and INSTANT_RE.match(value)):
+        return None
+    for shape in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.datetime.strptime(value, shape)
+        except ValueError:
+            continue
+    return None
+
+
 def _predates(revised_at, decision_ts) -> Optional[bool]:
     """True when the verdict on show was recorded before the evidence changed.
 
@@ -492,17 +528,21 @@ def _predates(revised_at, decision_ts) -> Optional[bool]:
     0. Nothing in either record says so, and a month later the pair reads as one
     consistent decision about the evidence above it.
 
-    Compared as strings, which is safe only because both sides are the same
-    fixed-width UTC format: `_now()` writes it and `DECISION_COLUMNS` formats
-    `ts` into it in the query. The shape is checked rather than assumed, and
-    anything else answers None. A wrong `false` here is the reading that hides
-    the mismatch, so not knowing has to be sayable.
+    Both sides are parsed to a moment. They were compared as strings while both
+    were second-granularity, and a verdict at 10:00:00.100 with a revision at
+    10:00:00.900 then formatted identically and answered "not stale" about
+    evidence that had changed after the review. The timestamps now carry
+    microseconds at both sources, and `_instant` still reads the second-only
+    shape so the records written before that stay comparable.
+
+    Anything it cannot read answers None. A wrong `false` here is the reading
+    that hides the mismatch, so not knowing has to be sayable.
     """
-    if not (isinstance(revised_at, str) and STAMP_RE.match(revised_at)):
+    revised = _instant(revised_at)
+    decided = _instant(decision_ts)
+    if revised is None or decided is None:
         return None
-    if not (isinstance(decision_ts, str) and STAMP_RE.match(decision_ts)):
-        return None
-    return decision_ts < revised_at
+    return decided < revised
 
 
 DEFAULT_LINE = "conduct-policy"
@@ -725,7 +765,7 @@ class Workbench:
         one bit, derived at read time from a single query, and nothing is
         written back.
 
-        Four values, not two. A warehouse this console could not reach makes
+        Six values, not two. A warehouse this console could not reach makes
         every case `unknown`, and a queue that showed those as waiting would
         send an analyst to re-review a case that was closed yesterday.
 
@@ -734,6 +774,12 @@ class Workbench:
         about evidence nobody has read. Reporting that as `yes` is how an
         analyst skips an unreviewed revision, and the detail route knowing
         better does not help someone who never opens it.
+
+        `blocked` and `escalated` are the other two, and both are cases with a
+        verdict on record that nothing has finished with. A blocked rationale is
+        a review the driver refuses to act on; an escalated one is the analyst
+        saying it was not their call. Each was reported as decided, which is how
+        a case leaves the only queue anyone watches with the work still owed.
         """
         listed = cases.list_cases(self.cases_dir)
         decided: Optional[Dict[str, str]] = None
@@ -759,10 +805,23 @@ class Workbench:
         """
         if decided is None:
             return "unknown"
-        ts = decided.get(row.get("job_id"))
-        if ts is None:
+        latest = decided.get(row.get("job_id"))
+        if latest is None:
             return "no"
-        return "stale" if _predates(row.get("revised_at"), ts) else "yes"
+        if str(latest.get("ma_verdict") or "").upper() in UNUSABLE_SCREENING:
+            # A verdict the driver will not act on. `refuse_unscreened` in
+            # infra/110_run_loop.py stops the drafting path on exactly these, so
+            # a queue calling the case done sends the analyst past a review that
+            # cannot proceed.
+            return "blocked"
+        if verdicts.member(latest.get("disposition")) == "escalate":
+            # Recorded, and deliberately not resolved: the analyst said this was
+            # not their call. Reporting it as decided is how a case leaves the
+            # only queue anyone watches with the decision still owed.
+            return "escalated"
+        if _predates(row.get("revised_at"), latest.get("ts")):
+            return "stale"
+        return "yes"
 
     def case(self, case_id: str) -> Optional[dict]:
         """One case, with its evidence and the verdict recorded against its job.

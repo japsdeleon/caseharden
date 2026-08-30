@@ -84,9 +84,22 @@ CASE_ID_RE = re.compile(r"^[0-9a-f]{16}\Z")
 # missed one is evidence swapped under a case with nothing saying so.
 RUN_ENVELOPE = frozenset({"context_id", "report"})
 
+# Every name that has ever been in RUN_ENVELOPE, including the two that were
+# wrongly there and moved back. A case records the key list its hash covered, so
+# that list can be shortened by an editor as easily as the evidence can: drop
+# `rows` from it, edit the rows, recompute the digest over what is left, and
+# both the wrapper and the hash agree. This is the set a recorded list is
+# allowed to omit, and nothing else. Any other key present in the stored finding
+# has to be under the hash that claims to describe it.
+ENVELOPE_EVER = frozenset({"context_id", "report", "window_start", "window_end"})
+
 
 def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Microseconds. `revised_at` is compared against a verdict's timestamp to
+    # decide whether a case was reviewed before its evidence moved, and at
+    # second granularity a revision 800ms after the verdict compared equal.
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def case_id(job_id: str) -> str:
@@ -351,6 +364,12 @@ def _evidence_intact(case: dict) -> bool:
         return False
     if keys is not None and not (isinstance(keys, list)
                                  and all(isinstance(k, str) for k in keys)):
+        return False
+    covered = set(keys) if keys is not None else set(hashed_keys(finding))
+    if not set(finding) - ENVELOPE_EVER <= covered:
+        # A shortened key list is the way past a digest that is recomputed from
+        # the list itself. The hash still checks out; it just stopped covering
+        # the field that was edited.
         return False
     return content_hash(finding, keys) == stored
 

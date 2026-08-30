@@ -28,7 +28,13 @@ STAGE="$(mktemp -d)/analyst_copilot"
 mkdir -p "$STAGE/caseharden" "$STAGE/agents/common"
 cp "$ROOT/agents/copilot/agent.py" "$STAGE/agent.py"
 : > "$STAGE/__init__.py"
-for module in __init__ bq creds; do
+# Every caseharden module agent.py imports, transitively. `verdicts` was missed
+# when the disposition taxonomy arrived: ADK imports agent.py at start-up, the
+# module was not in the staged tree, and the container exited with
+# ModuleNotFoundError before it listened, leaving the old service accepting any
+# disposition. tests/test_deploy_staging.py derives this list from the source
+# and fails when it drifts again.
+for module in __init__ bq creds verdicts; do
   cp "$ROOT/caseharden/${module}.py" "$STAGE/caseharden/${module}.py"
 done
 cp "$ROOT/agents/__init__.py" "$STAGE/agents/__init__.py"

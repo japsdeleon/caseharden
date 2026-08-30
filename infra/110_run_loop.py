@@ -299,11 +299,14 @@ def copilot(text: str, session: str, user: str = "analyst") -> str:
 # are the two places a screened text is used rather than merely stored: the
 # analyst's rationale goes into the Proposer's prompt, and the Proposer's
 # rationale goes to the analyst and into the chain.
-UNUSABLE_SCREENING = ("BLOCK", "SCREENING_FAILED", "NOT_SCREENED", None, "")
+# Defined in caseharden/verdicts.py, beside the taxonomy, because the console
+# reads it too and a queue whose idea of unusable screening differs from the
+# driver's shows cases as reviewed that the driver will not act on.
+UNUSABLE_SCREENING = verdicts.UNUSABLE_SCREENING
 
 
 def refuse_unscreened(where: str, verdict: Optional[str], detail: str = "") -> None:
-    if str(verdict or "").upper() in ("BLOCK", "SCREENING_FAILED", "NOT_SCREENED", ""):
+    if str(verdict or "").upper() in UNUSABLE_SCREENING:
         raise SystemExit(
             f"REFUSED. Model Armor returned {verdict!r} on {where}. That text is "
             f"not passed on and nothing was written to the chain. {detail}".strip())
@@ -622,13 +625,6 @@ def main(argv=None) -> int:
     print(f"\n  {verdict_row['disposition']} by {verdict_row['analyst']} "
           f"({verdict_row['decision_id']}), Model Armor "
           f"{verdict_row['ma_verdict']} / {verdict_row['ma_band']}")
-    # The verdict's text is about to become part of a prompt to the Proposer. A
-    # screening result the next step does not branch on is decoration, and an
-    # analyst's keyboard is an untrusted input like any other.
-    refuse_unscreened("the analyst's verdict", verdict_row["ma_verdict"],
-                      f"Decision {verdict_row['decision_id']} stays in "
-                      f"review.decisions with its screening result.")
-
     # What the verdict means, and whether anything is drafted from it. Until
     # this branch existed the answer was always yes: the two lines above checked
     # that Model Armor had screened the row and the next one called draft_loop,
@@ -663,6 +659,18 @@ def main(argv=None) -> int:
               f"version has to be justified by a finding of abuse, and "
               f"{called!r} is not one.")
         return 0
+
+    # Screening is checked here and not before the branch above, because this is
+    # where the reason for it starts to apply: the analyst's text becomes part of
+    # a prompt to the Proposer on this path and on no other. Checked first, a
+    # blocked rationale on a `benign` verdict exited non-zero over a case the
+    # analyst had closed, and a rationale quoting the hostile text it is a
+    # verdict about is the ordinary way that happens. The row keeps its
+    # screening result either way; what changes is that a closed review reads as
+    # closed.
+    refuse_unscreened("the analyst's verdict", verdict_row["ma_verdict"],
+                      f"Decision {verdict_row['decision_id']} stays in "
+                      f"review.decisions with its screening result.")
 
     drafted = draft_loop(args, active, finding, verdict_row)
 
@@ -701,6 +709,16 @@ def main(argv=None) -> int:
             "rationale": verdict_row["rationale"],
             "decision_id": verdict_row["decision_id"],
             "recorded_at": verdict_row["ts"],
+            # The policy the analyst was applying. Written to review.decisions
+            # and, until this line, nowhere else: analyst-sa holds WRITER on
+            # that dataset, which carries DML, so the one field saying which
+            # policy a verdict was about could be rewritten after the Notary had
+            # sealed the link that relied on it. THREATS.md section 5 protects
+            # the rationale from exactly that by matching the bundle against the
+            # row; the citation now travels the same way.
+            "cited_policy_id": verdict_row.get("cited_policy_id"),
+            "cited_version": verdict_row.get("cited_version"),
+            "citation_source": verdict_row.get("citation_source"),
             "model_armor": {
                 "direction": "inbound, the analyst's own text",
                 "verdict": verdict_row["ma_verdict"],

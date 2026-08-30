@@ -403,7 +403,10 @@ def test_a_hash_recorded_under_an_older_key_list_still_checks(tmp_path):
     """
     cid = cases.case_id(JOB)
     body = finding()
-    keys = sorted(k for k in body if k != "sessions_total")
+    # The list a case written before the window bounds moved back into the hash
+    # actually carries. Omitting an arbitrary field is a different thing and is
+    # refused: see the shortened-list test below.
+    keys = sorted(k for k in body if k not in ("window_start", "window_end"))
     _write(tmp_path, cid, {
         "case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
         "content_hash": cases.content_hash(body, keys), "hashed_keys": keys,
@@ -415,6 +418,26 @@ def test_a_hash_recorded_under_an_older_key_list_still_checks(tmp_path):
         "case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
         "content_hash": cases.content_hash(body, keys), "hashed_keys": keys[:2],
         "revisions": 0, "finding": body})
+    assert cases.read_case(tmp_path, cid) is None
+
+
+def test_a_shortened_key_list_cannot_launder_edited_evidence(tmp_path):
+    """The digest is recomputed from the list, so the list is part of the attack.
+
+    Drop `rows` from `hashed_keys`, edit the rows, recompute the digest over
+    what is left: the wrapper matches, the inner and outer job ids match, and
+    the hash checks out against its own reduced terms. Only the requirement that
+    the list cover the finding refuses it.
+    """
+    cid = cases.case_id(JOB)
+    forged = finding(rows=[{"session_id": "s_forged", "turns": "99"}])
+    keys = ["family", "job_id"]
+    _write(tmp_path, cid, {
+        "case_id": cid, "job_id": JOB, "opened_at": "2026-08-30T10:00:00Z",
+        "content_hash": cases.content_hash(forged, keys), "hashed_keys": keys,
+        "revisions": 0, "finding": forged})
+    assert cases.content_hash(forged, keys) == cases.content_hash(finding(), keys), \
+        "the forged list has to hash identically, or this proves nothing"
     assert cases.read_case(tmp_path, cid) is None
 
 

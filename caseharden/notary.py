@@ -39,7 +39,7 @@ import urllib.request
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-from . import bq, chain
+from . import bq, chain, verdicts
 from .chain import ChainStore, Evidence, Link
 from .dsl import Policy, canonical_json, load, parse
 from .examiner import Score, gate
@@ -1272,7 +1272,8 @@ def corroborate(args, token: str, finding: dict, verdict: dict, bundle: dict) ->
                 f"wrote can be found for it. Nothing written.")
         rows = bq.query(
             f"SELECT kind, analyst, subject, disposition, rationale, ma_verdict,"
-            f" approved FROM `{bq.qualified_table(args.project, 'review', 'decisions')}`"
+            f" approved, cited_policy_id, cited_version, citation_source"
+            f" FROM `{bq.qualified_table(args.project, 'review', 'decisions')}`"
             f" WHERE decision_id = @id",
             args.project, token, params={"id": decision_id})
         if not rows:
@@ -1289,6 +1290,32 @@ def corroborate(args, token: str, finding: dict, verdict: dict, bundle: dict) ->
             raise SystemExit(
                 f"the bundle's verdict text differs from the row the Copilot "
                 f"wrote for {decision_id}. Nothing written.")
+        if kind == "VERDICT":
+            # The disposition is the value that decides whether a policy version
+            # is justified at all, and it was selected here and never compared.
+            # A bundle claiming `confirmed abuse` over a row that says `benign`
+            # sealed a chain link asserting a disposition the human never gave,
+            # and promoted on it.
+            if row["disposition"] != payload.get("disposition"):
+                raise SystemExit(
+                    f"the bundle's verdict says {payload.get('disposition')!r} and "
+                    f"the row the Copilot wrote for {decision_id} says "
+                    f"{row['disposition']!r}. Nothing written.")
+            if row["disposition"] != verdicts.DRAFTS:
+                raise SystemExit(
+                    f"decision {decision_id} records {row['disposition']!r}, and a "
+                    f"policy version is justified only by {verdicts.DRAFTS!r}. The "
+                    f"other dispositions are answers, not failures to answer, and "
+                    f"none of them asks for a rule. Nothing written.")
+            # Same reasoning as the rationale, one field along: analyst-sa can
+            # rewrite review.decisions after the fact, so anything the chain
+            # asserts about the review has to be matched against the row here.
+            for column in ("cited_policy_id", "cited_version", "citation_source"):
+                if row.get(column) != payload.get(column):
+                    raise SystemExit(
+                        f"the bundle's {column} for {decision_id} is "
+                        f"{payload.get(column)!r} and the stored row says "
+                        f"{row.get(column)!r}. Nothing written.")
         if kind == "APPROVAL" and str(row.get("approved")).lower() not in ("true", "1"):
             raise SystemExit(
                 f"decision {decision_id} does not record an approval of "

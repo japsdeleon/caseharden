@@ -64,6 +64,17 @@ MEANING = {
     "escalate": "this is not the reviewing analyst's call to make",
 }
 
+# The screening results that mean the analyst's text cannot be used. Kept beside
+# the taxonomy because both are things a reader of a verdict row has to know to
+# say what the row means: `infra/110_run_loop.py` refuses to draft on these, and
+# the console's queue would otherwise show a case as reviewed that the driver
+# will not proceed with. One definition, because two copies of this list drift
+# and the drift is silent on both sides.
+#
+# The empty string covers a missing result: every caller folds None through
+# `str(v or "")` before looking here.
+UNUSABLE_SCREENING = ("BLOCK", "SCREENING_FAILED", "NOT_SCREENED", "")
+
 _SPACES = re.compile(r"\s+")
 
 

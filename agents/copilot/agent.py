@@ -124,7 +124,13 @@ def _write(row: dict) -> None:
 
 
 def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    # Microseconds, not seconds. Two verdicts on one subject in the same
+    # second tie, and the driver reads `ORDER BY ts DESC LIMIT 1`, whose
+    # order among ties BigQuery does not define: which disposition the loop
+    # branches on would be arbitrary. The console has the same problem
+    # comparing a verdict against the moment a case was revised.
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="microseconds")
 
 
 def _text(name: str, value) -> str:
