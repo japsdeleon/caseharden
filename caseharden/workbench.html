@@ -352,7 +352,9 @@ function stateFailure(state) {
      first for the second is the worst thing this console can do. */
   const errors = (state && state.errors) || {};
   const keys = Object.keys(errors);
-  return keys.length ? keys.map(k => k + ": " + S(errors[k])).join("; ") : "";
+  /* String(), not S(): this runs before boot(), and S lives inside boot's scope.
+     A ReferenceError here replaced the real error message in the fatal box. */
+  return keys.length ? keys.map(k => k + ": " + String(errors[k])).join("; ") : "";
 }
 
 (async function load(){
