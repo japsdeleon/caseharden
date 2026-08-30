@@ -175,8 +175,54 @@ def incident(args) -> dict:
 JOB_RE = re.compile(r"(?:(europe-west3|[a-z]+-[a-z]+\d):)?(job_[A-Za-z0-9_\-]{8,})")
 
 
-def investigate(args, incident_row: dict) -> dict:
-    head("2. The fan-out, and the finding it produced")
+def build_finding(job: dict, family: str, window_start: str, window_end: str,
+                  incident_session: str, report: str, context: str) -> dict:
+    """One detector job, as the finding a case is opened for.
+
+    Split out of `investigate` when the loop stopped discarding the jobs it did
+    not pick. Every field here was already computed for the chosen job; the only
+    change is that it is computed per job rather than once.
+    """
+    rows = job["rows"]
+    sessions = sorted({str(r.get("session_id")) for r in rows if r.get("session_id")})
+    traces = sorted({t for r in rows for t in (r.get("trace_ids") or []) if t}
+                    | {r["trace_id"] for r in rows if r.get("trace_id")})
+    return {
+        "family": family,
+        "window_start": window_start,
+        "window_end": window_end,
+        "detector": f"{family}@day5",
+        "job_id": job["job_id"],
+        "table": bq.qualified_table(PROJECT, LIVE_DATASET),
+        "sessions": sessions[:200],
+        "sessions_total": len(sessions),
+        "trace_ids": traces[:200],
+        "rows": rows[:20],
+        "cites_incident_session": any(
+            str(r.get("session_id")) == incident_session for r in rows),
+        "report": report[:4000],
+        "context_id": context,
+    }
+
+
+def investigate(args, incident_row: dict):
+    """Every detector job that found something, and the one this run asks about.
+
+    Returns `(live, findings)`. `live` is the finding the run puts to a human;
+    `findings` is one per detector job that returned rows, `live` among them.
+
+    The loop used to build a finding for the chosen job and drop the rest on the
+    floor. Up to three other detectors could each have found real conduct in the
+    same window, and nothing anywhere recorded that they had: no case, no row, no
+    trace beyond a printed line. The fleet's output was as narrow as the one
+    question the run happened to ask.
+
+    Each of those is now a case. It does not widen what this run asks about,
+    which is still one finding and one verdict, and it does not draft anything
+    from them. It means the queue holds what the fleet found rather than what one
+    run selected out of it, and a human decides which of them is worth a policy.
+    """
+    head("2. The fan-out, and the findings it produced")
     context = "loop-investigation-" + uuid.uuid4().hex[:8]
     # The window the detectors actually scanned, closed the moment they answer.
     # Not "up to whenever the chain gets written": live conduct keeps arriving,
@@ -222,33 +268,29 @@ def investigate(args, incident_row: dict) -> dict:
                    if any(str(r.get("session_id")) == incident_row["session_id"]
                           for r in f["rows"])),
                   max(with_rows, key=lambda f: len(f["rows"])))
-    cites_incident = any(str(r.get("session_id")) == incident_row["session_id"]
-                         for r in chosen["rows"])
-    family = family_of(chosen["job_id"], token)
-    print(f"\n  taking {chosen['job_id'].split(':')[-1][:28]} as the finding: "
-          f"{len(chosen['rows'])} row(s), family {family}, "
-          f"{'cites this incident' if cites_incident else 'does not cite this incident'}")
 
-    sessions = sorted({str(r.get("session_id")) for r in chosen["rows"]
-                       if r.get("session_id")})
-    traces = sorted({t for r in chosen["rows"] for t in (r.get("trace_ids") or [])
-                     if t} | {r["trace_id"] for r in chosen["rows"]
-                              if r.get("trace_id")})
-    return {
-        "family": family,
-        "window_start": window_start,
-        "window_end": now(),
-        "detector": f"{family}@day5",
-        "job_id": chosen["job_id"],
-        "table": bq.qualified_table(PROJECT, LIVE_DATASET),
-        "sessions": sessions[:200],
-        "sessions_total": len(sessions),
-        "trace_ids": traces[:200],
-        "rows": chosen["rows"][:20],
-        "cites_incident_session": cites_incident,
-        "report": report[:4000],
-        "context_id": context,
-    }
+    # One window for all of them. The detectors scanned the same period, and a
+    # per-finding end stamp would put a different window on cases that came out
+    # of one fan-out.
+    window_end = now()
+    built = []
+    for job in with_rows:
+        family = family_of(job["job_id"], token)
+        found = build_finding(job, family, window_start, window_end,
+                              incident_row["session_id"], report, context)
+        built.append(found)
+        mark = "  <- the finding this run asks about" if job is chosen else ""
+        print(f"  {job['job_id'].split(':')[-1][:28]:30} {len(job['rows']):3} row(s)  "
+              f"{family}{mark}")
+
+    live = built[with_rows.index(chosen)]
+    print(f"\n  taking {live['job_id'].split(':')[-1][:28]} as the finding: "
+          f"{len(live['rows'])} row(s), family {live['family']}, "
+          f"{'cites this incident' if live['cites_incident_session'] else 'does not cite this incident'}")
+    if len(built) > 1:
+        print(f"  the other {len(built) - 1} are opened as cases and left for a "
+              f"human; nothing is drafted from them")
+    return live, built
 
 
 def family_of(job_id: str, token: str) -> str:
@@ -538,8 +580,8 @@ def draft_loop(args, active: Policy, finding: dict, verdict: dict) -> dict:
 LIVE_FINDING = "finding-live.json"
 
 
-def publish_finding(out: Path, finding: dict) -> None:
-    """Put the finding where the workbench can read it, before the wait starts.
+def publish_finding(out: Path, live: dict, findings: list) -> None:
+    """Put the findings where the workbench can read them, before the wait starts.
 
     Between here and step 3 this program does nothing but poll `review.decisions`
     for a row a human has not typed yet. Nothing has reached `chain.links` at
@@ -547,11 +589,18 @@ def publish_finding(out: Path, finding: dict) -> None:
     for work to show would have no source for the only part of the run a person
     is in. This file is that source.
 
-    Two writes, and they are not the same kind of thing. `finding-live.json` is
-    what this run is asking a person about, and the next run replaces it. The
-    case is the same finding under a name that outlives the run, so a console
-    can list what is open rather than only what is current. See
-    `caseharden/cases.py` for why the case store holds no decision.
+    Two kinds of write, and they are not the same thing. `finding-live.json` is
+    what this run is asking a person about, and the next run replaces it. A case
+    is a finding under a name that outlives the run, so a console can list what
+    is open rather than only what is current. See `caseharden/cases.py` for why
+    the case store holds no decision.
+
+    One live finding, and a case for every detector job that found something.
+    The run still asks about one and drafts from one; the others are conduct the
+    fleet found in the same window and nobody has looked at, which used to be
+    discarded in `investigate` without leaving a record anywhere. Opening them
+    does not ask a human for four verdicts. It stops the queue being a list of
+    what one run selected.
 
     A case that will not open refuses the run, like every other stage here. An
     earlier version printed the failure and carried on, reasoning that the store
@@ -564,10 +613,12 @@ def publish_finding(out: Path, finding: dict) -> None:
     the wait and nothing has reached the chain.
     """
     target = out / LIVE_FINDING
-    cases.atomic_write_json(target, finding)
+    cases.atomic_write_json(target, live)
     print(f"\n  wrote {target}")
+    opened = []
     try:
-        case = cases.open_case(out / cases.CASES_DIRNAME, finding)
+        for found in findings:
+            opened.append((found, cases.open_case(out / cases.CASES_DIRNAME, found)))
     # RecursionError alongside the other two: `json.dumps` raises it rather than
     # a ValueError on deeply nested input, which is the same shape the console's
     # readers already guard against.
@@ -578,9 +629,13 @@ def publish_finding(out: Path, finding: dict) -> None:
             f"the detector's job is re-runnable, so clear "
             f"{out / cases.CASES_DIRNAME} and run again; nothing has reached "
             f"the chain.") from None
-    print(f"  case {case['case_id']} opened {case['opened_at']}"
-          + (f", revision {case['revisions']}" if case["revisions"] else ""))
-    print(f"  the workbench reads it from there: "
+    for found, case in opened:
+        here = " <- under review" if found["job_id"] == live["job_id"] else ""
+        print(f"  case {case['case_id']} {found['family']:<22} "
+              f"opened {case['opened_at']}"
+              + (f", revision {case['revisions']}" if case["revisions"] else "")
+              + here)
+    print(f"  the workbench reads them from there: "
           f"python3 -m caseharden.workbench")
 
 
@@ -620,8 +675,8 @@ def main(argv=None) -> int:
     started = now()
     incident_row = ({"session_id": "(skipped)", "window_start": started}
                     if args.skip_incident else incident(args))
-    finding = investigate(args, incident_row)
-    publish_finding(out, finding)
+    finding, findings = investigate(args, incident_row)
+    publish_finding(out, finding, findings)
 
     head("3. The analyst's verdict, screened and recorded by the Copilot")
     subject = finding["job_id"]

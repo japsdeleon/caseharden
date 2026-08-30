@@ -261,7 +261,11 @@ def drive(monkeypatch, tmp_path, disposition: str):
 
     monkeypatch.setattr(caseharden.chain, "ChainStore", Store)
     monkeypatch.setattr(loop.bq, "access_token", lambda *a, **k: "t")
-    monkeypatch.setattr(loop, "investigate", lambda *a, **k: dict(FINDING))
+    # `(live, findings)` since the loop stopped discarding the jobs it did not
+    # pick. One finding here: this file is about what the disposition does to the
+    # run, not about how many cases the fan-out opens.
+    monkeypatch.setattr(loop, "investigate",
+                        lambda *a, **k: (dict(FINDING), [dict(FINDING)]))
     monkeypatch.setattr(loop, "wait_for", lambda *a, **k: {
         "decision_id": "vd_deadbeef", "analyst": "analyst@caseharden.example",
         "disposition": disposition, "rationale": "because", "ts": "now",
