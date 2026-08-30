@@ -261,6 +261,35 @@ sealed attacks rather than a benign regression. And the 2:52 break beat still wo
 `docs/REHEARSAL.md` scripts it, because `v6` was never registered and is still the free version
 name that beat attempts and is refused.
 
+**What the attestation hardening changes for filming, 2026-08-30.** `verify` now re-decides
+the promotion gate from the EXAM link's own contents, `seed` and `reattest` refuse a candidate
+whose compiled SQL and Python evaluator disagree, and `seed` refuses the hand-written FINDING
+and VERDICT path unless `--bootstrap` is passed. Four consequences for the shot list.
+
+*Redeploy the Policy Server before the camera rolls.* The attestation pane at 0:00 and 2:52 is
+that service, and the changed `verify` lives inside it. Filming against the old container shows
+a state the submitted code did not produce. The state itself does not move: a late-arriving
+event still breaks `EVENT-WINDOW` and the break beat is unaffected.
+
+*Run `verify --version v5` before that redeploy.* An EXAM now has to carry the parent's counts
+or it is `CHAIN-SHAPE`. Link 10 restates the exam and was written by `reattest`, which emits
+those keys, so this should pass. It costs one command to know rather than to assume, and a
+wrong answer here would show the active version quarantined on camera.
+
+*The 0:14 rewind shot is unchanged.* `print_attestation` did not move, and the new `[bootstrap]`
+marker only appears on chains seeded after this change, which the live chain is not. The ten
+rows with their superseded lines print exactly as the note above describes.
+
+*Time a rehearsal `reattest` before the 3:20 beat.* The equivalence guard adds roughly four
+BigQuery round trips on top of the re-score, so the beat is longer than it was on the last walk.
+Its printed output is unchanged, since the guard speaks only when the engines disagree. `verify`
+timing is unaffected: the gate re-decision reads dicts already in the link and runs no query, so
+the 3.66s p95 in the README still stands.
+
+One new line exists at promotion: `seed` prints `engine equivalence: AGREE`. The 2:34 beat is
+cut from captures, so it does not appear; a re-shoot of that terminal would gain it, and it
+reads as a fourth check passing.
+
 **From the official rules, read 2026-08-29.** The video must be publicly visible on YouTube
 or Vimeo — unlisted fails the rule. 4:00 maximum, only the first four minutes are evaluated.
 English, or English subtitles. It must show the backend running on Google Cloud on screen
