@@ -325,17 +325,25 @@ def test_the_row_still_carries_everything_it_carried_before(recorded):
     assert row["disposition"] == "confirmed abuse"
 
 
-def test_an_approval_is_not_given_a_citation(recorded):
-    """An approval's subject is the version, so a citation column would restate it.
+def test_an_approval_says_it_cites_nothing_rather_than_leaving_it_blank(recorded):
+    """An approval cites no policy and is shown no advisory, and now says so.
 
-    Left alone deliberately: `approve` is outside this change. The consequence is
-    that `citation_source` is NULL on APPROVAL rows, which is why the console
-    reads that column on VERDICT rows only.
+    It carried neither column, so the row stored NULL in both. A NULL source is
+    documented as a row written before these columns existed, so every approval
+    written after the migration dated itself to before it. The values are not a
+    citation and not an advisory; they are the record stating that there is
+    neither, which is a different fact from an absence.
     """
     agent.approve("v6", True, "the gate passed on all three legs and the parent attests")
     row = recorded["rows"][0]
     assert row["kind"] == "APPROVAL"
-    assert "citation_source" not in row
+    assert row["citation_source"] == "NONE"
+    assert row["advisory_source"] == "NONE"
+    # The columns that would restate the subject or claim a recommendation stay
+    # out: an approval's subject is the version already.
+    for absent in ("cited_policy_id", "cited_version", "advisory_recommendation",
+                   "advisory_rule", "advisory_confidence"):
+        assert absent not in row
 
 
 def test_nan_is_not_treated_as_absent():
@@ -412,3 +420,56 @@ def test_a_rationale_that_is_not_text_is_refused(recorded):
     out = agent.record_verdict(JOB, "confirmed abuse", 12345)
     assert out["recorded"] is False
     assert recorded["rows"] == []
+
+
+# --------------------------------------------------------------------------
+# Who asserted the advisory
+# --------------------------------------------------------------------------
+
+def test_an_advisory_is_attributed_to_the_surface_that_passed_it(recorded):
+    """Nothing in the fleet emits a recommendation, so nothing else is honest.
+
+    Without this the console said "the machine advised X, as it was displayed
+    beside this verdict" about a value the recording surface supplied, which
+    lets an analyst attribute their own call to a recommendation that never
+    existed.
+    """
+    agent.record_verdict(JOB, "confirmed abuse",
+                         "the sessions cited show a real cross-tenant pattern",
+                         advisory_recommendation="confirmed abuse",
+                         advisory_rule="tool-call-on-injected-turn",
+                         advisory_confidence=0.82)
+    row = recorded["rows"][0]
+    assert row["advisory_source"] == "SURFACE"
+    assert row["advisory_recommendation"] == "confirmed abuse"
+
+
+def test_no_advisory_is_recorded_as_none_not_as_nothing(recorded):
+    """NONE and NULL are different: NULL is documented as predating the column."""
+    agent.record_verdict(JOB, "benign",
+                         "the check fired on a scheduled export job")
+    assert recorded["rows"][0]["advisory_source"] == "NONE"
+
+
+def test_the_surface_cannot_label_itself_a_recommender():
+    """A surface that could choose its own provenance label has none.
+
+    `RECOMMENDER` is reserved for a component that emits the triple itself. The
+    tool takes no source argument, so there is no path by which a caller reaches
+    that value; this pins the absence of one.
+    """
+    import inspect
+
+    assert "source" not in inspect.signature(agent.record_verdict).parameters
+    for shown in ("confirmed abuse", "benign", ""):
+        *_, source = agent._advisory(shown, "", -1.0)
+        assert source in ("SURFACE", "NONE")
+        assert source != "RECOMMENDER"
+
+
+def test_a_rule_or_a_confidence_without_a_recommendation_is_still_refused():
+    """The source must not become a way to record an unattributed fragment."""
+    with pytest.raises(agent.Refused):
+        agent._advisory("", "tool-call-on-injected-turn", -1.0)
+    with pytest.raises(agent.Refused):
+        agent._advisory("", "", 0.5)

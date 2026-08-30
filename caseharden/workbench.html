@@ -943,19 +943,44 @@ function citedPolicy(host, row, cit){
 function advisoryShown(host, row){
   if (!S(row.advisory_recommendation) && !S(row.advisory_rule)
       && (row.advisory_confidence === null || row.advisory_confidence === undefined)) {
+    /* Same distinction the citation pane makes one card up: a row written before
+       these columns existed had nowhere to record an advisory, and saying none
+       was recorded is a claim about a row that could not have carried one. */
     host.appendChild(el("p", "note",
-      "No machine advisory was recorded with this verdict. Nothing in this fleet produces one "
-      + "yet: the paragraphs above are the report's own argument, with no recommendation, no "
-      + "rule and no confidence attached."));
+      S(row.advisory_source)
+        ? ("No machine advisory was recorded with this verdict. Nothing in this fleet produces one "
+           + "yet: the paragraphs above are the report's own argument, with no recommendation, no "
+           + "rule and no confidence attached.")
+        : ("This row predates the advisory columns, so whether an advisory was on screen when the "
+           + "verdict was recorded is not something the record can say either way.")));
     return;
   }
-  const bits = ["The machine advised ", el("b", null, S(row.advisory_recommendation))];
+  /* Who said so, before what was said. `advisory_source` is 'SURFACE' on every
+     row this fleet can write: nothing here emits a recommendation, so the three
+     columns hold what the recording surface passed on, and the surface is a
+     model relaying typed text. This pane said "The machine advised X, as it was
+     displayed beside this verdict", which the record cannot support and which an
+     analyst could use to attribute their own call to a recommendation that never
+     existed. 'RECOMMENDER' is the value a component that produces one would
+     carry, and only then does the stronger sentence become true. */
+  const source = S(row.advisory_source);
+  const attributed = source === "RECOMMENDER";
+  const bits = [attributed ? "The machine advised " : "The recording surface reported an advisory of ",
+                el("b", null, S(row.advisory_recommendation))];
   if (S(row.advisory_rule)) bits.push(" on rule ", mono(S(row.advisory_rule)));
   if (row.advisory_confidence !== null && row.advisory_confidence !== undefined) {
     bits.push(" at confidence ", el("b", null, S(row.advisory_confidence)));
   }
-  bits.push(", as it was displayed beside this verdict.");
+  bits.push(attributed ? ", as it was displayed beside this verdict."
+                       : ", as it says was displayed beside this verdict.");
   host.appendChild(say("p", null, bits));
+  if (!attributed) {
+    host.appendChild(el("p", "note",
+      "Recorded as " + (source || "an unlabelled source") + ". Nothing in this fleet produces a "
+      + "recommendation, so this was passed in by the surface that wrote the verdict rather than "
+      + "emitted by a recommender. It says what the analyst reported seeing; it is not "
+      + "independent evidence that anything was on screen."));
+  }
 }
 
 function notThisCase(){

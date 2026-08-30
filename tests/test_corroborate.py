@@ -128,11 +128,44 @@ def test_a_terminal_verdict_cannot_justify_a_version(stubbed, terminal):
     ("cited_policy_id", "payments-policy"),
     ("cited_version", "v4"),
     ("citation_source", "DEFAULTED"),
+    ("advisory_recommendation", "confirmed abuse"),
+    ("advisory_rule", "tool-call-on-injected-turn"),
+    ("advisory_confidence", 0.99),
+    ("advisory_source", "RECOMMENDER"),
 ])
-def test_a_citation_the_row_does_not_carry_is_refused(stubbed, column, forged):
+def test_a_claim_about_the_review_the_row_does_not_carry_is_refused(stubbed, column,
+                                                                   forged):
+    """Every column the chain asserts, not only the citation.
+
+    The advisory is the record of what the machine put in front of the human. An
+    influence record the chain never sealed can be rewritten afterwards by the
+    identity that wrote it, and `analyst-sa` holds WRITER on that dataset.
+    """
     with pytest.raises(SystemExit) as raised:
         _run(stubbed, verdict=_verdict(**{column: forged}))
     assert column in str(raised.value)
+
+
+def test_an_advisory_the_row_carries_and_the_bundle_drops_is_refused(stubbed):
+    """The other direction: a chain link quietly omitting the machine's influence."""
+    stubbed[VERDICT_ID] = _row(advisory_recommendation="confirmed abuse",
+                               advisory_source="SURFACE")
+    with pytest.raises(SystemExit) as raised:
+        _run(stubbed)
+    assert "advisory_recommendation" in str(raised.value)
+
+
+def test_a_matching_advisory_is_corroborated(stubbed):
+    """And the confidence survives BigQuery returning every value as text."""
+    stubbed[VERDICT_ID] = _row(advisory_recommendation="confirmed abuse",
+                               advisory_rule="tool-call-on-injected-turn",
+                               advisory_confidence="0.82",
+                               advisory_source="SURFACE")
+    assert _run(stubbed, verdict=_verdict(
+        advisory_recommendation="confirmed abuse",
+        advisory_rule="tool-call-on-injected-turn",
+        advisory_confidence=0.82,
+        advisory_source="SURFACE")) is None
 
 
 def test_an_uncited_verdict_still_corroborates_when_both_sides_agree(stubbed):
@@ -171,3 +204,59 @@ def test_a_bundle_understating_the_row_is_also_refused(stubbed):
     message = str(raised.value)
     assert "benign" in message and verdicts.DRAFTS in message
     assert "Nothing written" in message
+
+
+# --------------------------------------------------------------------------
+# The three files that have to agree about one column list
+# --------------------------------------------------------------------------
+
+DRIVER = (REPO / "infra" / "110_run_loop.py").read_text()
+
+
+def _driver_select() -> str:
+    """The SELECT list in `decisions()`, which is what reaches the bundle."""
+    start = DRIVER.index("def decisions(")
+    return DRIVER[start:DRIVER.index("params=", start)]
+
+
+def test_the_driver_selects_every_column_the_notary_corroborates():
+    """A column not selected reaches the bundle as None and refuses a promotion.
+
+    The citation columns were corroborated before the poll selected them, so a
+    verdict that cited a policy would have been refused at the seal for a
+    disagreement created by the SELECT list rather than by anything an analyst
+    did. Nothing produced a citation yet, so it would have surfaced on the first
+    real one.
+    """
+    select = _driver_select()
+    missing = [c for c in notary.CORROBORATED_VERDICT_COLUMNS if c not in select]
+    assert not missing, (
+        f"infra/110_run_loop.py's decisions() does not select {missing}, which "
+        f"caseharden/notary.py corroborates against the stored row")
+
+
+def test_the_bundle_carries_every_column_the_notary_corroborates():
+    block = DRIVER[DRIVER.index('"verdict": {'):]
+    block = block[:block.index("\n        },")]
+    missing = [c for c in notary.CORROBORATED_VERDICT_COLUMNS
+               if f'"{c}"' not in block]
+    assert not missing, (
+        f"the bundle's verdict block does not carry {missing}, so the Notary "
+        f"compares None against a stored value")
+
+
+def test_a_confidence_survives_bigquery_returning_it_as_text():
+    """`bq.query` stringifies every value, so 0.82 comes back as '0.82'."""
+    assert notary._same_field("0.82", 0.82)
+    assert notary._same_field(0.82, "0.82")
+    # The pair a text comparison gets wrong. `str(0.8)` is "0.8", so a stored
+    # "0.80" would read as a mismatch and refuse a promotion over a formatting
+    # difference. BigQuery's REST encoding is not required to hand back the
+    # spelling that was written.
+    assert notary._same_field("0.80", 0.8)
+    assert notary._same_field("8e-01", 0.8)
+    assert not notary._same_field("0.82", 0.81)
+    assert notary._same_field(None, None)
+    assert not notary._same_field(None, "0.82")
+    assert not notary._same_field("ANALYST", "DEFAULTED")
+    assert notary._same_field("ANALYST", "ANALYST")

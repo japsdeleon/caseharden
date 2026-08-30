@@ -1225,6 +1225,42 @@ def cmd_seed(args) -> int:
     return 0
 
 
+# The review columns a bundle must carry unchanged from the row the Copilot
+# wrote. Named here rather than written inline, because three files have to
+# agree about them: this corroboration, the driver's poll that selects them, and
+# the bundle's verdict block that carries them. A column selected in one and not
+# another reaches the bundle as None, mismatches a row that holds a value, and
+# refuses a promotion over a disagreement nothing outside this repository made.
+# tests/test_corroborate.py holds the three in step.
+CORROBORATED_VERDICT_COLUMNS = (
+    "cited_policy_id", "cited_version", "citation_source",
+    "advisory_recommendation", "advisory_rule", "advisory_confidence",
+    "advisory_source",
+)
+
+
+def _same_field(stored, claimed) -> bool:
+    """One review column, compared across the two encodings it arrives in.
+
+    `bq.query` returns every value as a string whatever the column type, so the
+    FLOAT64 confidence comes back as `'0.82'` while the bundle carries `0.82`.
+    Compared directly those differ and every promotion carrying an advisory
+    would be refused for a mismatch that is not one.
+
+    Numbers are compared as numbers when both sides are numbers, and as text
+    otherwise. Absent is absent either way: a missing key and a stored NULL are
+    the same statement about a column nothing wrote.
+    """
+    if stored is None and claimed is None:
+        return True
+    if stored is None or claimed is None:
+        return False
+    try:
+        return float(stored) == float(claimed)
+    except (TypeError, ValueError):
+        return str(stored) == str(claimed)
+
+
 def corroborate(args, token: str, finding: dict, verdict: dict, bundle: dict) -> None:
     """Check a bundle's claims against the systems that would have produced them.
 
@@ -1272,7 +1308,9 @@ def corroborate(args, token: str, finding: dict, verdict: dict, bundle: dict) ->
                 f"wrote can be found for it. Nothing written.")
         rows = bq.query(
             f"SELECT kind, analyst, subject, disposition, rationale, ma_verdict,"
-            f" approved, cited_policy_id, cited_version, citation_source"
+            f" approved, cited_policy_id, cited_version, citation_source,"
+            f" advisory_recommendation, advisory_rule, advisory_confidence,"
+            f" advisory_source"
             f" FROM `{bq.qualified_table(args.project, 'review', 'decisions')}`"
             f" WHERE decision_id = @id",
             args.project, token, params={"id": decision_id})
@@ -1310,8 +1348,12 @@ def corroborate(args, token: str, finding: dict, verdict: dict, bundle: dict) ->
             # Same reasoning as the rationale, one field along: analyst-sa can
             # rewrite review.decisions after the fact, so anything the chain
             # asserts about the review has to be matched against the row here.
-            for column in ("cited_policy_id", "cited_version", "citation_source"):
-                if row.get(column) != payload.get(column):
+            # The advisory travels with the citation and for the same reason.
+            # Its whole purpose is to make the machine's influence on the human
+            # auditable, and an influence record that can be rewritten after the
+            # chain relied on it audits nothing.
+            for column in CORROBORATED_VERDICT_COLUMNS:
+                if not _same_field(row.get(column), payload.get(column)):
                     raise SystemExit(
                         f"the bundle's {column} for {decision_id} is "
                         f"{payload.get(column)!r} and the stored row says "

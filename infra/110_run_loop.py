@@ -351,9 +351,21 @@ def record_through_copilot(text: str, kind: str, subject: str, session: str,
 def decisions(kind: str, subject: str, since: str) -> list:
     token = bq.access_token(NOTARY)
     return bq.query(
-        f"SELECT decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', ts) AS ts,"
+        # Every column the bundle carries, because the Notary matches the bundle
+        # against this row and a column this poll does not select reaches the
+        # bundle as None. That is a mismatch against a row that holds a value,
+        # so a promotion citing a policy would have been refused for a
+        # disagreement created here rather than by anything an analyst did.
+        #
+        # Microseconds, matching what the Copilot now writes: two verdicts on
+        # one subject in the same second tie under `ORDER BY ts DESC LIMIT 1`,
+        # and BigQuery does not define the order among ties.
+        f"SELECT decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', ts) AS ts,"
         f" kind, analyst, subject, disposition, rationale, ma_verdict, ma_band,"
-        f" ma_prompt_injection_score, ma_jailbreak_score, approved"
+        f" ma_prompt_injection_score, ma_jailbreak_score, approved,"
+        f" cited_policy_id, cited_version, citation_source,"
+        f" advisory_recommendation, advisory_rule, advisory_confidence,"
+        f" advisory_source"
         f" FROM `{bq.qualified_table(PROJECT, 'review', 'decisions')}`"
         f" WHERE kind = @kind AND subject = @subject AND ts >= TIMESTAMP(@since)"
         f" ORDER BY ts DESC LIMIT 1",
@@ -719,6 +731,14 @@ def main(argv=None) -> int:
             "cited_policy_id": verdict_row.get("cited_policy_id"),
             "cited_version": verdict_row.get("cited_version"),
             "citation_source": verdict_row.get("citation_source"),
+            # The advisory travels for the same reason: its purpose is to make
+            # the machine's influence on the human auditable, and an influence
+            # record the chain never sealed can be rewritten afterwards by the
+            # identity that wrote it.
+            "advisory_recommendation": verdict_row.get("advisory_recommendation"),
+            "advisory_rule": verdict_row.get("advisory_rule"),
+            "advisory_confidence": verdict_row.get("advisory_confidence"),
+            "advisory_source": verdict_row.get("advisory_source"),
             "model_armor": {
                 "direction": "inbound, the analyst's own text",
                 "verdict": verdict_row["ma_verdict"],

@@ -237,15 +237,30 @@ def _advisory(recommendation: str, rule: str, confidence: float):
     not a finding." There is no recommender anywhere in this repository that
     emits the triple these columns hold. They are shaped for the one that will.
 
+    Who asserted it travels with it. That is `advisory_source`, and it exists for
+    the same reason `citation_source` does. Everything above comes from the
+    caller, and the caller is a model relaying what someone typed, so a stored
+    advisory is a claim by the recording surface and not a recommendation
+    attributable to a recommender. Until that distinction was on the row the
+    console said "the machine advised X, as it was displayed beside this
+    verdict", which the record could not support: an analyst could attribute
+    their own call to a recommendation that never existed and no auditor could
+    contradict it. `SURFACE` is what this function can honestly write today.
+    `RECOMMENDER` is reserved for a component that emits the triple itself and
+    can be named as its author, and this function will not write it, because a
+    surface that could choose its own provenance label has none.
+
     What the record still cannot do, stated rather than papered over: three NULLs
     mean the surface passed no advisory, and that does not distinguish "none was
     displayed" from "one was displayed and this surface did not pass it on". Only
     the surface knows, and the surface is the least trusted component here. A
     boolean saying "an advisory was shown" would be a second claim by the same
     caller and would settle nothing an auditor could lean on, so there is not one.
+    `advisory_source` does not close that either: it says who spoke, not whether
+    they spoke truthfully.
 
     Returns:
-        (recommendation, rule, confidence-or-None), trimmed.
+        (recommendation, rule, confidence-or-None, source), trimmed.
     """
     recommendation = _text("advisory_recommendation", recommendation).strip()
     rule = _text("advisory_rule", rule).strip()
@@ -271,7 +286,12 @@ def _advisory(recommendation: str, rule: str, confidence: float):
             "record saying the machine was 0.8 confident of nothing in particular "
             "cannot be read later. Pass what the advisory recommended, exactly as "
             "the analyst saw it, or pass none of the three. Nothing stored.")
-    return recommendation, rule, (confidence if given else None)
+    # SURFACE whenever there is anything to attribute, and never a stronger
+    # label: this process cannot tell a real recommendation from a sentence the
+    # analyst dictated, and the column is worth having only because it does not
+    # pretend otherwise.
+    source = "SURFACE" if recommendation else "NONE"
+    return recommendation, rule, (confidence if given else None), source
 
 
 def _own_words_or_refuse(rationale: str, finding: str, disposition: str) -> str:
@@ -442,7 +462,7 @@ def record_verdict(finding: str, disposition: str, rationale: str,
         }
     try:
         cited_line, cited_version, citation_source = _split_citation(policy_cited)
-        recommendation, rule, confidence = _advisory(
+        recommendation, rule, confidence, advisory_source = _advisory(
             advisory_recommendation, advisory_rule, advisory_confidence)
         _own_words_or_refuse(rationale, finding, called)
     except Refused as refusal:
@@ -478,6 +498,7 @@ def record_verdict(finding: str, disposition: str, rationale: str,
         "advisory_recommendation": recommendation or None,
         "advisory_rule": rule or None,
         "advisory_confidence": confidence,
+        "advisory_source": advisory_source,
     })
     return {"recorded": True, "decision_id": decision_id, "kind": "VERDICT",
             "analyst": ANALYST, "screening": screened,
@@ -515,6 +536,13 @@ def approve(version: str, approved: bool, note: str) -> dict:
         "ma_prompt_injection_score": screened.get("ma_prompt_injection_score"),
         "ma_jailbreak_score": screened.get("ma_jailbreak_score"),
         "approved": bool(approved),
+        # Said rather than left NULL. A NULL source is documented as a row that
+        # predates these columns, so an approval written after the migration
+        # would otherwise date itself to before it. An approval cites no policy
+        # and is shown no advisory: it is a decision about a candidate, not
+        # about conduct, and 'NONE' is the true answer rather than an absence.
+        "citation_source": "NONE",
+        "advisory_source": "NONE",
     })
     return {"recorded": True, "decision_id": decision_id, "kind": "APPROVAL",
             "analyst": ANALYST, "approved": bool(approved), "screening": screened}

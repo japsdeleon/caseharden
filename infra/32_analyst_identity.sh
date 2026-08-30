@@ -73,6 +73,18 @@ fi
 # shaped for the recommender that will, because a recommendation recomputed at
 # read time proves nothing about what the human was looking at.
 #
+# `advisory_source` says who asserted the advisory, and it exists for the same
+# reason `citation_source` does. The three columns above are taken from whatever
+# called the tool, and nothing in the fleet emits that triple, so a stored
+# advisory is a claim by the recording surface and not a recommendation anyone
+# can attribute to a recommender. Without this column the console said "the
+# machine advised X, as it was displayed beside this verdict", which is a
+# sentence the record cannot support: an analyst could attribute their own call
+# to a recommendation that never existed and no auditor could contradict it.
+# 'SURFACE' is what a row written today carries, 'NONE' is no advisory at all,
+# and 'RECOMMENDER' is reserved for a component that produces one and can be
+# named as its author.
+#
 # They are safe to add. THREATS.md entry 10 is about `conduct_live.turns`, whose
 # rows the chain digests as `SHA256(TO_JSON_STRING(t))`, where one new column
 # changes every cited digest and quarantines every chain in the project.
@@ -88,7 +100,7 @@ fi
 # the citation, which is the right way round. Google documents a lag between a
 # schema change and the streaming path seeing it; that lag is not measured here.
 DECISION_COLUMNS_ADDED="cited_policy_id cited_version citation_source \
-advisory_recommendation advisory_rule advisory_confidence"
+advisory_recommendation advisory_rule advisory_confidence advisory_source"
 
 # Read the schema before the change, so the script can say what it did rather
 # than only what it ran. The ALTER itself is unconditional and idempotent, so a
@@ -120,7 +132,8 @@ bq --project_id="$PROJECT" --location="$BQ_LOCATION" query --use_legacy_sql=fals
      ADD COLUMN IF NOT EXISTS citation_source STRING,
      ADD COLUMN IF NOT EXISTS advisory_recommendation STRING,
      ADD COLUMN IF NOT EXISTS advisory_rule STRING,
-     ADD COLUMN IF NOT EXISTS advisory_confidence FLOAT64" >/dev/null
+     ADD COLUMN IF NOT EXISTS advisory_confidence FLOAT64,
+     ADD COLUMN IF NOT EXISTS advisory_source STRING" >/dev/null
 
 if [ -n "$ADDING" ]; then
   echo "altered review.decisions, added:$ADDING"

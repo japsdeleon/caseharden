@@ -354,7 +354,7 @@ class LiveSource(Source):
         " kind, analyst, subject, disposition, rationale, ma_verdict, ma_band,"
         " ma_prompt_injection_score, ma_jailbreak_score, approved,"
         " cited_policy_id, cited_version, citation_source,"
-        " advisory_recommendation, advisory_rule, advisory_confidence")
+        " advisory_recommendation, advisory_rule, advisory_confidence, advisory_source")
 
     def versions(self) -> list:
         return self._store().versions()
