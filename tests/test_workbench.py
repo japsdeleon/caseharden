@@ -47,6 +47,14 @@ from caseharden.chain import KINDS  # noqa: E402
 
 FIXTURE = REPO / "fixtures" / "v5"
 
+# Every re-attestation appends a link and reseals the certificate, so the
+# fixture grows each time `infra/120_export_fixture.py` runs. Asserting a
+# literal count or root here made a routine refresh look like a regression.
+# Read both from the fixture; the shape assertions below are what these tests
+# are actually for.
+FIXTURE_LINKS = len([l for l in (FIXTURE / "chain.jsonl").read_text().splitlines() if l.strip()])
+FIXTURE_ROOT = json.loads((FIXTURE / "certificate.json").read_text())["root"]
+
 
 # --------------------------------------------------------------------------
 # The identity rule
@@ -124,7 +132,7 @@ def test_fixture_mode_renders_the_committed_chain(monkeypatch):
     state = workbench.FixtureSource(FIXTURE).state(None)
     assert state["mode"] == "fixture"
     assert state["version"] == "v5"
-    assert len(state["links"]) == 7
+    assert len(state["links"]) == FIXTURE_LINKS
     assert [l["kind"] for l in state["links"]][0] == "EVIDENCE"
     assert all(l["kind"] in KINDS for l in state["links"])
     assert all(l["intact"] for l in state["links"])
@@ -133,7 +141,7 @@ def test_fixture_mode_renders_the_committed_chain(monkeypatch):
     assert attestation["offline"] is True
     assert attestation["attested"] is True, attestation["checks_failed"]
     assert attestation["checks_run"] >= 17
-    assert attestation["root"].startswith("e2a559358933")
+    assert attestation["root"] == FIXTURE_ROOT
     # A fixture has no live state and the console must not imply one.
     assert attestation["promotions"] == "n/a"
     assert "state" not in attestation or attestation["state"] == "OFFLINE-RECHECK"
@@ -593,7 +601,7 @@ def test_state_carries_the_chain(served):
     assert status == 200
     body = json.loads(raw)
     assert body["mode"] == "fixture"
-    assert len(body["links"]) == 7
+    assert len(body["links"]) == FIXTURE_LINKS
 
 
 def test_finding_carries_the_job_under_review(served):
@@ -969,11 +977,17 @@ def test_a_malformed_exam_payload_is_a_failed_check_not_a_traceback(tmp_path):
     for name in ("chain.jsonl", "certificate.json", "source.json"):
         (directory / name).write_text((FIXTURE / name).read_text())
 
+    # check_exam reads the LAST link carrying an exam, so after a re-attestation
+    # that is the EVIDENCE-CHANGED link, not the original EXAM. Corrupting only
+    # kind == "EXAM" left the effective exam intact, check_exam passed, and this
+    # guard silently stopped testing anything. Corrupt every link that carries
+    # one, which is the same rule check_exam selects by.
     lines = (directory / "chain.jsonl").read_text().splitlines()
     for i, line in enumerate(lines):
         row = json.loads(line)
-        if row["kind"] == "EXAM":
-            row["payload"].get("exam", row["payload"]).pop("benign", None)
+        payload = row.get("payload", {})
+        if row["kind"] == "EXAM" or "exam" in payload:
+            payload.get("exam", payload).pop("benign", None)
             lines[i] = json.dumps(row, sort_keys=True)
     (directory / "chain.jsonl").write_text("\n".join(lines) + "\n")
 
@@ -989,11 +1003,17 @@ def test_the_workbench_renders_a_fixture_whose_exam_is_malformed(tmp_path):
     directory.mkdir()
     for name in ("chain.jsonl", "certificate.json", "source.json"):
         (directory / name).write_text((FIXTURE / name).read_text())
+    # check_exam reads the LAST link carrying an exam, so after a re-attestation
+    # that is the EVIDENCE-CHANGED link, not the original EXAM. Corrupting only
+    # kind == "EXAM" left the effective exam intact, check_exam passed, and this
+    # guard silently stopped testing anything. Corrupt every link that carries
+    # one, which is the same rule check_exam selects by.
     lines = (directory / "chain.jsonl").read_text().splitlines()
     for i, line in enumerate(lines):
         row = json.loads(line)
-        if row["kind"] == "EXAM":
-            row["payload"].get("exam", row["payload"]).pop("benign", None)
+        payload = row.get("payload", {})
+        if row["kind"] == "EXAM" or "exam" in payload:
+            payload.get("exam", payload).pop("benign", None)
             lines[i] = json.dumps(row, sort_keys=True)
     (directory / "chain.jsonl").write_text("\n".join(lines) + "\n")
 
