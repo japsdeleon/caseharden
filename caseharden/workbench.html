@@ -749,7 +749,18 @@ function renderMail(){
   }
   $("queuewrap").style.display = "";
 
-  CASES.forEach(c => {
+  /* Oldest first, which is not the order the store lists in. `/api/cases`
+     returns newest first, because it is a listing of a store; this is a triage
+     queue, and the case that has been waiting longest is the one to work. The
+     unreadable rows stay where the server put them, at the top, because a case
+     this console will not serve is not waiting on anyone's attention in the same
+     sense and has no age to sort by. */
+  const broken = CASES.filter(c => c.error);
+  const ordered = CASES.filter(c => !c.error)
+    .slice()
+    .sort((a, b) => S(a.opened_at).localeCompare(S(b.opened_at)));
+
+  broken.concat(ordered).forEach(c => {
     const tr = document.createElement("tr");
 
     /* A case whose file will not parse is still a row. Dropping it would remove
