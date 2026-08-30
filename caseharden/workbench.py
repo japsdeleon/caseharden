@@ -61,7 +61,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from . import bq, creds
+from . import bq, cases, creds
 from .chain import ChainStore
 
 REPO = Path(__file__).resolve().parent.parent
@@ -440,6 +440,10 @@ class Workbench:
                  chat=None):
         self.source = source
         self.finding_path = finding_path
+        # Beside the live finding, because the driver writes both under its
+        # `--out` directory and pointing the console at one finding while it
+        # listed another run's cases is a confusion with no reason to exist.
+        self.cases_dir = finding_path.parent / cases.CASES_DIRNAME
         # Injected so the tests can drive every route without a deployed fleet.
         self._chat = chat
         # Which job id each chat session has already named, for the guard in
@@ -454,6 +458,39 @@ class Workbench:
         out = read_finding(self.finding_path)
         job_id = job_id_of(out)
         if job_id:
+            try:
+                out["decision"] = self.source.decision("VERDICT", job_id)
+                if not out["decision"]:
+                    out["near_miss"] = self.source.near_miss("VERDICT", job_id)
+            except Exception as exc:  # noqa: BLE001
+                out["decision"] = None
+                out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        return out
+
+    def cases(self) -> dict:
+        """What is open, as the store recorded it.
+
+        No decision is attached. One lookup per case would put a BigQuery query
+        behind every poll of this route, and a disposition cached here would be
+        a second copy of a row `review.decisions` already owns. The case pane
+        asks for the one case it is showing.
+        """
+        return cases.list_cases(self.cases_dir)
+
+    def case(self, case_id: str) -> Optional[dict]:
+        """One case, with its evidence and the verdict recorded against its job.
+
+        Same lookup `finding()` makes, against the case's own job id rather than
+        whichever finding the driver published last. That is the difference the
+        store exists for: a case stays answerable after the next run replaces
+        the live file.
+        """
+        found = cases.read_case(self.cases_dir, case_id)
+        if found is None:
+            return None
+        out = {"case": _trim(found)}
+        job_id = found.get("job_id")
+        if isinstance(job_id, str) and job_id:
             try:
                 out["decision"] = self.source.decision("VERDICT", job_id)
                 if not out["decision"]:
@@ -629,6 +666,19 @@ def handler_for(workbench: Workbench, allowed_hosts: Tuple[str, ...] = LOOPBACK)
                                                             "promotions": "FROZEN"}})
             if path == "/api/finding":
                 return self._json(200, workbench.finding())
+            if path == "/api/cases":
+                case_id = (query.get("id") or [None])[0]
+                if case_id is None:
+                    return self._json(200, workbench.cases())
+                # Checked here as well as in `read_case`, so the shape of the id
+                # is refused at the edge rather than answered as a missing case.
+                # It reaches a path join either way.
+                if not cases.CASE_ID_RE.match(case_id):
+                    return self._json(400, {"error": "not a case id"})
+                found = workbench.case(case_id)
+                if found is None:
+                    return self._json(404, {"error": "no such case"})
+                return self._json(200, found)
             return self._json(404, {"error": "no such path"})
 
         def do_POST(self) -> None:  # noqa: N802

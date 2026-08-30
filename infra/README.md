@@ -105,6 +105,12 @@ python3 -m caseharden.workbench \
     --region=europe-west3 --format='value(status.url)')"
 ```
 
+The same finding is also opened as a case under `out/cases/`, named by a stable
+id derived from the detector's job id. The live file is what this run is asking
+about, and the next run replaces it; a case keeps its id, its open timestamp and
+a hash of its evidence across runs, which is what `/api/cases` lists. No
+decision is stored there, because `review.decisions` owns that row.
+
 Point it at the **deployed** Policy Server, not a local one. The console never
 calls `verify` itself: that re-scores the sealed exam and needs `examiner-sa`,
 the only principal allowed to read it, and a second holder of that identity is

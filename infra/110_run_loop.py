@@ -50,7 +50,7 @@ from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from agents.common import armor
-from caseharden import bq, copilot_client, creds
+from caseharden import bq, cases, copilot_client, creds
 from caseharden.dsl import Policy, canonical_json, load, parse
 from caseharden.examiner import gate, score_bq
 from caseharden.interpreter import structurally_monotonic
@@ -526,32 +526,27 @@ def publish_finding(out: Path, finding: dict) -> None:
     for work to show would have no source for the only part of the run a person
     is in. This file is that source.
 
-    Written whole and moved into place. The workbench polls it every few seconds
-    and a partial read of a half-written file is a race that costs an analyst a
-    blank pane at the exact moment they are being recorded.
+    Two writes, and they are not the same kind of thing. `finding-live.json` is
+    what this run is asking a person about, and the next run replaces it. The
+    case is the same finding under a name that outlives the run, so a console
+    can list what is open rather than only what is current. See
+    `caseharden/cases.py` for why the case store holds no decision.
 
-    The scratch name is unique per call. A fixed one was shared by every run:
-    two drivers alive at once, which is what a re-run after a failed take looks
-    like, wrote the same scratch file and the second `replace` died with
-    FileNotFoundError because the first had already moved it away. An adversarial
-    pass reproduced that 100 times out of 100 paired runs.
-
-    Pid alone was not enough, and the same reproduction said so: it separates two
-    processes and not two threads. The random suffix is what actually makes the
-    name unique, and `replace` is atomic, so the loser of a race is overwritten
-    rather than crashed.
+    The case store is an index, not the record: the record is the detector's
+    BigQuery job, which is re-runnable. A store that will not write is a queue
+    missing a row, and stopping the run over it would trade the finding for the
+    index. So it is reported and the run goes on.
     """
     target = out / LIVE_FINDING
-    scratch = target.parent / f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part"
-    try:
-        scratch.write_text(json.dumps(finding, indent=2, default=str) + "\n")
-        scratch.replace(target)
-    finally:
-        # A failed write leaves a uniquely named file behind, and every retry
-        # leaves another. After a successful replace there is nothing here to
-        # remove, which is why this is missing_ok.
-        scratch.unlink(missing_ok=True)
+    cases.atomic_write_json(target, finding)
     print(f"\n  wrote {target}")
+    try:
+        case = cases.open_case(out / cases.CASES_DIRNAME, finding)
+        print(f"  case {case['case_id']} opened {case['opened_at']}"
+              + (f", revision {case['revisions']}" if case["revisions"] else ""))
+    except (OSError, ValueError) as exc:
+        print(f"  the case store did not take it ({type(exc).__name__}: "
+              f"{str(exc)[:120]}); the finding above still stands")
     print(f"  the workbench reads it from there: "
           f"python3 -m caseharden.workbench")
 

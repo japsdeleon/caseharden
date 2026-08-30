@@ -41,7 +41,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "generator"))
 
-from caseharden import workbench  # noqa: E402
+from caseharden import cases, workbench  # noqa: E402
 from caseharden.chain import KINDS  # noqa: E402
 
 FIXTURE = REPO / "fixtures" / "v5"
@@ -1162,3 +1162,46 @@ def test_the_unknown_state_is_not_attributed_to_the_policy_server():
         "the attribution is no longer behind the reached check"
     assert "UNREACHABLE is this page's word for not knowing" in page
     assert "att.error" in page, "the reason the request failed is dropped again"
+
+
+# --------------------------------------------------------------------------
+# The case routes
+# --------------------------------------------------------------------------
+
+def _open_case(tmp_path, **over):
+    payload = {"job_id": JOB, "family": "injected_turn", "sessions_total": 27,
+               "rows": [{"session_id": "s_1"}]}
+    payload.update(over)
+    return cases.open_case(tmp_path / cases.CASES_DIRNAME, payload)
+
+
+def test_the_queue_route_lists_what_the_store_holds(served, tmp_path):
+    """`served` writes the live finding into tmp_path, so cases sit beside it."""
+    opened = _open_case(tmp_path)
+    status, _, raw = _request(served, "GET", "/api/cases")
+    assert status == 200
+    listed = json.loads(raw)
+    assert listed["total"] == 1
+    row = listed["cases"][0]
+    assert row["case_id"] == opened["case_id"] and row["job_id"] == JOB
+    assert "decision" not in row, "a disposition here would be a second copy of the row"
+
+
+def test_a_case_id_the_store_could_not_have_written_is_a_400(served):
+    for bad in ("..%2F..%2Fetc%2Fpasswd", "zzzz", "a" * 40):
+        status, _, _ = _request(served, "GET", f"/api/cases?id={bad}")
+        assert status == 400, bad
+
+
+def test_a_well_formed_id_with_no_case_is_a_404(served):
+    status, _, _ = _request(served, "GET", "/api/cases?id=" + "0" * 16)
+    assert status == 404
+
+
+def test_one_case_answers_with_its_own_evidence(served, tmp_path):
+    opened = _open_case(tmp_path)
+    status, _, raw = _request(served, "GET", f"/api/cases?id={opened['case_id']}")
+    assert status == 200
+    got = json.loads(raw)
+    assert got["case"]["job_id"] == JOB
+    assert got["case"]["finding"]["rows"] == [{"session_id": "s_1"}]
