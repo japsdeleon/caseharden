@@ -179,6 +179,15 @@ class Source:
         """
         return None
 
+    def versions(self) -> list:
+        """The version registry, for checking what a verdict cited against it.
+
+        Empty means cannot say, not none, and `citation_check` reads it that way.
+        A source with no registry behind it must never be the reason a citation
+        is drawn as unknown to the registry.
+        """
+        return []
+
 
 class FixtureSource(Source):
     """An exported fixture, rendered with no credentials and no network.
@@ -325,10 +334,21 @@ class LiveSource(Source):
         out["attestation"] = self.attestation(version)
         return out
 
+    # Named columns, never `*`. The six after `approved` were added to the table
+    # by infra/32_analyst_identity.sh: the policy the analyst cited, whether they
+    # cited it at all, and the machine advisory as it was displayed beside their
+    # verdict box. A row written before that migration carries NULL in all six,
+    # which is a different answer from a verdict that cited nothing, and the page
+    # draws the two differently.
     DECISION_COLUMNS = (
         "decision_id, FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', ts) AS ts,"
         " kind, analyst, subject, disposition, rationale, ma_verdict, ma_band,"
-        " ma_prompt_injection_score, ma_jailbreak_score, approved")
+        " ma_prompt_injection_score, ma_jailbreak_score, approved,"
+        " cited_policy_id, cited_version, citation_source,"
+        " advisory_recommendation, advisory_rule, advisory_confidence")
+
+    def versions(self) -> list:
+        return self._store().versions()
 
     def decision(self, kind: str, subject: str) -> Optional[dict]:
         """The review row the Copilot wrote against this exact subject.
@@ -453,6 +473,106 @@ def _predates(revised_at, decision_ts) -> Optional[bool]:
     return decision_ts < revised_at
 
 
+DEFAULT_LINE = "conduct-policy"
+
+
+def active_at(versions: list, when, policy_id: str = DEFAULT_LINE) -> Optional[str]:
+    """The version of one policy line that had been promoted most recently at `when`.
+
+    This is the "version active during the finding window" the citation is
+    supposed to name, and this function is here because **this is the only
+    process that can compute it.** It needs two facts in the same place: the
+    finding's window bounds, which arrive from the case store or the live
+    finding file, and each version's promotion time, which lives in
+    `policy.versions` and is read here under `notary-sa`. The Analyst Copilot,
+    which writes the row, has neither. It is handed a job id string and holds
+    `analyst-sa`, which has no read on the registry at all, so it stores what
+    the analyst named and marks a row that named nothing as naming nothing.
+
+    A read-time check rather than a write-time default, and that ordering is a
+    property rather than a compromise: the registry gains versions after a
+    verdict is filed, and answering now answers against the registry as it
+    stands.
+
+    Scoped to one policy line because "active" is per line: `policy.versions`
+    carries a `policy_id` and registration deactivates only within its own
+    lineage. A row written before that column existed carries NULL and belongs
+    to `conduct-policy`, which is the convention `ChainStore.register` already
+    holds.
+
+    Compared as strings, safe only because both sides are the same fixed-width
+    UTC format: `infra/110_run_loop.py` writes `window_start` with
+    `strftime("%Y-%m-%dT%H:%M:%SZ")` and `ChainStore.versions` formats
+    `promoted_at` into the same shape. Both are checked rather than assumed and
+    anything else answers None, because a wrong answer here would tell an
+    analyst their citation is wrong when nothing checked it.
+    """
+    if not (isinstance(when, str) and STAMP_RE.match(when)):
+        return None
+    promoted = [v for v in versions
+                if (v.get("policy_id") or DEFAULT_LINE) == policy_id
+                and isinstance(v.get("promoted_at"), str)
+                and STAMP_RE.match(v["promoted_at"])
+                and v["promoted_at"] <= when]
+    if not promoted:
+        return None
+    return str(max(promoted, key=lambda v: v["promoted_at"]).get("version") or "") or None
+
+
+def citation_check(row: Optional[dict], versions: list, window_start=None) -> Optional[dict]:
+    """What the recorded citation says, checked against the registry that knows.
+
+    The Copilot validates a citation's shape and stops there, because
+    `analyst-sa` cannot read `policy.versions`. The check that the cited version
+    exists belongs to an identity that can see the registry, and that is this
+    console, holding `notary-sa`. Nothing here is a gate: the row is already
+    written, and this only decides what the page says about it.
+
+    Five answers, and they are five because collapsing any pair would put a claim
+    on screen that nothing checked:
+
+      `PREDATES-COLUMNS`  both citation fields are NULL, so the row was written
+                          before infra/32_analyst_identity.sh added them. Not the
+                          same as a verdict that cited nothing.
+      `UNCITED`           the row records `citation_source = 'NONE'`. The analyst
+                          named no policy and the Copilot invented none.
+      `REGISTRY-UNKNOWN`  a version is cited and no registry rows were readable,
+                          so this cannot say whether it exists. An empty list is
+                          cannot-say, never none.
+      `UNREGISTERED`      a version is cited and the registry has no such row in
+                          that line. The citation names nothing.
+      `REGISTERED`        the registry has it. `active_at_window_start` then says
+                          which version was actually in force when the conduct
+                          under review happened, and `matches_window` whether the
+                          analyst cited that one. False is not an error: an
+                          analyst may deliberately cite a later version they are
+                          arguing from. It is the difference that is worth
+                          showing, not a verdict on it.
+    """
+    if not row:
+        return None
+    source = row.get("citation_source")
+    version = row.get("cited_version")
+    line = row.get("cited_policy_id") or DEFAULT_LINE
+    if not version:
+        if source is None:
+            return {"state": "PREDATES-COLUMNS", "policy_id": None, "version": None}
+        return {"state": "UNCITED", "source": source, "policy_id": None, "version": None}
+    out = {"source": source, "policy_id": line, "version": version}
+    if not versions:
+        return dict(out, state="REGISTRY-UNKNOWN")
+    known = [v for v in versions
+             if str(v.get("version")) == str(version)
+             and (v.get("policy_id") or DEFAULT_LINE) == line]
+    if not known:
+        return dict(out, state="UNREGISTERED")
+    in_force = active_at(versions, window_start, line)
+    return dict(out, state="REGISTERED",
+                promoted_at=known[0].get("promoted_at"),
+                active_at_window_start=in_force,
+                matches_window=None if in_force is None else in_force == str(version))
+
+
 def job_id_of(finding: dict) -> Optional[str]:
     """The job id under review, or None when the file carries no usable one.
 
@@ -509,6 +629,28 @@ class Workbench:
     def state(self, version: Optional[str]) -> dict:
         return self.source.state(version)
 
+    def _citation(self, decision: Optional[dict], window_start=None) -> Optional[dict]:
+        """The registry's read of what a decision row cited.
+
+        The registry is fetched only when a version is actually cited, which is
+        why this is not a query on every poll. A row that cites nothing needs no
+        registry to say so, and today that is every row: the columns are new and
+        the fleet has written none since. What the console will not do is spend a
+        BigQuery job per poll working out the citation that could have been
+        there — that answer changes nothing and costs a query on the exact
+        stretch where the console is already polling for a verdict.
+        """
+        if not decision:
+            return None
+        try:
+            versions = self.source.versions() if decision.get("cited_version") else []
+        except Exception as exc:  # noqa: BLE001 - cannot say is a state, not a blank
+            return {"state": "REGISTRY-UNKNOWN",
+                    "version": decision.get("cited_version"),
+                    "policy_id": decision.get("cited_policy_id") or DEFAULT_LINE,
+                    "error": f"{type(exc).__name__}: {exc}"[:300]}
+        return citation_check(decision, versions, window_start)
+
     def finding(self) -> dict:
         out = read_finding(self.finding_path)
         job_id = job_id_of(out)
@@ -520,6 +662,8 @@ class Workbench:
             except Exception as exc:  # noqa: BLE001
                 out["decision"] = None
                 out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            out["citation"] = self._citation(
+                out.get("decision"), (out.get("finding") or {}).get("window_start"))
         return out
 
     def cases(self) -> dict:
@@ -571,6 +715,8 @@ class Workbench:
                 out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
         out["verdict_predates_revision"] = _predates(
             found.get("revised_at"), (out.get("decision") or {}).get("ts"))
+        out["citation"] = self._citation(
+            out.get("decision"), (found.get("finding") or {}).get("window_start"))
         return out
 
     def _named_the_job(self, session: str, job_id: str, text: str) -> bool:

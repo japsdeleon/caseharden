@@ -1327,3 +1327,156 @@ def test_a_store_that_cannot_be_read_does_not_drop_the_connection(tmp_path, monk
         server.server_close()
     assert status == 200
     assert "no such device" in json.loads(raw)["error"]
+
+
+# --------------------------------------------------------------------------
+# The citation, checked where the identity to check it exists
+# --------------------------------------------------------------------------
+#
+# The Analyst Copilot writes the citation and cannot validate it: it holds
+# `analyst-sa`, which has WRITER on `review` and no read on `policy`, where the
+# version registry lives. This console holds `notary-sa` and already reads that
+# registry for its own pane, so the existence check happens here. Nothing below
+# is a gate. The row is written before any of it runs; what it decides is what
+# the page says about a row that already exists.
+
+VERSIONS = [
+    {"version": "v4", "policy_id": "conduct-policy", "promoted_at": "2026-08-20T09:00:00Z"},
+    {"version": "v5", "policy_id": None, "promoted_at": "2026-08-25T15:50:00Z"},
+    {"version": "v6", "policy_id": "conduct-policy", "promoted_at": "2026-08-28T11:00:00Z"},
+    {"version": "p1", "policy_id": "payments-policy", "promoted_at": "2026-08-21T08:00:00Z"},
+]
+
+
+def _cited(**over):
+    row = {"kind": "VERDICT", "subject": JOB, "decision_id": "vd_9", "ts": "now",
+           "disposition": "confirmed abuse", "citation_source": "ANALYST",
+           "cited_policy_id": "conduct-policy", "cited_version": "v5"}
+    row.update(over)
+    return row
+
+
+def test_the_version_in_force_is_the_last_one_promoted_before_the_window():
+    """v6 exists and was promoted after the window opened, so it was not in force."""
+    assert workbench.active_at(VERSIONS, "2026-08-26T00:00:00Z") == "v5"
+    assert workbench.active_at(VERSIONS, "2026-08-21T00:00:00Z") == "v4"
+
+
+def test_a_null_policy_id_belongs_to_the_conduct_line():
+    """`ChainStore.register` already holds that convention; this must not disagree."""
+    assert workbench.active_at(VERSIONS, "2026-08-26T00:00:00Z", "conduct-policy") == "v5"
+
+
+def test_active_is_per_policy_line():
+    """Two lines exist. A conduct version is not what was in force for payments."""
+    assert workbench.active_at(VERSIONS, "2026-08-26T00:00:00Z", "payments-policy") == "p1"
+
+
+def test_a_window_before_every_promotion_has_no_version_in_force():
+    assert workbench.active_at(VERSIONS, "2020-01-01T00:00:00Z") is None
+
+
+@pytest.mark.parametrize("when", [None, "", "yesterday", "2026-08-26", 1787774304])
+def test_a_timestamp_that_is_not_the_fixed_format_answers_not_knowing(when):
+    """A wrong answer here tells an analyst their citation is wrong with nothing checked."""
+    assert workbench.active_at(VERSIONS, when) is None
+
+
+def test_a_row_written_before_the_columns_is_not_a_verdict_that_cited_nothing():
+    row = {"decision_id": "vd_old", "citation_source": None, "cited_version": None}
+    assert workbench.citation_check(row, VERSIONS)["state"] == "PREDATES-COLUMNS"
+
+
+def test_a_verdict_that_cited_nothing_says_so():
+    row = _cited(citation_source="NONE", cited_policy_id=None, cited_version=None)
+    assert workbench.citation_check(row, VERSIONS)["state"] == "UNCITED"
+
+
+def test_a_cited_version_the_registry_holds_is_reported_with_its_promotion():
+    out = workbench.citation_check(_cited(), VERSIONS, "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["promoted_at"] == "2026-08-25T15:50:00Z"
+    assert out["active_at_window_start"] == "v5"
+    assert out["matches_window"] is True
+
+
+def test_citing_a_version_promoted_after_the_window_is_shown_not_judged():
+    """Not an error. An analyst may be arguing from a later version deliberately."""
+    out = workbench.citation_check(_cited(cited_version="v6"), VERSIONS,
+                                   "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["matches_window"] is False
+    assert out["active_at_window_start"] == "v5"
+
+
+def test_a_version_the_registry_does_not_hold_names_nothing():
+    out = workbench.citation_check(_cited(cited_version="v99"), VERSIONS)
+    assert out["state"] == "UNREGISTERED"
+
+
+def test_a_version_cited_under_the_wrong_line_names_nothing():
+    """`p1` is a payments version. Cited as conduct, it names no row in that line."""
+    out = workbench.citation_check(_cited(cited_version="p1"), VERSIONS)
+    assert out["state"] == "UNREGISTERED"
+
+
+def test_an_unreadable_registry_is_cannot_say_and_never_none():
+    """An empty list is a registry this console could not read, not a version that is missing."""
+    out = workbench.citation_check(_cited(), [])
+    assert out["state"] == "REGISTRY-UNKNOWN"
+
+
+class _RowsWithRegistry(_Rows):
+    """A review table and a version registry, counting the reads of each."""
+
+    def __init__(self, rows, versions):
+        super().__init__(rows)
+        self._versions = versions
+        self.registry_reads = 0
+
+    def versions(self):
+        self.registry_reads += 1
+        return self._versions
+
+
+def test_the_finding_pane_carries_the_registry_read_of_the_citation(tmp_path):
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB, "window_start": "2026-08-26T00:00:00Z"}))
+    source = _RowsWithRegistry([_cited(subject=JOB)], VERSIONS)
+    out = workbench.Workbench(source, finding_path=path).finding()
+    assert out["citation"]["state"] == "REGISTERED"
+    assert out["citation"]["matches_window"] is True
+
+
+def test_an_uncited_verdict_costs_no_registry_query(tmp_path):
+    """The console polls this route. A row that cites nothing needs no registry to say so."""
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB}))
+    row = _cited(subject=JOB, citation_source="NONE", cited_policy_id=None,
+                 cited_version=None)
+    source = _RowsWithRegistry([row], VERSIONS)
+    out = workbench.Workbench(source, finding_path=path).finding()
+    assert out["citation"]["state"] == "UNCITED"
+    assert source.registry_reads == 0
+
+
+def test_a_registry_read_that_throws_is_cannot_say(tmp_path):
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps({"job_id": JOB}))
+
+    class _Broken(_Rows):
+        def versions(self):
+            raise RuntimeError("403 on policy.versions")
+
+    out = workbench.Workbench(_Broken([_cited(subject=JOB)]),
+                              finding_path=path).finding()
+    assert out["citation"]["state"] == "REGISTRY-UNKNOWN"
+    assert "403" in out["citation"]["error"]
+
+
+def test_the_console_selects_the_columns_the_migration_added():
+    """The SELECT and the table drift apart silently; a missing column is a NULL on screen."""
+    for column in ("cited_policy_id", "cited_version", "citation_source",
+                   "advisory_recommendation", "advisory_rule", "advisory_confidence"):
+        assert column in workbench.LiveSource.DECISION_COLUMNS
+    assert "*" not in workbench.LiveSource.DECISION_COLUMNS
