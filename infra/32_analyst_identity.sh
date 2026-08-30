@@ -94,6 +94,14 @@ advisory_recommendation advisory_rule advisory_confidence"
 # than only what it ran. The ALTER itself is unconditional and idempotent, so a
 # wrong answer here costs a misleading line of output and never a skipped
 # migration.
+#
+# The report is a read before a write with no transaction between them, so two
+# operators running this at once can both read the columns as absent and both
+# claim to have added them. An adversarial pass named the race. It is not closed:
+# BigQuery gives no way to learn which ADD COLUMN clauses in a statement did
+# anything, and a second read afterwards is the same race one step later. What is
+# guaranteed is the migration, not the sentence about it, and the sentence is a
+# line of operator output rather than anything the chain reads.
 BEFORE="$(bq --project_id="$PROJECT" show --schema --format=prettyjson \
   "${PROJECT}:review.decisions" \
   | python3 -c 'import json,sys; print(" ".join(f["name"] for f in json.load(sys.stdin)))')"

@@ -48,6 +48,7 @@ usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -452,6 +453,29 @@ def read_finding(path: Path = LIVE_FINDING) -> dict:
 STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
+def _stamp(value) -> Optional[str]:
+    """The value if it is a real instant in the one format both sides use, else None.
+
+    `STAMP_RE` alone counts digits and punctuation, so `2026-99-99T99:99:99Z`
+    matched it and `active_at` answered a definite version for a window that
+    never happened. An adversarial pass found that. Parsing is what rules out an
+    impossible date, and the pattern is kept in front of it so the format itself
+    is still the thing being required rather than whatever `strptime` would also
+    accept.
+
+    Comparison stays lexicographic afterwards. That is valid only because every
+    stamp reaching here is this exact fixed-width UTC format, which is what this
+    function is now guaranteeing rather than assuming.
+    """
+    if not (isinstance(value, str) and STAMP_RE.match(value)):
+        return None
+    try:
+        datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return value
+
+
 def _predates(revised_at, decision_ts) -> Optional[bool]:
     """True when the verdict on show was recorded before the evidence changed.
 
@@ -507,16 +531,25 @@ def active_at(versions: list, when, policy_id: str = DEFAULT_LINE) -> Optional[s
     anything else answers None, because a wrong answer here would tell an
     analyst their citation is wrong when nothing checked it.
     """
-    if not (isinstance(when, str) and STAMP_RE.match(when)):
+    if _stamp(when) is None:
         return None
     promoted = [v for v in versions
                 if (v.get("policy_id") or DEFAULT_LINE) == policy_id
-                and isinstance(v.get("promoted_at"), str)
-                and STAMP_RE.match(v["promoted_at"])
+                and _stamp(v.get("promoted_at")) is not None
                 and v["promoted_at"] <= when]
     if not promoted:
         return None
-    return str(max(promoted, key=lambda v: v["promoted_at"]).get("version") or "") or None
+    latest = max(v["promoted_at"] for v in promoted)
+    at_latest = [v for v in promoted if v["promoted_at"] == latest]
+    # A tie is not a version. `promoted_at` is formatted to the second, so two
+    # promotions in the same line inside one second are indistinguishable here,
+    # and THREATS.md entry 11 records that concurrent registry writes are
+    # possible. Naming whichever row the query returned first would be the
+    # console deciding what was in force by list order. An adversarial pass
+    # produced the tie and got a definite answer back.
+    if len(at_latest) != 1:
+        return None
+    return str(at_latest[0].get("version") or "") or None
 
 
 def citation_check(row: Optional[dict], versions: list, window_start=None) -> Optional[dict]:

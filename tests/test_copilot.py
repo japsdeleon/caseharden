@@ -342,3 +342,73 @@ def test_nan_is_not_treated_as_absent():
     """`confidence != -1.0` is true for NaN, and the range test then refuses it."""
     with pytest.raises(agent.Refused):
         agent._advisory("benign", "", math.nan)
+
+
+# --------------------------------------------------------------------------
+# What an adversarial pass reached, and what a model can actually send
+# --------------------------------------------------------------------------
+
+def test_a_rationale_of_invisible_characters_is_refused(recorded):
+    """Twenty zero-width spaces cleared the floor and stored a verdict with no words.
+
+    `strip()` does not remove U+200B and `len()` counts it, so the check that a
+    rationale exists was passed by a rationale nobody can read.
+    """
+    out = agent.record_verdict(JOB, "confirmed abuse", "​" * 40)
+    assert out["recorded"] is False
+    assert recorded["rows"] == []
+
+
+@pytest.mark.parametrize("rationale", ["\t" * 40, "\n" * 40, " " * 40,
+                                       "​‍﻿" * 20])
+def test_whitespace_and_format_characters_are_not_words(recorded, rationale):
+    out = agent.record_verdict(JOB, "confirmed abuse", rationale)
+    assert out["recorded"] is False
+    assert recorded["rows"] == []
+
+
+def test_a_rationale_with_spaces_between_words_still_counts_them():
+    """Spaces have a glyph. Dropping them would raise the floor above its derivation."""
+    assert agent._own_words_or_refuse("a b c d e f g h i j k", JOB, "confirmed abuse")
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"policy_cited": 5},
+    {"policy_cited": ["v5"]},
+    {"advisory_recommendation": 1.0},
+    {"advisory_rule": {"id": "r"}},
+    {"advisory_confidence": "not a number"},
+])
+def test_an_argument_of_the_wrong_type_is_a_refusal_not_an_exception(recorded, kwargs):
+    """A model sends JSON null or a number for a parameter declared string.
+
+    A raised exception reaches the model as a tool failure, which it retries; the
+    instruction only holds if a bad argument comes back as `recorded: false`.
+    """
+    out = agent.record_verdict(JOB, "confirmed abuse", REASON, **kwargs)
+    assert out["recorded"] is False
+    assert recorded["rows"] == []
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"policy_cited": None},
+    {"advisory_recommendation": None, "advisory_rule": None,
+     "advisory_confidence": None},
+])
+def test_none_reads_as_absent_and_not_as_an_error(recorded, kwargs):
+    """That is how an omitted optional argument arrives."""
+    out = agent.record_verdict(JOB, "confirmed abuse", REASON, **kwargs)
+    assert out["recorded"] is True
+    assert recorded["rows"][0]["citation_source"] == "NONE"
+
+
+def test_a_confidence_sent_as_a_string_is_taken_as_the_number_it_spells(recorded):
+    agent.record_verdict(JOB, "confirmed abuse", REASON,
+                         advisory_recommendation="benign", advisory_confidence="0.8")
+    assert recorded["rows"][0]["advisory_confidence"] == 0.8
+
+
+def test_a_rationale_that_is_not_text_is_refused(recorded):
+    out = agent.record_verdict(JOB, "confirmed abuse", 12345)
+    assert out["recorded"] is False
+    assert recorded["rows"] == []

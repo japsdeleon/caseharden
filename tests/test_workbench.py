@@ -1493,3 +1493,43 @@ def test_a_bare_version_resolves_to_the_line_the_registry_holds_it_in():
     assert out["state"] == "REGISTERED"
     assert out["policy_id"] == "payments-policy"
     assert out["active_at_window_start"] == "p1"
+
+
+@pytest.mark.parametrize("when", ["2026-99-99T99:99:99Z", "2026-02-30T00:00:00Z",
+                                  "2026-13-01T00:00:00Z", "2026-08-25T25:00:00Z"])
+def test_an_impossible_instant_is_not_a_window(when):
+    """The pattern counts digits. It matched a date that never happened, and
+    `active_at` answered a definite version for it."""
+    assert workbench.active_at(VERSIONS, when) is None
+
+
+def test_two_versions_promoted_in_the_same_second_are_not_one_answer():
+    """`promoted_at` is formatted to the second, so a tie is not resolvable here.
+
+    Returning whichever row came back first would be the console deciding what was
+    in force by list order.
+    """
+    tied = [{"version": "v4", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"},
+            {"version": "v5", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"}]
+    assert workbench.active_at(tied, "2026-08-26T00:00:00Z") is None
+
+
+def test_a_tie_leaves_the_citation_uncompared_rather_than_wrong():
+    tied = [{"version": "v5", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"},
+            {"version": "v6", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-25T00:00:00Z"}]
+    out = workbench.citation_check(_cited(), tied, "2026-08-26T00:00:00Z")
+    assert out["state"] == "REGISTERED"
+    assert out["matches_window"] is None
+
+
+def test_a_promotion_stamp_that_is_not_a_real_instant_is_ignored():
+    """A registry row with a broken timestamp must not become the answer."""
+    rows = [{"version": "v4", "policy_id": "conduct-policy",
+             "promoted_at": "2026-08-20T09:00:00Z"},
+            {"version": "vx", "policy_id": "conduct-policy",
+             "promoted_at": "2026-99-99T00:00:00Z"}]
+    assert workbench.active_at(rows, "2026-12-01T00:00:00Z") == "v4"

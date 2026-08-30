@@ -125,6 +125,29 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
+def _text(name: str, value) -> str:
+    """One tool argument as a string, or a refusal saying it was not one.
+
+    The annotations on `record_verdict` are a declaration to ADK, not a contract
+    the caller keeps. A model can pass JSON `null` or a number for a parameter
+    declared `string`, and every check below then raises `AttributeError` or
+    `TypeError` instead of refusing. That difference matters: the instruction
+    tells the model to read a refusal back to the analyst and not retry, and a
+    tool that raised is exactly the thing a model retries. An adversarial pass
+    reached all three of those exceptions with arguments a model can send.
+
+    `None` reads as absent rather than as an error, because that is what an
+    omitted optional argument arrives as.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise Refused(
+            f"{name} arrived as {type(value).__name__} and this tool takes text "
+            f"there. Send it as a string. Nothing stored.")
+    return value
+
+
 def _split_citation(policy_cited: str):
     """The policy line and version the analyst says they were applying.
 
@@ -168,7 +191,7 @@ def _split_citation(policy_cited: str):
         'DEFAULTED', is reserved for a component that can compute the window
         default; nothing writes it, and nothing in this repository can.
     """
-    text = (policy_cited or "").strip()
+    text = _text("policy_cited", policy_cited).strip()
     if not text:
         return "", "", "NONE"
     # rpartition, so a bare version lands in `version` with `at` empty and the
@@ -216,8 +239,18 @@ def _advisory(recommendation: str, rule: str, confidence: float):
     Returns:
         (recommendation, rule, confidence-or-None), trimmed.
     """
-    recommendation = (recommendation or "").strip()
-    rule = (rule or "").strip()
+    recommendation = _text("advisory_recommendation", recommendation).strip()
+    rule = _text("advisory_rule", rule).strip()
+    # Coerced, not compared as it arrives. A model sends "0.8" or JSON null for a
+    # parameter declared float, and `-1.0 <= "0.8"` is a TypeError rather than the
+    # refusal this function promises. `None` is the absent value here too, since
+    # that is how an omitted optional argument arrives.
+    try:
+        confidence = -1.0 if confidence is None else float(confidence)
+    except (TypeError, ValueError):
+        raise Refused(
+            f"advisory_confidence arrived as {type(confidence).__name__} and is not "
+            f"a number. Nothing stored.") from None
     given = confidence != -1.0
     if given and not 0.0 <= confidence <= 1.0:
         raise Refused(
@@ -275,8 +308,15 @@ def _own_words_or_refuse(rationale: str, finding: str, disposition: str) -> str:
     on any conduct table. The equality test below is the half that catches the
     common case, which is the disposition typed a second time into the box.
     """
-    text = (rationale or "").strip()
-    own = text.replace(finding, " ").strip() if finding else text
+    text = _text("rationale", rationale).strip()
+    subject = _text("finding", finding)
+    own = text.replace(subject, " ") if subject else text
+    # Measured over what a reader would see. `strip()` does not remove a
+    # zero-width space and `len()` counts one, so twenty U+200B passed this floor
+    # and stored a verdict whose rationale is invisible. An adversarial pass found
+    # that. Characters with no glyph are dropped before measuring; the stored
+    # text is untouched, because the record holds what was typed.
+    own = "".join(ch for ch in own if ch.isprintable()).strip()
     # Length first, so an empty rationale gets the empty-rationale message. The
     # other order answered "the rationale is the disposition again" whenever both
     # were empty, which sends the analyst to fix the wrong field.
