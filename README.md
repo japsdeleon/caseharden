@@ -189,7 +189,7 @@ Every number here is measured on the live project, not estimated. Sources in
 | | |
 |---|---|
 | `verify` p95, cold IAM cache | **3.66s** against a 5s target (p50 3.16s, 12 runs) |
-| Active version | v5, 9 chain links, root `40cdb5962d49`, attested; each repoint since promotion is in `BUILD_LOG.md` |
+| Active version | v5, 11 chain links, root `424001c434b0`, attested; each repoint since promotion is in `BUILD_LOG.md` |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
 | Tests | 563 |
