@@ -1821,3 +1821,41 @@ def test_an_unreadable_case_is_not_a_subject(tmp_path):
     assert OTHER_JOB not in bench.reviewable_subjects()
     with pytest.raises(workbench.Refused):
         bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+
+
+# --------------------------------------------------------------------------
+# The one failed lookup that has a fix
+# --------------------------------------------------------------------------
+
+def test_a_missing_column_names_the_migration():
+    """The console is updated first, because it runs from the analyst's checkout.
+
+    Before the migration it selects columns review.decisions does not have, the
+    compose box is withheld until the lookup succeeds, and the lookup never
+    succeeds. Nothing on screen said the word schema.
+    """
+    said = workbench.decision_error(
+        RuntimeError("Unrecognized name: cited_policy_id at [1:120]"))
+    assert "32_analyst_identity.sh" in said
+    assert "cited_policy_id" in said, "the original error is still there to read"
+
+
+@pytest.mark.parametrize("exc", [
+    RuntimeError("403 on review.decisions"),
+    ValueError("BigQuery did not finish the query within timeoutMs"),
+    OSError("connection reset"),
+])
+def test_any_other_failure_keeps_its_own_message(exc):
+    """Guessing a cause is the console inventing a diagnosis."""
+    said = workbench.decision_error(exc)
+    assert "32_analyst_identity.sh" not in said
+    assert str(exc) in said
+
+
+def test_the_page_stops_advising_a_reload_that_cannot_work():
+    page = workbench.PAGE.read_text()
+    assert 'indexOf("32_analyst_identity.sh")' in page, \
+        "the page cannot tell the schema case from a transient one"
+    assert "This is not something reloading fixes" in page
+    assert 'el("p", "note", S(composeBox.decision_error))' in page, \
+        "the reason itself never reaches the screen"

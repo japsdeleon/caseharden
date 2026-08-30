@@ -1241,10 +1241,19 @@ function verdictCard(){
     /* Freeze the forward action, keep everything else readable. Same shape as an
        UNKNOWN attestation: enforcement unchanged, promotion frozen. Offering a
        compose box here invites a second verdict on top of one that may exist. */
+    /* "Reload once the lookup succeeds" is advice, and it is wrong for the one
+       failure that has a fix: a console pulled before the migration queries
+       columns the table does not have, and no amount of reloading adds them.
+       The server names that case; the page stops telling the operator to wait
+       for a condition that will never arrive. */
+    const schema = S(composeBox.decision_error).indexOf("32_analyst_identity.sh") !== -1;
     b.appendChild(el("div", "badbox",
       "Held. The check for an existing verdict did not complete, so filing one now could "
       + "duplicate a verdict already on this case. The box is withheld on purpose rather "
-      + "than offered with a warning attached. Reload once the lookup succeeds."));
+      + "than offered with a warning attached. "
+      + (schema ? "This is not something reloading fixes — see the reason below."
+                : "Reload once the lookup succeeds.")));
+    b.appendChild(el("p", "note", S(composeBox.decision_error)));
     c.appendChild(b);
     return c;
   }

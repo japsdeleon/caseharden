@@ -663,6 +663,28 @@ def citation_check(row: Optional[dict], versions: list, window_start=None) -> Op
                 matches_window=None if in_force is None else in_force == str(version))
 
 
+def decision_error(exc: Exception) -> str:
+    """The failed decision lookup, said in a way an operator can act on.
+
+    One failure has a fix and no way to discover it. `DECISION_COLUMNS` selects
+    the citation and advisory columns, and a console pulled before the migration
+    is run queries a table that has none of them: BigQuery answers "Unrecognized
+    name", the pane reports a lookup that did not complete, and the compose box
+    is withheld until it succeeds. It never succeeds, and nothing on screen
+    mentions a schema. The console is the component most likely to be updated
+    first, because it runs from the analyst's own checkout.
+
+    Every other failure keeps the message it had. Guessing a cause from an error
+    this function does not recognise would be the console inventing a diagnosis.
+    """
+    said = f"{type(exc).__name__}: {exc}"
+    if "Unrecognized name" in said:
+        said += (". This console reads columns that review.decisions does not have "
+                 "yet. Run infra/32_analyst_identity.sh to add them, then deploy "
+                 "the Copilot; until then no verdict can be looked up or filed.")
+    return said[:400]
+
+
 def job_id_of(finding: dict) -> Optional[str]:
     """The job id under review, or None when the file carries no usable one.
 
@@ -751,7 +773,7 @@ class Workbench:
                     out["near_miss"] = self.source.near_miss("VERDICT", job_id)
             except Exception as exc:  # noqa: BLE001
                 out["decision"] = None
-                out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+                out["decision_error"] = decision_error(exc)
             out["citation"] = self._citation(
                 out.get("decision"), (out.get("finding") or {}).get("window_start"))
         return out
@@ -843,7 +865,7 @@ class Workbench:
                     out["near_miss"] = self.source.near_miss("VERDICT", job_id)
             except Exception as exc:  # noqa: BLE001
                 out["decision"] = None
-                out["decision_error"] = f"{type(exc).__name__}: {exc}"[:300]
+                out["decision_error"] = decision_error(exc)
         out["verdict_predates_revision"] = _predates(
             found.get("revised_at"), (out.get("decision") or {}).get("ts"))
         out["citation"] = self._citation(
