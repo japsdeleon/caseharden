@@ -47,6 +47,7 @@ Conduct is what the fleet did. It is the raw material every claim is derived fro
 | **Verdict** | A human's disposition on a finding, recorded through the Copilot into `review.decisions`. |
 | **Disposition** | Which of four values a verdict carries. `confirmed abuse`, `benign`, `insufficient evidence`, `escalate`. The Copilot refuses anything else rather than storing it. |
 | **Terminal disposition** | The three that end the loop: `benign`, `insufficient evidence`, `escalate`. Only `confirmed abuse` continues into drafting, because a policy version is justified by the finding it came from. Closing on a terminal verdict is an outcome, not a failure. |
+| **Review state** | What the console's queue says about one case: `yes`, `no`, `stale`, `blocked`, `escalated`, `unknown`. Derived at read time from `review.decisions` and the case's own revision stamp; never stored. `stale` is a verdict recorded before the evidence was replaced, `blocked` a verdict whose screening did not clear, `escalated` the analyst saying the call was not theirs, and `unknown` a warehouse the console could not reach. Only `yes` means the review is finished. |
 | **Approval** | A human's decision to promote a specific version, recorded the same way and bound in the chain to the exam it approved. |
 
 Rows written into `review.decisions` before this vocabulary existed carry free text. They are

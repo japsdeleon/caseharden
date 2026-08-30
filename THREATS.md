@@ -66,6 +66,8 @@ The ten entries under **Not covered** are the ones a reviewer should read first.
 | Approve a promotion without a human | The Notary reads `review.decisions` and refuses unless the decision id exists, is the right kind, names the right subject, and, for an approval, records `approved = true`. | See **Not covered 2**. |
 | Reuse one approval for a different version | The approval row's subject must equal the version being promoted. Shown in `captures/day5-notary-corroborates-the-bundle.txt`. | None. |
 | Rewrite the verdict text after the human typed it | The bundle's verdict text must match the stored row. | None. |
+| Rewrite the citation, or claim a disposition the human did not give | The bundle's disposition and its three citation columns must match the stored row, and the row must say `confirmed abuse` before a version is promoted on it. | None for a bundle. A row rewritten before the Notary reads it is **Not covered 2**. |
+| Promote by hand from a verdict that closed the review | `notary seed --bundle` refuses a row whose disposition is terminal, so the driver's branch is not the only thing enforcing it. | Without `--bundle` the seed writes a VERDICT link from its own defaults and corroborates nothing. That path is the pre-Day-5 demo seed and is not how a promotion is made. |
 
 ---
 
