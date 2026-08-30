@@ -1114,8 +1114,12 @@ def test_a_delivery_claim_is_coupled_to_a_row_the_send_produced():
     of delivery that is not guarded by the freshness comparison.
     """
     page = workbench.PAGE.read_text()
-    assert "const decisionBefore = box.decision" in page, "the baseline is gone"
-    assert "fresh: S(row.decision_id) !== decisionBefore" in page
+    # Read when the box is drawn rather than at boot, since the box now follows
+    # the queue selection and a decision id from the live case says nothing about
+    # another one.
+    assert "composeBox.decision ? S(composeBox.decision.decision_id)" in page, \
+        "the baseline is gone"
+    assert "fresh: S(row.decision_id) !== decisionBeforeSend()" in page
     for claim in ("A verdict is on this case now.",
                   "Recorded. A verdict row is there now."):
         assert "back.fresh" in _before(page, claim), \
@@ -1129,8 +1133,12 @@ def test_a_delivery_claim_is_coupled_to_a_row_the_send_produced():
     # did not, which is how the already-fixed defect came back on a new path.
     assert "later.present !== true || later.error" in page, \
         "a failed or absent finding read classifies as an absence again"
-    assert 'S((later.finding || {}).job_id || "") !== BOOT_JOB' in page, \
+    assert 'S((later.finding || {}).job_id || "") !== composeJob' in page, \
         "a readback about a different case counts as an answer about this one"
+    # And the readback asks the route that knows about the case filed on.
+    # /api/finding only ever answers about the live one.
+    assert 'composeIsLive\n      ? await get("/api/finding")' in page, \
+        "a send on a case other than the live one cannot be confirmed"
 
 
 def test_a_payload_field_that_should_be_a_list_is_named_when_it_is_not():
@@ -1708,17 +1716,108 @@ def test_the_citation_is_grouped_by_policy_line():
     assert "citedNow()" in page
 
 
-def test_the_composer_is_withheld_on_a_case_the_driver_is_not_waiting_on():
-    """`fill` writes the live finding's job id, and the Notary matches it exactly.
+def test_every_case_can_be_ruled_on_and_says_what_that_does():
+    """Three of four detectors could find real conduct and none of it be ruled on.
 
-    Offering the box on another case drafts a verdict filed against the wrong
-    subject, which stores fine and is never found.
+    The composer was bound to the live finding and the server agreed: `chat`
+    refused any message not naming the finding under review. The box now follows
+    the selection and drafts against that case's own job id, and says beside
+    itself when the case is not the one the run is blocked on, because a verdict
+    there is a real record that does not release the run.
     """
     page = workbench.PAGE.read_text()
-    assert "isOpen ? verdictCard() : notThisCase()" in page
+    assert "composeJob = S(F.job_id)" in page, "the box is not bound to the selection"
+    assert "do not shorten it: \" + composeJob" in page, \
+        "the drafted message still names the live case"
+    assert "if (!composeIsLive) {" in page, \
+        "nothing tells the analyst a verdict here does not release the run"
+    assert "notThisCase" not in page, \
+        "the refusal that said another case files against nothing is back"
 
 
 def test_the_page_does_not_claim_to_lack_evidence_it_holds():
     """Every case now arrives with its own rows, so the old refusal would be false."""
     page = workbench.PAGE.read_text()
     assert "but not its cited rows" not in page
+
+
+# --------------------------------------------------------------------------
+# Which cases a verdict may be filed against
+# --------------------------------------------------------------------------
+
+OTHER_JOB = "europe-west3:job_Rk2mVpQx7Ln"
+
+
+def _desk(tmp_path, *findings, live=None):
+    """A workbench over a store holding these cases, with `live` on the desk."""
+    path = tmp_path / "finding-live.json"
+    path.write_text(json.dumps(live if live is not None else {}))
+    for found in findings:
+        cases.open_case(tmp_path / cases.CASES_DIRNAME, found)
+    said = []
+    return said, workbench.Workbench(
+        workbench.FixtureSource(FIXTURE), finding_path=path,
+        chat=lambda text, session: said.append((text, session)) or "ok")
+
+
+def _finding(job, family="cross-tenant"):
+    return {"job_id": job, "family": family, "sessions_total": 1,
+            "window_start": "2026-08-27T09:00:00Z", "window_end": "2026-08-30T09:00:00Z",
+            "rows": [{"session_id": "s_1"}]}
+
+
+def test_a_verdict_may_be_filed_on_a_case_the_run_is_not_waiting_on(tmp_path):
+    """The gap the queue exposed: four detectors find conduct, one can be ruled on.
+
+    `chat` read the live finding's job id and refused anything else, so the other
+    cases were readable and unreviewable.
+    """
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+    assert said, "the message never reached the Copilot"
+
+
+def test_the_case_the_run_is_waiting_on_is_still_accepted(tmp_path):
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {JOB}. Disposition: confirmed abuse.", "s1")
+    assert said
+
+
+def test_a_subject_no_case_holds_is_still_refused(tmp_path):
+    """The failure the guard was written for, and the one it still catches."""
+    _, bench = _desk(tmp_path, _finding(JOB), live=_finding(JOB, "injected-turn"))
+    with pytest.raises(workbench.Refused) as raised:
+        bench.chat("Record my verdict on europe-west3:job_doesNotExist.", "s1")
+    assert "does not name a case this desk holds" in str(raised.value)
+
+
+def test_the_confirmation_turn_follows_the_case_it_named(tmp_path):
+    """The Copilot echoes the arguments and asks; the answer is "yes"."""
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+    bench.chat("Yes. Store it exactly as you listed.", "s1")
+    assert len(said) == 2
+
+
+def test_a_session_latched_to_a_case_that_is_gone_is_refused(tmp_path):
+    """A latch is not authority of its own once the case leaves the store."""
+    said, bench = _desk(tmp_path, _finding(JOB), _finding(OTHER_JOB),
+                        live=_finding(JOB, "injected-turn"))
+    bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")
+    (tmp_path / cases.CASES_DIRNAME / f"{cases.case_id(OTHER_JOB)}.json").unlink()
+    with pytest.raises(workbench.Refused):
+        bench.chat("Yes. Store it exactly as you listed.", "s1")
+    assert len(said) == 1
+
+
+def test_an_unreadable_case_is_not_a_subject(tmp_path):
+    """It is shown in the queue so it cannot hide; it is not a thing to rule on."""
+    _, bench = _desk(tmp_path, _finding(JOB), live=_finding(JOB, "injected-turn"))
+    broken = tmp_path / cases.CASES_DIRNAME / (cases.case_id(OTHER_JOB) + ".json")
+    broken.write_text('{"case_id": "x", "job_id": "' + OTHER_JOB + '", "fin')
+    assert OTHER_JOB not in bench.reviewable_subjects()
+    with pytest.raises(workbench.Refused):
+        bench.chat(f"Record my verdict on {OTHER_JOB}. Disposition: benign.", "s1")

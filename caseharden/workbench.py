@@ -850,19 +850,6 @@ class Workbench:
             out.get("decision"), (found.get("finding") or {}).get("window_start"))
         return out
 
-    def _named_the_job(self, session: str, job_id: str, text: str) -> bool:
-        """True when this session names the job now, or named it on an earlier turn.
-
-        Latched per session AND per job id. Per session alone would be wrong: the
-        driver overwrites the finding file when the next run answers, and a
-        session left open across that boundary is looking at a different job, so
-        a bare "yes" in it would confirm a verdict on the wrong one.
-        """
-        if names_the_job(text, job_id):
-            return True
-        with self._named_lock:
-            return self._named.get(session) == job_id
-
     def _latch(self, session: str, job_id: str) -> None:
         """Remember that this session may go on talking about this job.
 
@@ -903,16 +890,75 @@ class Workbench:
             raise Refused(
                 "this workbench is running against a fixture. There is no fleet "
                 "to talk to and no review row to write.")
-        job_id = job_id_of(read_finding(self.finding_path))
-        if job_id and not self._named_the_job(session, job_id, text):
-            raise Refused(
-                f"the message does not name the finding under review. The Notary "
-                f"reads the row whose subject is exactly {job_id!r}; a verdict "
-                f"filed against anything else is stored and never found.")
+        known = self.reviewable_subjects()
+        if known:
+            named = self._subject_for(session, text, known)
+            if named is None:
+                raise Refused(
+                    "the message does not name a case this desk holds. A verdict "
+                    "is stored against a subject, and the only subjects anything "
+                    "will look for are the open cases: "
+                    + ", ".join(sorted(known)[:8])
+                    + (" and others" if len(known) > 8 else "")
+                    + ". A verdict filed against anything else is stored and "
+                      "never found.")
         reply = self._chat(text, session)
-        if job_id:
-            self._latch(session, job_id)
+        if known and named:
+            self._latch(session, named)
         return {"reply": reply}
+
+    def reviewable_subjects(self) -> set:
+        """Every job id a verdict may be filed against from this desk.
+
+        The live finding and every readable case in the store. It was the live
+        finding alone, because there was one case: the driver polls for a row
+        whose subject equals that job id, so anything else left an analyst
+        waiting fifteen minutes with nothing to say why, and the guard existed to
+        stop that.
+
+        With a queue that reasoning changed shape. The other cases are detector
+        jobs that found real conduct in the same window, and filing a verdict on
+        one is a deliberate act on a case that exists, not a typo. What the guard
+        still refuses is a subject nothing knows about, which is the failure it
+        was written for.
+
+        A verdict on a case the run is not waiting on advances nothing: the
+        driver's poll is bounded to its own job id and its own start time, and
+        the Notary requires the bundle's verdict row to carry the finding's job
+        id. It records a decision and closes that row in the queue, which is what
+        the three terminal dispositions are for.
+        """
+        subjects = set()
+        live = job_id_of(read_finding(self.finding_path))
+        if live:
+            subjects.add(live)
+        for row in cases.list_cases(self.cases_dir).get("cases", []):
+            job_id = row.get("job_id")
+            # The error check is redundant and kept: `list_cases` gives an
+            # unreadable case a row carrying only its id, the error and the path,
+            # so there is no job id on it to admit. A mutation deleting this test
+            # survives the suite for that reason rather than for want of a test.
+            # It stays because it says what the loop means, and because a future
+            # broken-row shape that did carry a job id would otherwise make an
+            # unreadable case reviewable.
+            if not row.get("error") and isinstance(job_id, str) and job_id:
+                subjects.add(job_id)
+        return subjects
+
+    def _subject_for(self, session: str, text: str, known: set) -> Optional[str]:
+        """Which open case this turn is about, or None.
+
+        A turn that names one is about that one. A turn that names none is the
+        confirmation the Copilot asks for — "yes" names no job id — and is read
+        as being about whatever this session named last, provided that case is
+        still open.
+        """
+        named = next((j for j in sorted(known) if names_the_job(text, j)), None)
+        if named:
+            return named
+        with self._named_lock:
+            latched = self._named.get(session)
+        return latched if latched in known else None
 
 
 class Refused(Exception):

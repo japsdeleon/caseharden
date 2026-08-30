@@ -869,6 +869,15 @@ function sinceStamp(stamp){
 const DETAIL = {};
 let detailError = null;
 
+/* The case the compose box is filing against. Set by renderCase before it draws
+   the card, because the box used to be bound to the live finding and there was
+   only ever one case to file on. `caseharden/workbench.py` accepts a verdict on
+   any case the store holds, so the box follows the selection and the message it
+   drafts carries that case's job id. */
+let composeJob = "";
+let composeBox = {};
+let composeIsLive = true;
+
 async function ensureDetail(id){
   if (!id || (liveCase && id === liveCase.case_id)) return;
   if (DETAIL[id]) return;
@@ -969,8 +978,8 @@ function renderCase(){
      another check's heading would have attributed one detector's evidence to
      another, so the pane refused and said so. Every case now arrives with its
      own cited rows from /api/cases?id=, so the refusal would be the page
-     withholding evidence it is holding. The composer is still withheld — that
-     is a different question, and `notThisCase` below answers it. */
+     withholding evidence it is holding. The composer follows the case too, and
+     says beside itself when the case is not the one the run is waiting on. */
 
   // ---- the open case: what you are being asked
   const ask = el("div", "askbox");
@@ -1101,11 +1110,16 @@ function renderCase(){
   c4.appendChild(c4b);
   host.appendChild(c4);
 
-  /* Only the case the driver is polling for gets a composer. `fill` writes the
-     live finding's job id into the message and the Notary looks for that exact
-     subject, so offering the box on another case would draft a verdict filed
-     against the wrong one. */
-  host.appendChild(isOpen ? verdictCard() : notThisCase());
+  /* Every case gets a composer, filing against its own job id. It used to be
+     the live case only, and the server agreed: `chat` refused any message that
+     did not name the finding under review, so three of four detectors could find
+     real conduct and none of it could be ruled on. What a verdict on a case the
+     run is not waiting on does NOT do is advance that run, and the card says so
+     rather than leaving it to be discovered. */
+  composeJob = S(F.job_id);
+  composeBox = box;
+  composeIsLive = !!isOpen;
+  host.appendChild(verdictCard());
   host.appendChild(afterCard());
   host.appendChild(attestCard());
 }
@@ -1216,16 +1230,6 @@ function advisoryShown(host, row){
   }
 }
 
-function notThisCase(){
-  const d = el("div", "note");
-  d.appendChild(say("span", null, [
-    "No ", gloss("verdict"), " is being asked for on this check. The case waiting for you is ",
-    el("b", null, liveCase ? (FAM_PLAIN[liveCase.family] || [liveCase.family])[0].toLowerCase() : "elsewhere"),
-    " — pick it in the list on the left. A verdict must name one exact case, and naming the wrong one files it against nothing."
-  ]));
-  return d;
-}
-
 // ---------------------------------------------------------------- verdict
 
 function verdictCard(){
@@ -1233,7 +1237,7 @@ function verdictCard(){
   c.appendChild(el("div", "card-h", "Your verdict"));
   const b = el("div", "card-b stack");
 
-  if (box.decision_error) {
+  if (composeBox.decision_error) {
     /* Freeze the forward action, keep everything else readable. Same shape as an
        UNKNOWN attestation: enforcement unchanged, promotion frozen. Offering a
        compose box here invites a second verdict on top of one that may exist. */
@@ -1249,6 +1253,18 @@ function verdictCard(){
     "Pick one. It writes a draft message for you, with this case's exact id already in it. ",
     el("b", null, "Read it, change any of it, add your reasons"), " — then send. What you see in the box is exactly what gets sent."
   ]));
+
+  /* What a verdict here does, and does not do. The run is blocked on one case,
+     and a verdict on any other is a real record that does not release it. Saying
+     so beside the box beats letting an analyst work out from a run that never
+     resumed that they answered the wrong question. */
+  if (!composeIsLive) {
+    b.appendChild(el("div", "warnbox",
+      "This is not the case the run is waiting on. A verdict here is recorded against "
+      + "this case and closes it on the queue, and it does not release the run, which "
+      + "is polling for a verdict on "
+      + (liveCase ? S(liveCase.job_id) : "another case") + "."));
+  }
 
   const choices = el("div", "choices");
   const mk = (key, big, sm) => {
@@ -1425,7 +1441,7 @@ function fill(key){
   const cited = citedNow();
   ta.value =
     "Record my verdict on this finding. Use exactly this string as the finding "
-    + "argument, including the location prefix, and do not shorten it: " + S(F.job_id)
+    + "argument, including the location prefix, and do not shorten it: " + composeJob
     + "\nDisposition: " + key + "."
     + (cited ? "\nCites policy: " + cited + "."
              : "\nI am not citing a policy version for this verdict.")
@@ -1438,16 +1454,16 @@ function fill(key){
 function checkSubject(){
   const ta = $("msg"), out = $("subjcheck");
   if (!ta || !out) return;
-  const ok = S(F.job_id) && ta.value.includes(S(F.job_id));
+  const ok = composeJob && ta.value.includes(composeJob);
   out.className = "subjcheck " + (ok ? "ok" : "no");
   out.textContent = "";
   if (ok) {
     out.appendChild(document.createTextNode("Good. The message names this case exactly: "));
-    out.appendChild(mono(S(F.job_id)));
+    out.appendChild(mono(composeJob));
   } else {
     out.appendChild(document.createTextNode(
       "The message does not yet contain this case's id, exactly as written, prefix and all: "));
-    out.appendChild(mono(S(F.job_id)));
+    out.appendChild(mono(composeJob));
     out.appendChild(document.createTextNode(
       ". Shortened or missing, the record is filed against nothing and the case stays open."));
   }
@@ -1457,7 +1473,12 @@ document.addEventListener("input", e => { if (e.target && e.target.id === "msg")
 /* What the record already held before anything was sent from this page. A row
    that was there at boot is not evidence that a later send landed, and both
    readback branches below used to treat any row as proof of the send in hand. */
-const decisionBefore = box.decision ? S(box.decision.decision_id) : null;
+/* The verdict already on the case being filed on, before this send. Read at the
+   moment the box is drawn rather than at boot, because the box now follows the
+   selection and a decision id from the live case says nothing about another. */
+function decisionBeforeSend(){
+  return composeBox && composeBox.decision ? S(composeBox.decision.decision_id) : null;
+}
 
 /* Read the record back and answer the one question both branches below ask: is
    there a verdict row that was not already there before this send?
@@ -1472,7 +1493,14 @@ const decisionBefore = box.decision ? S(box.decision.decision_id) : null;
 async function readBackDecision(){
   let later = null;
   try {
-    later = await get("/api/finding");
+    /* The route that knows about the case actually filed on. /api/finding only
+       ever answers about the live one, so a send on any other case read back as
+       "the lookup did not complete" and the analyst was told to check by hand. */
+    later = composeIsLive
+      ? await get("/api/finding")
+      : await get("/api/cases?id=" + encodeURIComponent(selected))
+          .then(d => d && ({ present: true, finding: (d["case"] || {}).finding || {},
+                             decision: d.decision, decision_error: d.decision_error }));
   } catch (exc) {
     return { known: false };
   }
@@ -1483,10 +1511,10 @@ async function readBackDecision(){
      path, on a path that did not exist when that fix was made. */
   if (!later || later.present !== true || later.error || later.decision_error) return { known: false };
   /* A readback about a different case says nothing about this send. */
-  if (S((later.finding || {}).job_id || "") !== BOOT_JOB) return { known: false };
+  if (S((later.finding || {}).job_id || "") !== composeJob) return { known: false };
   const row = later.decision || null;
   if (!row) return { known: true, row: null };
-  return { known: true, row: row, fresh: S(row.decision_id) !== decisionBefore };
+  return { known: true, row: row, fresh: S(row.decision_id) !== decisionBeforeSend() };
 }
 
 async function trySend(){
