@@ -1232,7 +1232,7 @@ def _queue_bench(tmp_path, source):
 def test_a_decided_case_and_a_waiting_one_are_told_apart(tmp_path):
     _open_case(tmp_path)
     _open_case(tmp_path, job_id="europe-west3:job_waiting")
-    listed = _queue_bench(tmp_path, _Stub(decided={JOB})).cases()
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: "2026-08-30T10:00:00Z"})).cases()
     by_job = {row["job_id"]: row["decided"] for row in listed["cases"]}
     assert by_job == {JOB: "yes", "europe-west3:job_waiting": "no"}
 
@@ -1253,7 +1253,7 @@ def test_a_warehouse_that_errors_says_unknown_and_says_why(tmp_path):
 
 def test_the_queue_still_carries_no_disposition(tmp_path):
     _open_case(tmp_path)
-    row = _queue_bench(tmp_path, _Stub(decided={JOB})).cases()["cases"][0]
+    row = _queue_bench(tmp_path, _Stub(decided={JOB: "2026-08-30T10:00:00Z"})).cases()["cases"][0]
     assert set(row) & {"disposition", "rationale", "analyst", "approved"} == set()
 
 
@@ -1533,3 +1533,33 @@ def test_a_promotion_stamp_that_is_not_a_real_instant_is_ignored():
             {"version": "vx", "policy_id": "conduct-policy",
              "promoted_at": "2026-99-99T00:00:00Z"}]
     assert workbench.active_at(rows, "2026-12-01T00:00:00Z") == "v4"
+
+def test_a_case_revised_after_its_verdict_is_stale_not_decided(tmp_path):
+    """A verdict about evidence nobody has read must not read as done.
+
+    The detail route knows this; the queue is where an analyst decides what to
+    open, so a queue that says `yes` is how an unreviewed revision gets skipped.
+    """
+    _open_case(tmp_path)
+    revised = _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    assert revised["revisions"] == 1
+    listed = _queue_bench(
+        tmp_path, _Stub(decided={JOB: "2020-01-01T00:00:00Z"})).cases()
+    assert listed["cases"][0]["decided"] == "stale"
+
+
+def test_a_verdict_after_the_revision_is_decided(tmp_path):
+    _open_case(tmp_path)
+    _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    listed = _queue_bench(
+        tmp_path, _Stub(decided={JOB: "2099-01-01T00:00:00Z"})).cases()
+    assert listed["cases"][0]["decided"] == "yes"
+
+
+def test_an_uncomparable_pair_of_timestamps_is_decided_not_stale(tmp_path):
+    """Saying `stale` on a comparison that did not happen is its own invention."""
+    _open_case(tmp_path)
+    _open_case(tmp_path, rows=[{"session_id": "s_2"}])
+    listed = _queue_bench(tmp_path, _Stub(decided={JOB: "30 Aug 2026"})).cases()
+    assert listed["cases"][0]["decided"] == "yes"
+

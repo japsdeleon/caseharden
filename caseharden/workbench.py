@@ -170,13 +170,17 @@ class Source:
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         return None
 
-    def decided_subjects(self, kind: str) -> Optional[set]:
-        """Every subject carrying a decision of this kind, or None for cannot know.
+    def decided_subjects(self, kind: str) -> Optional[Dict[str, str]]:
+        """Each decided subject and when it was last decided, or None for cannot know.
 
-        None and the empty set are different answers and the queue draws them
+        None and the empty mapping are different answers and the queue draws them
         differently. A source with no warehouse behind it returns None, because
         answering "none of these are decided" would put a claim on the screen
         that nothing checked.
+
+        The timestamp and not just the subject, because "has a verdict" and "has
+        a verdict about what is on screen now" are different questions once a
+        case can be revised.
         """
         return None
 
@@ -368,7 +372,7 @@ class LiveSource(Source):
             params={"kind": kind, "subject": subject})
         return rows[0] if rows else None
 
-    def decided_subjects(self, kind: str) -> Optional[set]:
+    def decided_subjects(self, kind: str) -> Optional[Dict[str, str]]:
         """One query for the whole queue, rather than one per row.
 
         A queue that could not tell a decided case from a waiting one would list
@@ -383,11 +387,15 @@ class LiveSource(Source):
         reviewed, which is the same order of magnitude as the cases on disk.
         """
         rows = bq.query(
-            f"SELECT subject"
+            f"SELECT subject,"
+            f" FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(ts)) AS ts"
             f" FROM `{bq.qualified_table(self.project, 'review', 'decisions')}`"
             f" WHERE kind = @kind GROUP BY subject",
             self.project, self.tokens.get(NOTARY), params={"kind": kind})
-        return {r["subject"] for r in rows}
+        # The same format `DECISION_COLUMNS` produces, because `_predates`
+        # compares these as strings and only a shared fixed-width UTC shape makes
+        # that safe.
+        return {r["subject"]: r["ts"] for r in rows}
 
     def near_miss(self, kind: str, subject: str) -> Optional[dict]:
         """A row about this job filed under a subject the driver will never find.
@@ -717,12 +725,18 @@ class Workbench:
         one bit, derived at read time from a single query, and nothing is
         written back.
 
-        Three values, not two. A warehouse this console could not reach makes
+        Four values, not two. A warehouse this console could not reach makes
         every case `unknown`, and a queue that showed those as waiting would
         send an analyst to re-review a case that was closed yesterday.
+
+        `stale` is the fourth, and it is the one a queue cannot do without. A
+        case that was decided at ten and revised at eleven carries a verdict
+        about evidence nobody has read. Reporting that as `yes` is how an
+        analyst skips an unreviewed revision, and the detail route knowing
+        better does not help someone who never opens it.
         """
         listed = cases.list_cases(self.cases_dir)
-        decided: Optional[set] = None
+        decided: Optional[Dict[str, str]] = None
         try:
             decided = self.source.decided_subjects("VERDICT")
         except Exception as exc:  # noqa: BLE001
@@ -730,9 +744,25 @@ class Workbench:
         for row in listed["cases"]:
             if "error" in row:
                 continue
-            row["decided"] = ("unknown" if decided is None
-                              else "yes" if row.get("job_id") in decided else "no")
+            row["decided"] = self._decided_state(row, decided)
         return listed
+
+    @staticmethod
+    def _decided_state(row: dict, decided: Optional[Dict[str, str]]) -> str:
+        """One queue row's review state, from the store's fact and the warehouse's.
+
+        `stale` needs both timestamps to be readable. When either is not, the
+        answer is the weaker `yes`: the case is decided, and this cannot say
+        whether the decision is about what is on screen. Saying `stale` on a
+        comparison that did not happen would be the same invention in the other
+        direction.
+        """
+        if decided is None:
+            return "unknown"
+        ts = decided.get(row.get("job_id"))
+        if ts is None:
+            return "no"
+        return "stale" if _predates(row.get("revised_at"), ts) else "yes"
 
     def case(self, case_id: str) -> Optional[dict]:
         """One case, with its evidence and the verdict recorded against its job.
