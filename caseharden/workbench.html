@@ -859,6 +859,8 @@ function renderCase(){
     c4b.appendChild(el("p", "note", S(box.decision_error)));
   } else if (box.decision) {
     c4b.appendChild(el("div", "goodbox", "A verdict is already recorded: " + S(box.decision.decision_id)));
+    citedPolicy(c4b, box.decision, box.citation);
+    advisoryShown(c4b, box.decision);
   } else if (box.near_miss) {
     c4b.appendChild(el("div", "badbox",
       "A verdict exists, but it was filed against a different id: " + S(box.near_miss.subject)
@@ -873,6 +875,87 @@ function renderCase(){
   host.appendChild(verdictCard());
   host.appendChild(afterCard());
   host.appendChild(attestCard());
+}
+
+/* Which policy the recorded verdict was applying, and whether the registry knows
+   it. Both halves come off the server: `box.decision` is the stored row and
+   `box.citation` is the server's read of it against `policy.versions`. Nothing
+   here checks anything. The identity that can read that registry is notary-sa,
+   held by caseharden/workbench.py, and a check this page ran on its own would be
+   a page telling the analyst what it decided by itself. */
+function citedPolicy(host, row, cit){
+  const c = cit || {};
+  const state = S(c.state);
+  /* The line comes from the server's answer, not from the row: a citation that
+     named only a version resolves to whichever line the registry holds it in,
+     and printing "conduct-policy@" in front of a payments version would be this
+     page inventing the half the analyst did not write. */
+  const version = S(row.cited_version);
+  const cited = version && (S(c.policy_id) ? S(c.policy_id) + "@" + version : version);
+  if (state === "PREDATES-COLUMNS") {
+    host.appendChild(el("p", "note",
+      "This row was written before the record had anywhere to put the policy being applied. "
+      + "It does not say which one it was, and that is different from a verdict that cited none."));
+    return;
+  }
+  if (state === "UNCITED") {
+    host.appendChild(el("div", "badbox",
+      "It cites no policy version. Nothing on the row says which policy line the analyst was "
+      + "applying or which version of it, so a month from now the verdict cannot be explained "
+      + "from the record alone."));
+    return;
+  }
+  if (state === "UNREGISTERED") {
+    host.appendChild(say("div", "badbox", [
+      "It cites ", mono(cited), ", and the version registry holds no such version in that line. "
+      + "The citation names nothing."]));
+    return;
+  }
+  if (state === "REGISTRY-UNKNOWN") {
+    host.appendChild(say("p", "note", [
+      "It cites ", mono(cited), ". The version registry could not be read, so this page cannot "
+      + "say whether that version exists. It is not saying it does not."]));
+    return;
+  }
+  if (state !== "REGISTERED") return;
+  host.appendChild(say("p", null, [
+    "It was recorded against ", mono(cited), ", which the registry holds, promoted ",
+    el("b", null, S(c.promoted_at) || "at an unrecorded time"), "."]));
+  /* The one comparison worth drawing: the conduct under review happened inside a
+     window, and a version was in force during it. Citing a different one is not
+     an error — an analyst may be arguing from a later version deliberately — so
+     this states the difference and does not rule on it. */
+  if (c.matches_window === false) {
+    host.appendChild(say("div", "warnbox", [
+      "The version in force when this conduct happened was ",
+      mono(S(c.active_at_window_start)),
+      ", not the one cited. That may be deliberate. It is stated because the record does not."]));
+  } else if (c.matches_window === null || c.matches_window === undefined) {
+    host.appendChild(el("p", "note",
+      "Which version was in force during the scanned window could not be worked out from the "
+      + "finding's timestamps and the registry, so the citation is not compared against it."));
+  }
+}
+
+/* What the machine had on screen beside the verdict box when it was written.
+   Stored as displayed and never recomputed here: a recommendation this page
+   derived now would say nothing about what the analyst was looking at then. */
+function advisoryShown(host, row){
+  if (!S(row.advisory_recommendation) && !S(row.advisory_rule)
+      && (row.advisory_confidence === null || row.advisory_confidence === undefined)) {
+    host.appendChild(el("p", "note",
+      "No machine advisory was recorded with this verdict. Nothing in this fleet produces one "
+      + "yet: the paragraphs above are the report's own argument, with no recommendation, no "
+      + "rule and no confidence attached."));
+    return;
+  }
+  const bits = ["The machine advised ", el("b", null, S(row.advisory_recommendation))];
+  if (S(row.advisory_rule)) bits.push(" on rule ", mono(S(row.advisory_rule)));
+  if (row.advisory_confidence !== null && row.advisory_confidence !== undefined) {
+    bits.push(" at confidence ", el("b", null, S(row.advisory_confidence)));
+  }
+  bits.push(", as it was displayed beside this verdict.");
+  host.appendChild(say("p", null, bits));
 }
 
 function notThisCase(){

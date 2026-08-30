@@ -148,7 +148,7 @@ def stored(copilot, monkeypatch):
 
 def test_a_disposition_outside_the_taxonomy_stores_nothing(copilot, stored):
     """Refused where the analyst can still fix it, not stored as free text."""
-    answer = copilot.record_verdict("job_x", "false positive", "because")
+    answer = copilot.record_verdict("job_x", "false positive", "the sessions cited show a real pattern")
     assert answer["recorded"] is False
     assert stored == []
     assert set(answer["choices"]) == set(verdicts.MEMBERS)
@@ -162,21 +162,21 @@ def test_a_refusal_reaches_no_cloud_service_at_all(copilot, monkeypatch):
 
     monkeypatch.setattr(copilot, "_write", refuse)
     monkeypatch.setattr(copilot, "_screen", refuse)
-    assert copilot.record_verdict("job_x", "", "because")["recorded"] is False
+    assert copilot.record_verdict("job_x", "", "the sessions cited show a real pattern")["recorded"] is False
 
 
 def test_a_member_is_stored_under_its_own_spelling(copilot, stored):
-    answer = copilot.record_verdict("job_x", "  Confirmed  Abuse ", "because")
+    answer = copilot.record_verdict("job_x", "  Confirmed  Abuse ", "the sessions cited show a real pattern")
     assert answer["recorded"] is True
     assert stored[0]["disposition"] == verdicts.DRAFTS
     assert stored[0]["kind"] == "VERDICT"
     # The analyst's own words are untouched. Only the control value is folded.
-    assert stored[0]["rationale"] == "because"
+    assert stored[0]["rationale"] == "the sessions cited show a real pattern"
 
 
 def test_every_member_is_recordable(copilot, stored):
     for m in verdicts.MEMBERS:
-        assert copilot.record_verdict("job_x", m, "because")["recorded"] is True
+        assert copilot.record_verdict("job_x", m, "the sessions cited show a real pattern")["recorded"] is True
     assert [r["disposition"] for r in stored] == list(verdicts.MEMBERS)
 
 
