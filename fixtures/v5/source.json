@@ -3,7 +3,7 @@
   "region": "europe-west3",
   "version": "v5",
   "parent": "v4",
-  "certificate_uri": "gs://caseharden-certificates-506416/certificates/v5/013-e82c201d66a4.json",
+  "certificate_uri": "gs://caseharden-certificates-506416/certificates/v5/014-4ad153aad1c8.json",
   "promoted_at": "2026-08-25T16:25:25Z",
   "exported_by": "infra/120_export_fixture.py",
   "note": "The sealed holdout is not here and never will be. The Examiner's numbers are re-derived offline from the committed seeded generator, which produces the same corpora BigQuery was loaded from."
