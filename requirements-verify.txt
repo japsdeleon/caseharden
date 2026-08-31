@@ -1,9 +1,12 @@
 # What the offline path needs, and nothing else.
 #
 # The re-check, the corpus self-check, the test suite and the mutation harness
-# all run on these two plus the standard library. Everything that talks to Google
-# Cloud is a urllib call in caseharden/bq.py, so none of the cloud SDKs are here;
-# agents/requirements.txt is the container's list and is a different thing.
+# all run on these three plus the standard library. They check the exported
+# record and this repository's code, not whether anything is deployed or
+# running correctly in a cloud project; that is what the infra/ proofs are for.
+# Everything that talks to Google Cloud is a urllib call in caseharden/bq.py,
+# so none of the cloud SDKs are here; agents/requirements.txt is the
+# container's list and is a different thing.
 #
 # Deliberately unpinned above the major version: a reviewer running this next
 # year should not be blocked by a yanked patch release. The properties under

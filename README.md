@@ -254,6 +254,11 @@ deterministic and the Examiner makes no model calls, so an invented catch rate d
 survive, even when every hash has been rebuilt and the certificate forged to match.
 `tests/test_recheck.py` does exactly that and asserts the refusal.
 
+The trust model here is recomputation, not belief. A repository could lie about its
+history, but it cannot lie about arithmetic: the measurements are re-derived on your
+machine, not read from mine. What a repository alone cannot prove is the live-cloud
+half, which is why the captures and the `infra/` scripts exist.
+
 What a fixture cannot answer is whether the record was true when it was written. That is what
 the live `verify` re-derives against the warehouse, and it is the product.
 
