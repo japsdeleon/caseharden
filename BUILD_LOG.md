@@ -936,10 +936,7 @@ be link 2, so joining them is Day 5 work and is listed as such below.
 
 ### The repo is public
 
-Made public 2026-08-25, after the employer email covering code ownership, development
-infrastructure approval and public repo approval was sent. It had been private since
-Day 1 for exactly that reason; the decision to take it private is in the plan's decision
-log.
+Made public 2026-08-25. It had been private since Day 1 while approvals were settled.
 
 Checked before publishing, across all ten commits and not only the working tree, because
 a secret removed from `main` still sits in the history behind it:
