@@ -19,6 +19,29 @@ Specification: [`docs/PLAN.md`](docs/PLAN.md). The vocabulary, one name per idea
 
 ---
 
+## Run it yourself
+
+The record is checkable on your own machine. No credentials, no network, no Google Cloud
+project, nothing to deploy.
+
+```bash
+git clone https://github.com/japsdeleon/caseharden && cd caseharden
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-verify.txt
+python3 -m caseharden.recheck fixtures/v5
+```
+
+It prints `ALL 45 CHECKS HELD` in about a second. Three dependencies, listed in
+[`requirements-verify.txt`](requirements-verify.txt). Python 3.9 or newer: CI runs 3.12,
+and the offline path is checked against the 3.9.6 that ships with macOS, so on a Mac there
+is nothing to install first.
+
+The rest of the offline path, and the console, are under
+[Reproduce it](#reproduce-it). Everything under `infra/` needs a Google Cloud project of
+your own and is not part of this. That section says which is which.
+
+---
+
 ## The claim
 
 In Caseharden the provenance record is load-bearing rather than descriptive. A guardrail
@@ -116,43 +139,12 @@ authority-derived-from-attested-evidence framing. Each is prior art and each is 
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  subgraph fleet["The governed fleet, Cloud Run, private"]
-    W["support agent<br/>workload-sa"]
-    F["Foreman<br/>foreman-sa"]
-    D["4 detectors<br/>detector-sa"]
-    P["Proposer<br/>proposer-sa"]
-  end
-  subgraph plane["The governance plane"]
-    PS["Policy Server<br/>examiner-sa"]
-    EX["Examiner<br/>deterministic, no model"]
-    NO["Notary<br/>notary-sa"]
-  end
-  AC["Analyst Copilot<br/>ADK web UI, analyst-sa"]
-  CL[("conduct_live")]
-  CT[("conduct_train")]
-  HO[("holdout_sealed<br/>one reader")]
-  CH[("chain.links")]
-  RV[("review.decisions")]
-  GCS[["retention-locked bucket"]]
-  AR{{"Agent Registry"}}
+![Caseharden architecture](docs/architecture.svg)
 
-  W -->|"every tool call"| PS
-  W -->|"conduct event"| CL
-  F -->|"list_agents()"| AR
-  F -->|"A2A fan-out"| D
-  D -->|"governed SQL"| CL
-  AC --> RV
-  P -->|"SELECT"| CT
-  P -.->|"403, recorded as a link"| HO
-  EX -->|"only reader"| HO
-  NO --> CH
-  NO --> GCS
-  NO -->|"reads the human's rows"| RV
-  PS -->|"re-derives at serve time"| CH
-  PS --> EX
-```
+The diagram is generated, not drawn: `python3 docs/make_architecture.py` rewrites it, and
+`docs/architecture.png` is the same picture rendered for slides. The red arrow on it is
+the refusal `infra/70_prove_seal.sh` asserts, and the sealed root is what
+`infra/71_prove_immutability.sh` asserts.
 
 Nine private Cloud Run services: four detectors from one template, the workload agent, the
 Foreman, the Proposer, the Policy Server, and the Analyst Copilot. Seven are published into
@@ -189,10 +181,10 @@ Every number here is measured on the live project, not estimated. Sources in
 | | |
 |---|---|
 | `verify` p95, cold IAM cache | **3.66s** against a 5s target (p50 3.16s, 12 runs) |
-| Active version | v5, 14 chain links, root `4ad153aad1c8`, attested; each repoint since promotion is in `BUILD_LOG.md` |
+| Active version | v5, 14 chain links, root `4ad153aad1c8`, attested; `tests/test_readme_numbers.py` holds this row to the exported certificate, and each repoint is in `BUILD_LOG.md` |
 | Examiner on the promoted candidate | 29/40 → **30/40** sealed attack sessions, benign 100% → 100% |
 | Synthetic corpus | ~40k conduct events; 40 sealed attack sessions across 4 families; 640 benign turns |
-| Tests | 563 |
+| Tests | 567 |
 | Mutations broken and caught | 84 of 84 |
 | Fleet proof | all 8 sections, 32 assertions ([capture](captures/day7-fleet-proof-all-held.txt)) |
 | Cloud Trace | the conduct row's trace id opens a 60-span DAG in the capture above; one fan-out is a 361-span trace spanning the Foreman and all four detectors ([log](BUILD_LOG.md)) |
@@ -241,7 +233,7 @@ when its own paperwork lapses is a worse failure than the one it detects.
 
 ## Check the record yourself, with no access to my project
 
-`caseharden verify` needs this project's BigQuery, its sealed holdout and two impersonated
+`python3 -m caseharden.notary verify` needs this project's BigQuery, its sealed holdout and two impersonated
 service accounts. Only one person can run it. That is a weak position for an entry whose
 subject is records you can check for yourself, so the record is also exported and re-checked
 by a machine that is not mine.
@@ -250,7 +242,7 @@ by a machine that is not mine.
 python3 -m caseharden.recheck fixtures/v5
 ```
 
-Seventeen checks, no credentials, no network. Link hashes, the walk, the root against the
+Forty-five checks, no credentials, no network. Link hashes, the walk, the root against the
 certificate that was exported from the retention-locked bucket, the certificate's own list,
 the chain's shape, the approval bound to the exam it approved, and the EVIDENCE link's
 digests against the material inside it.
@@ -269,26 +261,45 @@ The badge above is that job, run on GitHub's runners on every push.
 
 ## Reproduce it
 
+Two sets, and the difference matters. The first needs nothing but the clone and the three
+dependencies above.
+
+```bash
+python3 -m caseharden.recheck fixtures/v5        # the sealed record, offline, 45 checks
+python3 generator/generate_conduct.py --check    # the corpora regenerate to their digests
+python3 -m pytest tests -q                       # 567 tests, no cloud project needed
+python3 tests/mutate_check.py                    # 84 mutations; every one must be caught
+```
+
+Each exits non-zero if the guarantee it tests does not hold. Measured on a clean clone,
+on the Python 3.9.6 that ships with macOS: about 1s, 13s and 29s for the first three. The
+mutation harness takes 40 minutes, because it runs the suite once per mutation, and it
+prints a line per mutation while it goes.
+
+The console is the one thing here that is not a check. It is a server, it runs until you
+stop it, and its exit code means nothing.
+
+```bash
+python3 -m caseharden.workbench --fixture fixtures/v5   # the same record, in a browser
+```
+
+The second set proves the same claims against live infrastructure, so it runs against a
+Google Cloud project rather than against this repository. It needs a project of your own,
+billing enabled, and the numbered setup in [`infra/README.md`](infra/README.md) run first.
+It is listed so the claims are auditable, not because a reader is expected to run it.
+
 ```bash
 bash infra/70_prove_seal.sh          # proposer-sa takes a real 403 on the sealed holdout
 bash infra/71_prove_immutability.sh  # the owner is refused delete, overwrite and unlock
 bash infra/80_prove_gate.sh          # the gate refuses three ways and passes one
 bash infra/90_prove_attestation.sh   # green, quarantine, promotion refused, re-attest, green
 python3 infra/100_prove_fleet.py     # the roster, the refusals, the fan-out, the memory
-python3 -m caseharden.recheck fixtures/v5   # the sealed record, offline, 17 checks
-python3 -m pytest tests -q           # 563 tests, no cloud project needed
-python3 tests/mutate_check.py        # 84 mutations; every one must be caught
 ```
 
-Each of those exits non-zero if the guarantee it tests does not hold. The
-workbench is the one thing here that is not a check: it is a server, it runs
-until you stop it, and its exit code means nothing.
-
-```bash
-python3 -m caseharden.workbench --fixture fixtures/v5   # the same record, in a browser
-```
-
-[`infra/README.md`](infra/README.md) has the full numbered sequence from an empty project.
+One step of that setup cannot be undone. `infra/60_lock_retention.sh` locks a bucket's
+retention policy, and a locked policy can be raised but never removed or lowered: the
+bucket cannot be deleted until the period expires. The script refuses unless
+`CASEHARDEN_CONFIRM_LOCK=LOCK` is set, so it will not fire by accident.
 
 ## Clean-room disclosure
 

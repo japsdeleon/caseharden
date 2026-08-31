@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-check an exported chain with no cloud access, on a clean checkout.
 
-`caseharden verify` is the product, and it needs this project's BigQuery, the
+`caseharden.notary verify` is the product, and it needs this project's BigQuery, the
 sealed holdout, and two impersonated service accounts. Nobody outside the
 project can run it. That makes every green line in this repo a claim about a
 machine one person owns, which is a weak position for an entry whose subject is
@@ -293,8 +293,8 @@ def recheck(directory: Path, skip_replay: bool = False) -> int:
     else:
         print("  The Examiner replay proves its measurements were not invented.")
     print("  Whether the record was true when it was written is what the live")
-    print("  `caseharden verify` re-derives, against the warehouse, and it cannot be")
-    print("  answered from a fixture.")
+    print("  `caseharden.notary verify` re-derives, against the warehouse, and it")
+    print("  cannot be answered from a fixture.")
     return 0
 
 
