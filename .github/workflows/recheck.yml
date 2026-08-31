@@ -1,6 +1,6 @@
 # Re-check the sealed record on a machine that is not the entrant's.
 #
-# `caseharden verify` needs this project's BigQuery, its sealed holdout and two
+# `caseharden.notary verify` needs this project's BigQuery, its sealed holdout and two
 # impersonated service accounts, so only one person can run it. That is a weak
 # position for an entry whose subject is records you can check for yourself.
 #
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install the two dependencies the offline path needs
+      - name: Install the three dependencies the offline path needs
         run: pip install --disable-pip-version-check -r requirements-verify.txt
 
       - name: Re-check the sealed chain, with no cloud access
