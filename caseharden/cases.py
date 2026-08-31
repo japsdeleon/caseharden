@@ -4,7 +4,7 @@
 Why this exists. `infra/110_run_loop.py` published its finding to a single file,
 `out/finding-live.json`, and the next run replaced it. That is enough for a
 console that shows the one case a person is being asked about right now, and it
-is why `docs/WORKBENCH_SPRINT.md` refused to build a queue: a queue enumerates
+is why the sprint plan refused to build a queue: a queue enumerates
 cases, and there was exactly one, with no name of its own and no age that
 outlived the file.
 

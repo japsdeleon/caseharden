@@ -1,42 +1,18 @@
-# Hackathon concept tournament — final championship plan
+# Caseharden — specification
 
-> **Migration note:** this document contains no employer code, data, or infrastructure. Moved into the hackathon repo on Day 1.
+*All Things Agentic Hackathon. Solo entry. Aug 25 to Aug 31 2026, europe-west3.*
 
-> **Escalations approved by the entrant on 2026-08-25, in session:** the section 2 isolation rewording below; locking the retention policy at 30 days; taking the repo private until the employer approval email is sent. The first is the only change to a section 2 claim.
->
 > **Decision log.** 2026-08-25, Day 1 build: IAM deny policies are unavailable on this project. `roles/iam.denyAdmin` binds only at organization or folder scope and the project has no parent, and `iam.denypolicies.create` is rejected from custom roles. Both errors are recorded in `infra/40_seal_holdout.sh`. Section 2's isolation sentence is reworded from a deny binding to dataset access control, and the holdout's access list is hashed into chain link 1 so that granting the Proposer access later quarantines the version. The 403 itself is unchanged and reproduces; see `captures/day1-proposer-403-on-holdout.txt`.
 >
-> **Decision log.** 2026-08-26, Day 8: an analyst **workbench** is built, partially reversing the section 7 rejection of "bespoke live console with attack feed". The rejection stands as written and is not edited: what it refused was a custom console *as the agent surface*, competing with `adk deploy cloud_run --with_ui` and costing days that six did not have. What is built instead is an operator console outside the trust boundary. It runs locally, reads the chain, the registry and the finding under review, takes attestation from the Policy Server rather than deciding it, and routes its one write through the unmodified Copilot. Its compose box offers a verdict and it writes no review row itself; what is stored is decided by the Copilot service. It has no approve affordance and no way to prevent an operator typing one, so the claim is about what the console offers, not about what the Copilot can be asked to do. It never calls `verify` and holds no credential for the sealed exam; `tests/test_workbench.py` asserts both against the parsed module. `--fixture` renders a sealed record with no credentials, which is the judge-runnable path section 7 wanted from entry C without the offline reroute it rejected. The claim "no custom UI exists" is therefore withdrawn from the README, DEVPOST draft and the Copilot's docstring, and replaced with the narrower one the code supports.
+> **Decision log.** 2026-08-26, Day 8: an analyst **workbench** is built, partially reversing an earlier rejection of a "bespoke live console with attack feed". The rejection stands as written and is not edited: what it refused was a custom console *as the agent surface*, competing with `adk deploy cloud_run --with_ui` and costing days that six did not have. What is built instead is an operator console outside the trust boundary. It runs locally, reads the chain, the registry and the finding under review, takes attestation from the Policy Server rather than deciding it, and routes its one write through the unmodified Copilot. Its compose box offers a verdict and it writes no review row itself; what is stored is decided by the Copilot service. It has no approve affordance and no way to prevent an operator typing one, so the claim is about what the console offers, not about what the Copilot can be asked to do. It never calls `verify` and holds no credential for the sealed exam; `tests/test_workbench.py` asserts both against the parsed module. `--fixture` renders a sealed record with no credentials, which is the judge-runnable path that rejection wanted, without the offline reroute. The claim "no custom UI exists" is therefore withdrawn from the README, DEVPOST draft and the Copilot's docstring, and replaced with the narrower one the code supports.
 >
-> **Decision log.** 2026-08-27, Day 9: the v6 take was run live on 2026-08-26 and the Examiner refused all four candidates, so **the refusal stands and the promotion beat is cut from the Day 5 v5 captures**. This is the fallback written into decision 7 of `docs/WORKBENCH_SPRINT.md`, taken as written. Nothing reached the chain: v6 is unregistered and v5 is still active and attested on root `e2a559358933`, which is what the fleet enforces and what the beat now shows. *(Root as of that day. Re-derivation has moved it twice since; see "The chain is ten links now" in §5 for the current one. v6 is still unregistered and still the free name the break beat attempts.)* The cause was that the verdict asked for a rule the DSL cannot express, recorded as `THREATS.md` **Not covered 7**. The run is kept at `captures/day8-gate-refuses-v6-no-improvement.txt`. No second attempt was made: drafting against a failing gate leg until it passes is tuning to the sealed exam by trial, which is the property the Proposer and Examiner split exists to prevent.
+> **Decision log.** 2026-08-27, Day 9: the v6 take was run live on 2026-08-26 and the Examiner refused all four candidates, so **the refusal stands and the promotion beat is cut from the Day 5 v5 captures**. This is the fallback the sprint plan wrote, taken as written. Nothing reached the chain: v6 is unregistered and v5 is still active and attested on root `e2a559358933`, which is what the fleet enforces and what the beat now shows. *(Root as of that day. Re-derivation has moved it twice since; see "The chain is ten links now" in §5 for the current one. v6 is still unregistered and still the free name the break beat attempts.)* The cause was that the verdict asked for a rule the DSL cannot express, recorded as `THREATS.md` **Not covered 7**. The run is kept at `captures/day8-gate-refuses-v6-no-improvement.txt`. No second attempt was made: drafting against a failing gate leg until it passes is tuning to the sealed exam by trial, which is the property the Proposer and Examiner split exists to prevent.
 >
 > **Decision log.** 2026-08-25: the domain shift from promo and referral abuse to agent-conduct governance is **accepted**, overriding the earlier locked decision to build in the promo-abuse domain. Two further decisions taken the same day: the thesis is stated at platform altitude (section 1), and the demo opens on the break rather than on the build (section 5).
 
-Date: 2026-08-25. Method: five independent Opus 5 designers, each given the same verified brief but a different angle, produced complete entry concepts. Three blind judges (Devpost veteran, Google platform engineer, adversarial skeptic) ranked anonymized entries by win probability with a hard 6-day solo feasibility gate. A synthesizer grafted runner-up strengths onto the winner and addressed every judge-listed weakness.
-
-## Leaderboard
-
-| Rank | Entry | Angle | Avg win prob | Avg weighted (0.4/0.3/0.3) | Infeasible votes |
-|---|---|---|---|---|---|
-| 1 | **Caseharden** (B) | fraud + governance | 0.193 | 8.25 | 0 |
-| 2 | Titer (D) | fleet immune system | 0.187 | 8.27 | 0 |
-| 3 | Ratchet (A) | guardrails that learn | 0.120 | 7.75 | 0 |
-| 4 | Recusal (E) | wildcard | 0.103 | 7.55 | 0 |
-| 5 | Nullius (C) | verifiable audit passport | 0.103 | 7.87 | **2** |
-
-Judge split: devpost-veteran picked Nullius (judge-runnable verification), google-platform picked Titer (architecture that *needs* the platform), skeptic picked Caseharden (only claim that survives adversarial prior-art attack). Caseharden won on feasibility-adjusted win probability; Nullius was disqualified by two infeasibility votes.
-
-## The five concepts (one-liners)
-
-- **Ratchet** — governance control plane where every guardrail is a versioned artifact carrying a signed passport from incident through verdict, AI-drafted change, and sealed replay.
-- **Caseharden** — a detection rule stays in production only while its own provenance chain re-verifies from raw events; proposer isolation and record immutability enforced by BigQuery IAM and a GCS retention lock, not by our code.
-- **Nullius** — every promoted policy is proof-carrying: a signed hash-chained evidence object a stranger re-checks offline in one command.
-- **Titer** — a fleet that attacks itself on a schedule and proves each guardrail made it safer without making it useless (two-sided gate).
-- **Recusal** — internal-affairs fleet: the policy-drafting agent is governed by its own policies, IAM-sealed from its exam, and recuses when the case is its own.
-
 ---
 
-# CASEHARDEN — Final Championship Concept
+# The entry
 *All Things Agentic Hackathon. Solo entry. Aug 25 to Aug 31 2026, europe-west3.*
 
 ---
@@ -258,7 +234,7 @@ conduct policy v5`. This is the first take of the demo, so it is the take most l
 Two consequences worth keeping straight. The 2:10 gate beat gains a second, different refusal
 in `captures/day8-gate-refuses-v6-no-improvement.txt`, where the reason is no improvement on
 sealed attacks rather than a benign regression. And the 2:52 break beat still works exactly as
-`docs/REHEARSAL.md` scripts it, because `v6` was never registered and is still the free version
+the runbook scripts it, because `v6` was never registered and is still the free version
 name that beat attempts and is refused.
 
 **What the attestation hardening changes for filming, 2026-08-30.** `verify` now re-decides
@@ -290,9 +266,8 @@ One new line exists at promotion: `seed` prints `engine equivalence: AGREE`. The
 cut from captures, so it does not appear; a re-shoot of that terminal would gain it, and it
 reads as a fourth check passing.
 
-**The whole sequence was walked on the live project, 2026-08-30. `docs/DRY_RUN.md` is the
-operator's file for the take**, and it supersedes `docs/REHEARSAL.md`, which was written on
-Day 6 against a seven-link chain. Every command there ran twice, in order, and the second
+**The whole sequence was walked on the live project, 2026-08-30**, against the chain as it
+stood that day rather than the seven-link one of Day 6. Every command there ran twice, in order, and the second
 run behaved identically, so the demo is a cycle: green, broken by one late row, re-attested
 back to green one link longer. Three things in the beat table above are stale against what
 the walk printed. The break lands on the **last** link, not link 1, because every
@@ -316,65 +291,7 @@ object at 2:34 or the Cloud Audit entry at 1:52 qualify.
 
 ---
 
-## 6. Grafts taken
-
-| Graft | Source | Why it raises win probability without breaking feasibility |
-|---|---|---|
-| **Two-sided promotion gate, with the over-blocking candidate rejected on camera** | Entry D; both the google-platform and skeptic judges called it the best beat in the field | Over-blocking is the real production failure mode of auto-generated rules, and it lands squarely on Operational Utility, the heaviest criterion. The Examiner already computes benign pass rate, so the gate is one boolean and the beat is one red banner. Highest score per line of code in this document. |
-| **Domain shift from promo abuse to agent-conduct governance** *(accepted by the entrant 2026-08-25; overrides the earlier locked domain decision)* | Entries A, D, E; flagged as B's innovation cap by two of three judges | Promo abuse was the single named ceiling on B's innovation score, and it was visible in the Devpost text before a judge presses play. The switch costs a relabel of the synthetic generator and the predicate vocabulary, plus one workload agent. It also makes the enforcement point real: the thing being withdrawn is agent authority, not a report. |
-| **Supply-chain prior art named first** (sigstore, in-toto, SLSA, cosign, Kyverno) | Skeptic judge, winner weakness 1 | Pure README text. B's whole credibility strategy is naming prior art before a judge does, and it was missing the one analogue closest to its claim. The delta that survives, re-deriving the claim rather than verifying a signature, is stronger for having been forced to articulate it. |
-| **Monotonicity checked as a property, not promised** | Entry A's ratchet direction, Entry C's verifier | About 15 lines inside a replay loop that already runs. Buys the third leg of the gate and, more importantly, makes the quarantine fallback argument sound: versions only narrow, so the last attested version is a known bounded state. |
-| **Model Armor verdict fields as first-class DSL predicates** | Entry D | Free. Policy composes with Model Armor instead of re-implementing screening, which is the platform-native move a Google reviewer notices. |
-| **Governance plane inside its own blast radius** | Entry A | Zero code. A deployment choice plus one caption: the Proposer runs behind the same callback and appears in the same registry. |
-| **Written cut list with named untouchable beats** | Entry E | Free, and it converts an overrun from "the ending is rushed" into "a middle beat was dropped". |
-| **CI hash re-check on a clean checkout, badge in the README** | Entry C, reduced to about 5 percent of its scope | The cheapest available answer to "we only have your word for it": a committed chain export plus a GitHub Action running the pure-Python link recompute. Roughly one hour, and it is explicitly a Day 6 cut-list item. |
-| **Tamper by streaming insert, remedy by re-attest** | Skeptic judge, winner weakness 5 | Replaces a slow on-camera DML UPDATE with a sub-second insert, and replaces "undo my own tamper" with the production remedy path. Better story, fewer seconds, more credible. |
-
----
-
-## 7. Grafts rejected
-
-| Rejected | Source | Why |
-|---|---|---|
-| **Scheduled adversary agent and the titer matrix** | Entry D's centerpiece | Adds a Gemini-backed agent on Cloud Scheduler, the only unbounded recurring cost in the field, plus emergent generational quality the entry's own judge flagged as possibly needing to be staged. The two-sided gate delivers the same reversal beat deterministically. Cost without added score. |
-| **KMS asymmetric signing and the offline verifier** | Entry C | Two of three judges marked C infeasible on scope, and one noted the offline framing spends the video's best seconds on a laptop with no GCP, against a requirement to show the GCP backend. Canonical JSON plus signing plus a five-property verifier is the classic half-day loss. The append-only chain, the sealed access list and the locked retention policy already carry the claim. |
-| **Bespoke live console with attack feed** | Entry D | B's discipline is that no custom UI exists. `adk deploy cloud_run --with_ui` plus one 80-line static certificate renderer is what makes six days work. |
-| **Recusal and a second identical proposer** | Entry E | Two judges called it correctly: identical code and identical weights behind a different service account provides no independence. It is an if-statement in a suit, and it would invite the exact "gimmick" read that costs credibility. |
-| **Model Armor as policy actuator, compiling to a template revision** | Entry E | Attractive on paper, but Model Armor templates carry fixed filter settings and cannot express a tool-level deny with a rate cap. The beat risks visibly under-delivering in front of the judges who own the product. Model Armor stays as sensor and screen, and as DSL predicates. |
-| **`make attack`, a public judge-facing injection endpoint** | Entry C | Unbounded exposure during the judging window with no ability to respond. Small upside, uncapped downside. |
-| **Rerouting the whole entry to offline verifiability** | Entry C's thesis | It is the least visual of the five deltas and depends on a judge running a command. Most do not. |
-
----
-
-## 8. Every winner weakness, addressed
-
-The skeptic judge listed six weaknesses in Caseharden. Each is fixed, mitigated, or accepted with a reason.
-
-**1. Prior-art table omits the closest analogue: sigstore, in-toto, SLSA, Kyverno.**
-**Fixed.** Both rows are now in the table, above Unit21, and the delta is stated in the terms a supply-chain-literate judge will use: those verify a signature over a digest at admission time; Caseharden re-executes the deterministic Examiner and re-derives the evidence at serve time. The demo spends five of its 240 seconds naming them out loud, which is where that credibility is cheapest to buy.
-
-**2. Fail-closed governance takes fraud enforcement offline. No SLO, no degraded mode.**
-**Fixed, and it improved the concept.** Attestation now gates authority, not availability. A quarantined version keeps enforcing; what freezes is its standing as justified and the ability to promote on top of it. A verify **error**, as distinct from a verify **failure**, yields `unknown`, retains the last known state, and alerts, so a BigQuery outage is not an incident. Verify budget is under 5s p95, cached 60s, measured and published. The README carries the three-state table. The demo now shows it before it says it: the cold open at 0:00 puts a denied attack and a `QUARANTINED` policy state in the same frame, and the voice line "authority withdrawn, enforcement untouched" lands at 2:52.
-
-**3. Domain visibility. The Devpost text lists four promo-fraud detectors before a judge presses play.**
-**Fixed by the domain switch.** The detectors are now `scope-violation`, `injected-turn-tool-call`, `cross-tenant-egress`, and `privilege-sequencing`, and the one-liner leads with agent-fleet governance. The crowded specimen that capped innovation at 6.5 in the baseline scoring is gone, and the enforcement point became more legible in the process.
-
-**4. Twelve beats, three console proofs, 240 seconds, no cut list.**
-**Mitigated, and the count is stated honestly.** Thirteen beats, not fewer, because the break-first ordering adds a cold open and a rewind. Four of the thirteen run under 15 seconds. What actually protects the ending is the written cut list in priority order, four named untouchable beats, and every console tab pre-opened during Day 6's two dress runs. An overrun costs the registry console cut, then the rewind beat, not the ending.
-
-**5. Two weak filler beats: the retention-lock delete refusal, and a slow BigQuery DML on camera.**
-**Fixed.** The retention lock is no longer a standalone beat. Its proof, the refused delete, is folded into the 3:20 re-attest beat where it makes an argument ("the fix is re-derivation because the record cannot be edited") rather than demonstrating a storage feature. The tamper is a sub-second streaming insert of a late-arriving event, which is faster, more realistic, and a better story than a malicious UPDATE.
-
-**6. The 2.1s link-1 re-derivation and the 60s cache are unvalidated against a growing table.**
-**Fixed.** Link 1 re-derivation is a partition-pruned, clustered scan bounded to the finding's window, so it does not grow with the warehouse. The README publishes the measured p95 with the row count it was measured at, and states the verify SLO plus the `unknown` state that covers a breach of it. The video quotes the measured number, not a hoped-for one.
-
-**Also addressed from the ranking rationales:** Agent Gateway remains honestly marked droppable and sits first on the Day 4 cut list. That is **accepted**, not fixed. Four platform components are load-bearing rather than decorative: Agent Registry carries the audit anchor, Memory Bank conditions the draft and its retrieved ids are sealed into the chain, Model Armor's scores are predicates in the policy language, and Agent Observability's trace ids open the execution DAG from inside a link. A fifth, Agent Runtime, is deployed because Memory Bank requires it and hosts no agent. Agent Identity and Agent Gateway are not used, and the bullets above say so. Four components that would break this entry if removed is a stronger claim than seven that would not, and adding a dependency on Gateway to avoid an honest disclaimer would be exactly the checklist posture a platform reviewer penalizes.
-
-**On the other judges' winner weaknesses:** those attach to entries C and D, and they are the reason for two rejections above. D's titer matrix depends on emergent adversary quality and on a 60-transcript benign corpus a judge could read as engineered, so the adversary was rejected and the benign corpus here is 600+ turns. C's Day 5 and Day 6 scope failed two feasibility gates, so only its cheapest artifact, the CI hash re-check, was taken, and even that sits on the cut list.
-
----
-
-## 9. Top three remaining risks
+## 6. Top three remaining risks
 
 **1. Agent Runtime or A2A wiring consumes Day 4.**
 Cloud Run is the pre-approved fallback host for every agent and auto-registers into Agent Registry identically, so the registry-driven discovery pattern, the A2A fan-out, the visible roster, and every hard requirement survive the swap. Hard cutoff at hour 5 of Day 4: Foreman and Proposer move to Cloud Run, Agent Gateway is dropped. Nothing in the demo script names a host, so the video does not change.
