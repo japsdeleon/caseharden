@@ -288,6 +288,25 @@ Google Cloud project rather than against this repository. It needs a project of 
 billing enabled, and the numbered setup in [`infra/README.md`](infra/README.md) run first.
 It is listed so the claims are auditable, not because a reader is expected to run it.
 
+Four things have to exist first, and none of them are in the repo:
+
+```bash
+gcloud projects create YOUR_PROJECT          # or reuse one; then enable billing on it
+gcloud config configurations create caseharden   # the name is load-bearing, see below
+gcloud config set project YOUR_PROJECT
+gcloud auth login
+export CASEHARDEN_PROJECT=YOUR_PROJECT
+```
+
+The configuration name matters. `caseharden/creds.py` mints tokens from the gcloud
+configuration named by `CASEHARDEN_GCLOUD_CONFIG`, which defaults to `caseharden`, and it
+refuses to return credentials whose project is not `CASEHARDEN_PROJECT`. A mismatch stops
+with both project names in the message instead of acting under an unintended identity, so
+a wrong-project run fails loudly rather than writing somewhere it should not.
+
+Then the numbered setup in [`infra/README.md`](infra/README.md), in the order it gives,
+which ends with the retention lock. Only after that do these run:
+
 ```bash
 bash infra/70_prove_seal.sh          # proposer-sa takes a real 403 on the sealed holdout
 bash infra/71_prove_immutability.sh  # the owner is refused delete, overwrite and unlock
