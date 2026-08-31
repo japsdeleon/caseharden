@@ -175,7 +175,7 @@ force rather than capturing the stale answer as a result.
 - Rewording section 2's isolation claim from an IAM deny binding to dataset access
   control. The only change to a section 2 claim.
 - Locking the retention policy at 30 days. Irreversible.
-- Taking the repo private until the employer approval email is sent.
+- Keeping the repo private until approvals are settled.
 
 ### Carried over
 
