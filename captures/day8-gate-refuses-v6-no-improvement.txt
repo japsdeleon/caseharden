@@ -83,7 +83,7 @@
 
   taking job_nwzQAhCM1PqPdtHBi-0V_RIK as the finding: 27 row(s), family injected-turn, cites this incident
 
-  wrote /Users/jay.leon/Documents/caseharden/out/finding-live.json
+  wrote ~/caseharden/out/finding-live.json
   the workbench reads it from there: python3 -m caseharden.workbench
 
 ==============================================================

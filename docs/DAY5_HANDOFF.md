@@ -16,7 +16,7 @@ the plan.
 
 ## Where things stand
 
-Repo `/Users/jay.leon/Documents/caseharden`, branch `main`, last commit `650003f`.
+Repo `~/caseharden`, branch `main`, last commit `650003f`.
 Still **private** on GitHub until the employer email is sent.
 
 | Day | Exit criterion | Proof | State |

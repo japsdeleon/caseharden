@@ -144,13 +144,13 @@
 ==============================================================
  8. The promotion
 ==============================================================
-  wrote /Users/jay.leon/Documents/caseharden/out/run-v5.json
-  caseharden.notary seed --version v5 --parent v4 --candidate /Users/jay.leon/Documents/caseharden/out/v5-candidate.json --current /Users/jay.leon/Documents/caseharden/out/v4-active.json --bundle /Users/jay.leon/Documents/caseharden/out/run-v5.json
+  wrote ~/caseharden/out/run-v5.json
+  caseharden.notary seed --version v5 --parent v4 --candidate ~/caseharden/out/v5-candidate.json --current ~/caseharden/out/v4-active.json --bundle ~/caseharden/out/run-v5.json
 parent accepted: v4 attested at root 2ebe2451fd24
 wrote 7 links for v5
 root   e2a559358933a82530236277f0d2f19cd148226a1f5be61b4ca806cde3553d12
 sealed gs://caseharden-certificates-506416/certificates/v5/007-e2a559358933.json
-wrote /Users/jay.leon/Documents/caseharden/out/certificate-v5.html
+wrote ~/caseharden/out/certificate-v5.html
 caseharden verify conduct-policy@v5
 
   [1] EVIDENCE         OK     22 conduct events re-scanned over 2026-08-22T15:47:45Z..2026-08-25T15:48:08Z, holdout_sealed readable by 1 principal(s)
