@@ -31,3 +31,11 @@ infra/fleet.env
 
 # static mockups, baked from a fixture capture; never shipped, never filmed
 prototypes/
+
+# personal, not part of the entry
+teach/
+agents/support_agent/.adk/
+docs/BLOG_V*.md
+docs/BLOG_FRAGMENTS.md
+docs/BLOG_DRAFT.rtf
+docs/HANDOFF_UI.md
